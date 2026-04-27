@@ -1,10 +1,10 @@
 # Skills
 
-Claude Code skills I use in my research workflow (physics, AMO, lots of long-paper reading and code-as-experiment work).
+Skills I use with Claude Code, mostly in my physics research — long papers, code-as-experiment work.
 
-## Read & comprehension
+## Reading
 
-- **read-it-fully** — When you tell Claude to "read this fully" or "in depth", actually have it survey first, chunk semantically, walk every section, and cite specifics from each chunk — instead of skimming and pattern-matching to a familiar shape. Tested on synthetic logs, transcripts, numerical campaign data, and real physics PDFs from my Downloads. Helps measurably on long inputs without easy navigational shortcuts; stays out of the way otherwise.
+- **read-it-fully** — Makes Claude actually walk every section of a long file and cite specifics, instead of skimming the start and end. Triggers on phrases like "read this fully", "read carefully", "in depth". Tested on synthetic logs, a meeting transcript, a 5000-line numerical campaign log, and real PDFs from my Downloads.
 
   ```bash
   npx skills@latest add arianjad/skills/read-it-fully
@@ -18,10 +18,10 @@ Claude Code skills I use in my research workflow (physics, AMO, lots of long-pap
     -o ~/.claude/skills/read-it-fully/SKILL.md
   ```
 
-## Why a collection
+## Adding more
 
-These accumulate over time as I find friction points worth a skill. New ones land here under their own directory. Each `SKILL.md` is the canonical text Claude Code loads.
+New skills land here in their own subdirectory as I write them. Each `SKILL.md` is what Claude Code loads.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT.
