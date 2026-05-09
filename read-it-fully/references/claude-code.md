@@ -1,33 +1,69 @@
-# Read It Fully — Claude Code Implementation Notes
+# Read It Fully — Native Claude Code Tooling
 
-This file maps the tool-agnostic operations in `SKILL.md` to specific Claude Code tools, and documents observed behaviors worth knowing when running this skill in Claude Code.
+Maps the tool-agnostic operations in `SKILL.md` to native Claude Code tools — those that come with the Claude Code engine and behave the same in CLI, VS Code extension, JetBrains, and web. The extension wraps the CLI engine, sharing settings (`~/.claude/settings.json`) and tool descriptions; semantics are identical.
 
-## Survey
+For non-native ingestion tools (PDF MCPs, content extractors, sandboxing/indexing plugins, browser automation), see [`context-managers.md`](context-managers.md).
 
-- **File size and shape:** `wc -l <path>` for length; `head -50 <path>` for first-page shape.
-- **PDF structure:** `pdf_info` for page count and basic metadata; `pdf_get_toc` for the table of contents. If the TOC is empty, probe with `pdf_search` on likely section keywords ("method", "result", "discussion", "conclusion"); fall back to fixed-page chunks if nothing surfaces.
-- **URL fetching:** `ctx_fetch_and_index` (context-mode plugin) for general web pages; `defuddle` (defuddle skill) for cluttered article-style pages. Prefer `ctx_fetch_and_index` when the content needs to live in the context-mode knowledge base.
-- **Pasted text already in context:** no tool needed — scan inline for headings, speaker turns, section breaks.
+**Conflict rule.** If anything here contradicts read-it-fully when the user has explicitly asked, read-it-fully wins.
 
-## Reading
+## Read (files)
 
-- **Files:** `Read` tool has a ~2000-line default and a ~25,000-token hard cap per call, whichever hits first. On dense files (long-line logs, prose with embedded data) the token cap fires near 1000 lines; budget chunks accordingly. Pass explicit `offset` and `limit` for chunked reads.
-- **PDFs:** use `pdf_read_pages` with explicit page ranges. Do **not** use `Read` on `.pdf` files — see the truncation gotcha below.
-- **URLs:** content already retrieved via `ctx_fetch_and_index` lives in the knowledge base; query it with `ctx_search`. Content from `defuddle` lands in context directly.
+- `file_path` must be absolute.
+- A default line cap exists (templated in the system prompt as `MAX_LINES_CONSTANT`; the value varies by Claude Code version, so don't assume a fixed number). Pass explicit `offset` and `limit` for chunked reads.
+- Hard cap of ~25,000 tokens per call, observed via the tool error `File content (N tokens) exceeds maximum allowed tokens (25000)`. On dense files (logs with long lines, prose with embedded data) this fires near 700–1000 lines. Budget chunks accordingly — 500–700 lines on dense content, more on sparse text.
+- Multimodal: reads images (PNG, JPG) visually in a single Read call. Reads Jupyter notebooks (`.ipynb`) with cell outputs.
+- Cannot read directories.
+- Empty files return a system-reminder warning in place of content.
 
-## PDF truncation gotcha
+## Read on PDFs
 
-`Read` on a `.pdf` extracts text but silently truncates after the first few calls. Observed cutting off at p. 19 of a 27-page document on 2026-04-27. The result looks substantive but misses later sections — supplemental material, late references, final equations, the actual results in some paper layouts. Always use `pdf_read_pages` with explicit page ranges for any PDF longer than a few pages.
+The native Read tool can open `.pdf` files, but its current spec requires structural hints for anything beyond a short document:
 
-## Visual content
+- For PDFs longer than ~10 pages, you MUST pass `pages` (e.g. `pages: "1-5"`). Without it the call fails.
+- Maximum 20 pages per request.
+- Earlier versions silently truncated `.pdf` reads without `pages` (observed: 5+7+7 = 19 of 27 pages on a Nature Reviews PDF, 2026-04-27, with no error).
 
-For figures, equations, scanned regions, and tables, text extraction is insufficient. The pathway in Claude Code:
+For any multi-page PDF, prefer a format-specific tool (pdf-mcp). See `context-managers.md` for the chunks-mode tool table. Native Read on `.pdf` is for spot-checks, not full reads.
 
-1. Render the relevant page(s) to an image (PNG). The `markitdown` MCP server can convert PDFs with image preservation; otherwise use a local conversion (`pdftoppm`, `convert`) and read the resulting PNG with `Read`.
-2. Read the image with the `Read` tool — Claude Code's multimodal Read handles PNG/JPEG.
+## REPL shorthands
 
-If the user's environment doesn't have a rendering tool available, say so before claiming a figure was inspected. Do not infer figure content from caption text alone.
+The REPL exposes shorthands mapping to native primitives. Verified caps:
 
-## Parent vs subagent reads
+- `cat(path, off?, lim?)` — line-based, uncapped output. `off` and `lim` are line numbers, not bytes.
+- `sh(cmd, ms?)` — merged stdout+stderr, byte-truncated at exactly 30,000 bytes after the subprocess exits. Pipe to a file and `cat()` it back when output may exceed.
+- `rg(pattern, path?, opts?)` — silently caps at 250 matches (`head` option default). Pass `{head: N}` for more.
+- `rgf(pattern, path?, glob?)` — silently caps at 250 paths.
+- `gl(pattern, path?)` — uncapped.
+- `put(path, content)` — never throws; returns error text on permission-denied or timeout.
 
-When dispatching delegated full-read digests via the `Agent` tool: subagents return summaries, not raw content. Their reports are leads, not ground truth — spot-check load-bearing claims against the source after the subagent returns. SKILL.md's honesty rules treat this as non-negotiable.
+The `o` auto-await is one layer deep — see CLAUDE.md and `plans/repl-auto-await-one-layer-deep.md` for the patterns that bite.
+
+## WebFetch (URL fetching)
+
+**Important — WebFetch does not return raw page content.** From Claude Code's system prompt:
+
+> Fetches the URL content, converts HTML to markdown. Processes the content with the prompt using a small, fast model. Returns the model's response about the content. Results may be summarized if the content is very large.
+
+WebFetch passes the page through a small fast sub-model with the caller's prompt and returns that sub-model's response. The parent never sees raw text. **For read-it-fully, this is delegated reading** — only suitable as SKILL.md step-3's honest-digest path, with user opt-in. Spot-check load-bearing claims against the source.
+
+Do not confuse Claude Code's `WebFetch` with the Anthropic API's `web_fetch_*` server tool, which returns the actual document content. Different tools, same name; only the API tool returns raw content, and it isn't exposed in Claude Code sessions.
+
+Other WebFetch behaviors:
+- 15-minute self-cleaning cache.
+- HTTP→HTTPS auto-upgrade.
+- Cross-host redirects are NOT auto-followed; the tool reports the redirect URL and you re-issue the call.
+- WebFetch's own description recommends the `gh` CLI via Bash for GitHub URLs (`gh pr view`, `gh issue view`, `gh api`). That path returns raw content directly to the parent and IS suitable for read-it-fully.
+
+For raw URL ingestion that satisfies the evidence gate, use a non-native tool — see `context-managers.md` (URL row of the tools table: `defuddle`, `ctx_fetch_and_index` + `ctx_search`, or `browser-use` for JS/auth pages).
+
+## Bash
+
+Bash output is hard-capped at 30,000 characters (`BASH_MAX_OUTPUT_LENGTH` default). Truncation is **middle-cut**, not tail — head and tail are kept, the middle is dropped. For large outputs needed for a full read, redirect to a file (`cmd > /tmp/out`) and Read in chunks.
+
+## Agent (subagent dispatch)
+
+Agent spawns a subagent with its own context window. For read-it-fully, this maps to SKILL.md step-3's "delegated full-read digest" option. Name it as delegation in the response, and spot-check load-bearing claims against the source after the subagent returns. Subagent reports are leads, not ground truth.
+
+## Multimodal reads for figures
+
+Render PDF pages or other documents to PNG locally (e.g. `pdftoppm`), then Read the PNG. Multimodal Read handles PNG/JPG visually. If no rendering pathway is available in the environment, say so — never infer figure content from caption text alone.

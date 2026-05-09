@@ -145,4 +145,6 @@ For long multi-chunk reads, note which ranges or sections you read. Matters most
 
 ## Environment-specific notes
 
-For Claude Code-specific tooling — `Read` tool defaults, PDF handling, URL fetching, and observed gotchas — see [`references/claude-code.md`](references/claude-code.md).
+For native Claude Code tools — Read, WebFetch, Agent, REPL shorthands, and observed gotchas — see [`references/claude-code.md`](references/claude-code.md).
+
+For composing with non-native ingestion tools (PDF MCPs, content extractors, sandboxing/indexing plugins, browser automation) — pattern recipes that adapt to whatever's loaded in the session — see [`references/context-managers.md`](references/context-managers.md).
