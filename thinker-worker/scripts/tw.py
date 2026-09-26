@@ -306,10 +306,30 @@ def receipt(home: Path, harness: str, session: str, envelope: dict,
              "reason": reason, "role": role, "requested_model": small(model),
              "requested_effort": small(effort), "effective_model": None, "effective_effort": None,
              "brief_checks": "unavailable-encrypted-v2" if harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent" else "plaintext-route"}
-    path = state_root(home) / "receipts" / harness / f"{sha(session.encode('utf-8'))}.jsonl"
+    append_receipt(home, harness, session, entry)
+
+
+def receipts_path(home: Path, harness: str, session: str) -> Path:
+    return state_root(home) / "receipts" / harness / f"{sha(session.encode('utf-8'))}.jsonl"
+
+
+def append_receipt(home: Path, harness: str, session: str, entry: dict) -> None:
+    path = receipts_path(home, harness, session)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as stream:
         stream.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+
+
+def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: bool) -> None:
+    """Label a guarded dispatch; the last outcome for a tool_use_id wins."""
+    path = receipts_path(home, harness, session)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    if not any(json.loads(x).get("tool_use_id") == tool_use_id for x in lines if x.strip()):
+        raise Conflict(f"no receipt for tool_use_id {tool_use_id} in {harness} session {session}")
+    append_receipt(home, harness, session, {"kind": "outcome", "at": now(), "harness": harness,
+                                            "session_id": session, "tool_use_id": tool_use_id,
+                                            "accepted": accepted})
+    print(f"Recorded {'accepted' if accepted else 'rejected'} for {tool_use_id}.")
 
 
 def hook(home: Path, harness: str, owner: str) -> None:
@@ -788,13 +808,16 @@ def uninstall(home: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines"):
+    for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
-        if name in {"activate", "deactivate", "status", "hook"}:
+        if name in {"activate", "deactivate", "status", "hook", "outcome"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
-        if name in {"activate", "deactivate", "status"}:
+        if name in {"activate", "deactivate", "status", "outcome"}:
             p.add_argument("--session", required=True)
+        if name == "outcome":
+            p.add_argument("--tool-use-id", required=True)
+            p.add_argument("--accepted", choices=("yes", "no"), required=True)
         if name == "activate":
             p.add_argument("--review", action="store_true")
             p.add_argument("--luna", action="store_true")
@@ -832,6 +855,8 @@ def main() -> int:
             deactivate(home, args.harness, session_value(args.session))
         elif args.command == "status":
             status(home, args.harness, session_value(args.session))
+        elif args.command == "outcome":
+            outcome(home, args.harness, session_value(args.session), args.tool_use_id, args.accepted == "yes")
         else:
             try:
                 hook(home, args.harness, args.owner)
