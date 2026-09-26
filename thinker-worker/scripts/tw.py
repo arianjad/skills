@@ -311,11 +311,25 @@ def source_items() -> dict[str, bytes]:
     return out
 
 
-def hook_entry(harness: str, home: Path, python: Path) -> dict:
+def portable_command(python_cmd: str | None) -> str:
+    """Home-relative bash hook for a settings.json synced across Windows and Mac: resolves the skill
+    via $USERPROFILE (Windows) or $HOME, runs the first interpreter that starts, no-ops if absent."""
+    run = f'"$tw" hook --home "$h" --harness claude --owner {OWNER}'
+    candidates = ([python_cmd] if python_cmd else []) + ["python3", "python", "py -3"]
+    # ponytail: probing costs one extra interpreter start per dispatch; no interpreter at all -> no-op.
+    probes = "".join(f'if {c} -c "" >/dev/null 2>&1; then exec {c} {run}; fi; ' for c in candidates)
+    return ('h="$HOME"; if [ "$OS" = Windows_NT ] && [ -n "$USERPROFILE" ]; then h="$USERPROFILE"; fi; '
+            'tw="$h/.claude/skills/thinker-worker/scripts/tw.py"; [ -f "$tw" ] || exit 0; ' + probes + "exit 0")
+
+
+def hook_entry(harness: str, home: Path, python: Path, portable: bool = False,
+               python_cmd: str | None = None) -> dict:
     installed = home / f".{harness}" / "skills" / "thinker-worker" / "scripts" / "tw.py"
     argv = [str(python), str(installed), "hook", "--home", str(home),
             "--harness", harness, "--owner", OWNER]
-    if harness == "claude":
+    if harness == "claude" and portable:
+        handler = {"type": "command", "command": portable_command(python_cmd), "timeout": 10}
+    elif harness == "claude":
         # Claude's exec form avoids Git Bash/PowerShell parsing on Windows.
         handler = {"type": "command", "command": str(python), "args": argv[1:], "timeout": 10}
     else:
@@ -428,7 +442,7 @@ def check(home: Path, quiet: bool = False) -> dict:
     return value
 
 
-def install(home: Path, python: Path) -> None:
+def install(home: Path, python: Path, portable: bool = False, python_cmd: str | None = None) -> None:
     manifest_file = manifest_path(home)
     items = source_items()
     if manifest_file.exists():
@@ -444,7 +458,7 @@ def install(home: Path, python: Path) -> None:
     collisions = [str(path) for path in paths.values() if path.exists()]
     if collisions:
         raise Conflict("Unowned target collision; no overwrite: " + ", ".join(collisions))
-    entries = {h: hook_entry(h, home, python) for h in ("codex", "claude")}
+    entries = {h: hook_entry(h, home, python, portable, python_cmd) for h in ("codex", "claude")}
     originals = {}
     revisions = {}
     for harness in ("codex", "claude"):
@@ -593,13 +607,16 @@ def main() -> int:
             p.add_argument("--sonnet", action="store_true")
         if name == "install":
             p.add_argument("--python", type=Path, default=Path(sys.executable))
+            p.add_argument("--portable", action="store_true",
+                           help="Claude hook as a home-relative bash command (settings synced across machines)")
+            p.add_argument("--python-cmd", help="with --portable: interpreter command tried first, inserted verbatim")
         if name == "hook":
             p.add_argument("--owner", required=True)
     args = parser.parse_args()
     home = args.home.expanduser().resolve()
     try:
         if args.command == "install":
-            install(home, args.python.expanduser().resolve())
+            install(home, args.python.expanduser().resolve(), args.portable, args.python_cmd)
         elif args.command == "uninstall":
             uninstall(home)
         elif args.command == "check":
