@@ -317,10 +317,10 @@ def installed_harnesses(manifest: dict) -> tuple[str, ...]:
     return tuple(manifest.get("harnesses", HARNESSES))  # manifests before --harness cover both
 
 
-def portable_command(python_cmd: str | None) -> str:
+def portable_command(harness: str, python_cmd: str | None) -> str:
     """Home-relative bash hook for a settings.json synced across Windows and Mac: resolves the skill
     via $USERPROFILE (Windows) or $HOME, runs the first interpreter that starts, no-ops if absent."""
-    run = f'"$tw" hook --home "$h" --harness claude --owner {OWNER}'
+    run = f'"$tw" hook --home "$h" --harness {harness} --owner {OWNER}'
     candidates = ([python_cmd] if python_cmd else []) + ["python3", "python", "py -3"]
     # ponytail: probing costs one extra interpreter start per dispatch.
     probes = "".join(f'if {c} -c "" >/dev/null 2>&1; then exec {c} {run}; fi; ' for c in candidates)
@@ -329,7 +329,32 @@ def portable_command(python_cmd: str | None) -> str:
                f'echo "{OWNER}: guard could not run: no Python interpreter started. Put python3 or python on PATH, '
                'reinstall with --portable --python-cmd <interpreter>, or deactivate the session." >&2; exit 2; fi; done; ')
     return ('h="$HOME"; if [ "$OS" = Windows_NT ] && [ -n "$USERPROFILE" ]; then h="$USERPROFILE"; fi; '
-            'tw="$h/.claude/skills/thinker-worker/scripts/tw.py"; [ -f "$tw" ] || exit 0; ' + probes + blocked + "exit 0")
+            f'tw="$h/.{harness}/skills/thinker-worker/scripts/tw.py"; [ -f "$tw" ] || exit 0; ' + probes + blocked + "exit 0")
+
+
+def portable_windows_command(harness: str) -> str:
+    """PowerShell twin of portable_command for Codex's Windows runner (cmd /C, no bash guaranteed).
+    --python-cmd is bash syntax, so it is not applied here; PATH python is searched instead."""
+    ps = f"""$ProgressPreference = 'SilentlyContinue'
+$h = $env:USERPROFILE; if (-not $h) {{ $h = $HOME }}
+$tw = Join-Path $h '.{harness}/skills/thinker-worker/scripts/tw.py'
+if (-not (Test-Path -LiteralPath $tw -PathType Leaf)) {{ exit 0 }}
+$in = [Console]::In.ReadToEnd()
+$OutputEncoding = New-Object System.Text.UTF8Encoding $false
+foreach ($c in 'python3', 'python', 'py -3') {{
+  $p = $c.Split(' '); $exe = $p[0]; $pre = @($p | Select-Object -Skip 1)
+  if (Get-Command $exe -CommandType Application -ErrorAction SilentlyContinue) {{
+    & $exe @pre -c 0 *> $null
+    if ($LASTEXITCODE -eq 0) {{ $in | & $exe @pre $tw hook --home $h --harness {harness} --owner {OWNER}; exit $LASTEXITCODE }}
+  }}
+}}
+if (Test-Path (Join-Path $h '.thinker-worker/state/*/*.json')) {{
+  [Console]::Error.WriteLine('{OWNER}: guard could not run: no Python interpreter started. Put python on PATH or deactivate the session.'); exit 2
+}}
+exit 0
+"""
+    import base64
+    return "powershell.exe -NoProfile -NonInteractive -EncodedCommand " + base64.b64encode(ps.encode("utf-16le")).decode("ascii")
 
 
 def hook_entry(harness: str, home: Path, python: Path, portable: bool = False,
@@ -338,7 +363,10 @@ def hook_entry(harness: str, home: Path, python: Path, portable: bool = False,
     argv = [str(python), str(installed), "hook", "--home", str(home),
             "--harness", harness, "--owner", OWNER]
     if harness == "claude" and portable:
-        handler = {"type": "command", "command": portable_command(python_cmd), "timeout": 10}
+        handler = {"type": "command", "command": portable_command(harness, python_cmd), "timeout": 10}
+    elif portable:
+        handler = {"type": "command", "command": portable_command(harness, python_cmd),
+                   "commandWindows": portable_windows_command(harness), "timeout": 10}
     elif harness == "claude":
         # Claude's exec form avoids Git Bash/PowerShell parsing on Windows.
         handler = {"type": "command", "command": str(python), "args": argv[1:], "timeout": 10}
