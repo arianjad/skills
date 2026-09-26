@@ -39,5 +39,40 @@ def seam1_no_absolute_home_paths():
     print("PASS seam1 portable command has no absolute home path; check passes")
 
 
+def run_hook_command(cmd, home, envelope, windows_branch):
+    import os
+    import shutil
+    bash = shutil.which("bash")
+    assert bash and "system32" not in bash.lower(), bash  # WSL bash would not see this HOME
+    env = {**os.environ, "HOME": home.as_posix(), "USERPROFILE": str(home),
+           "OS": "Windows_NT" if windows_branch else ""}
+    r = subprocess.run([bash, "-c", cmd], input=json.dumps(envelope), capture_output=True, text=True, env=env)
+    assert r.returncode == 0, (r.returncode, r.stderr)
+    return r.stdout.strip()
+
+
+def seam2_command_runs_guard():
+    session = "22222222-3333-4444-5555-666666666666"
+    def envelope(subagent_type):
+        return {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
+                "tool_input": {"subagent_type": subagent_type, "model": "opus", "prompt": "TW-Role: worker\nx"}}
+    # A bogus first-choice interpreter must fall back to the PATH search.
+    for extra in ([], ["--python-cmd", '"$USERPROFILE/no-such/python.exe"']):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            assert run_tw("install", "--portable", "--home", str(home), *extra).returncode == 0
+            assert run_tw("activate", "--home", str(home), "--harness", "claude", "--session", session).returncode == 0
+            cmd = claude_command(home)["command"]
+            for windows_branch in (True, False):
+                out = run_hook_command(cmd, home, envelope("general-purpose"), windows_branch)
+                assert out, "no output: the guard did not run"
+                assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny", out
+                assert run_hook_command(cmd, home, envelope("thinker-worker-opus"), windows_branch) == ""
+            receipts = list((home / ".thinker-worker" / "receipts" / "claude").glob("*.jsonl"))
+            assert len(receipts) == 1 and len(receipts[0].read_text().splitlines()) == 4, receipts
+    print("PASS seam2 portable command runs the guard (deny bad, admit good; both OS branches; fallback)")
+
+
 if __name__ == "__main__":
     seam1_no_absolute_home_paths()
+    seam2_command_runs_guard()
