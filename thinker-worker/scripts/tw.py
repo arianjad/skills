@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Session-scoped fresh-agent routing guard and reversible skill installer.
 
-No complete prompt or secret is written to receipts. The hook is a guardrail for
+Receipts store the validated routing header (<= 600 chars) and never the brief body or a secret. The hook is a guardrail for
 native fresh dispatch; it cannot establish effective child model or permissions.
 """
 
@@ -288,13 +288,19 @@ def denial(reason: str) -> None:
 def receipt(home: Path, harness: str, session: str, envelope: dict,
             decision: str, reason: str, role: str | None, model: str | None,
             effort: str | None) -> None:
-    # Never store the brief or any unknown input field.
+    # Never store the brief body or any unknown input field; the validated routing header is the
+    # labeled input for the routing classifier (Arian 2026-09-26).
     def small(value: object) -> str | None:
         if not isinstance(value, str):
             return None
         return value if len(value) <= 128 and not any(c in value for c in "\r\n\0") else "<invalid-field>"
 
-    entry = {"at": now(), "harness": harness, "session_id": session,
+    inp = envelope.get("tool_input") if isinstance(envelope.get("tool_input"), dict) else {}
+    brief = inp.get("message" if harness == "codex" else "prompt")
+    v2 = harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent"
+    header = routing_header(brief)[0] if isinstance(brief, str) and not v2 else None
+    entry = {"kind": "dispatch", "at": now(), "harness": harness, "session_id": session,
+             "subagent_type": small(inp.get("subagent_type")), "header": header,
              "tool_use_id": small(envelope.get("tool_use_id")),
              "tool_name": envelope.get("tool_name"), "decision": decision,
              "reason": reason, "role": role, "requested_model": small(model),
