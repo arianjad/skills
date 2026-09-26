@@ -215,7 +215,7 @@ def decide(harness: str, envelope: dict, record: dict) -> tuple[bool, str, str |
         st = inp.get("subagent_type")
         # effortmining miners pin effort only; model is still checked against the role below.
         miner = (role in ("worker", "leaf") and isinstance(st, str)
-                 and re.fullmatch(r"(effortmining:)?miner-(low|medium|high|xhigh|max)", st))
+                 and re.fullmatch(r"effortmining:miner-(low|medium|high|xhigh|max)", st))
         if st != expected_type and not miner:
             alt = " or effortmining:miner-<tier>" if role in ("worker", "leaf") else ""
             return False, f"subagent_type must be {expected_type}{alt}", role, model, None

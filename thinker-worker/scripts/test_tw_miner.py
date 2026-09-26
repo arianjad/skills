@@ -15,7 +15,10 @@ def admitted(st, model, role):
 CASES = [
     ("thinker-worker-opus", "opus", "worker", True),
     ("effortmining:miner-medium", "opus", "worker", True),
-    ("miner-xhigh", "claude-opus-5-5", "worker", True),
+    ("effortmining:miner-xhigh", "claude-opus-5-5", "worker", True),
+    ("miner-xhigh", "opus", "worker", False),  # bare name could be shadowed by a repo-local agent
+    ("Effortmining:miner-low", "opus", "worker", False),
+    ("effortmining:miner-low ", "opus", "worker", False),
     ("effortmining:miner-low", "sonnet", "leaf", True),
     ("effortmining:miner-low", "sonnet", "worker", False),  # worker model stays Opus
     ("thinker-worker-fable-review", "fable", "independent-review", True),
