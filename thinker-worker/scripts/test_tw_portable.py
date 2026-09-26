@@ -90,7 +90,33 @@ def seam4_claude_only_leaves_no_codex():
     print("PASS seam4 --harness claude creates no ~/.codex; check and uninstall pass")
 
 
+def seam5_second_machine_adopts_synced_entry():
+    with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as c:
+        a, b, c = Path(a), Path(b), Path(c)
+        assert run_tw("install", "--portable", "--home", str(a)).returncode == 0
+        synced = (a / ".claude" / "settings.json").read_bytes()
+        for other in (b, c):  # only settings.json travels between machines
+            (other / ".claude").mkdir()
+            (other / ".claude" / "settings.json").write_bytes(synced)
+        r = run_tw("install", "--portable", "--harness", "claude", "--home", str(b))
+        assert r.returncode == 0, r.stderr
+        claude_command(b)  # asserts exactly one owned entry
+        r = run_tw("check", "--home", str(b))
+        assert r.returncode == 0, r.stdout + r.stderr
+        # Adopted, not written here: uninstall on B keeps the shared entry machine A relies on.
+        r = run_tw("uninstall", "--home", str(b))
+        assert r.returncode == 0, r.stderr
+        assert json.loads((b / ".claude" / "settings.json").read_text(encoding="utf-8")) == json.loads(synced)
+        assert not (b / ".claude" / "skills" / "thinker-worker").exists()
+        # A differing owned entry still refuses, naming the fix.
+        r = run_tw("install", "--portable", "--harness", "claude", "--python-cmd", "python3.99", "--home", str(c))
+        assert r.returncode == 2 and "differs" in r.stderr and "--python-cmd" in r.stderr, r.stderr
+        assert (c / ".claude" / "settings.json").read_bytes() == synced
+    print("PASS seam5 second machine adopts identical synced entry; uninstall keeps it; differing entry refuses")
+
+
 if __name__ == "__main__":
     seam1_no_absolute_home_paths()
     seam2_command_runs_guard()
     seam4_claude_only_leaves_no_codex()
+    seam5_second_machine_adopts_synced_entry()

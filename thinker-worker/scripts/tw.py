@@ -468,13 +468,22 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
     entries = {h: hook_entry(h, home, python, portable, python_cmd) for h in harnesses}
     originals = {}
     revisions = {}
+    adopted = []
     for harness in harnesses:
         path = config_path(home, harness)
         doc, raw = config_doc(path)
-        if owned_entries(doc):
-            raise Conflict(f"Unowned or duplicate {OWNER} hook at {path}")
+        found = owned_entries(doc)
         originals[harness] = raw
-        revisions[harness] = canonical_json(add_entry(doc, entries[harness]))
+        if found == [entries[harness]]:
+            # A synced config already holds exactly this entry (written by another machine):
+            # record it without writing; uninstall leaves it for the machine that wrote it.
+            adopted.append(harness)
+        elif found:
+            raise Conflict(f"Existing {OWNER} hook at {path} differs from what this install would write; "
+                           "rerun install with the same --portable/--python-cmd as the machine that wrote it, "
+                           "or remove that entry first")
+        else:
+            revisions[harness] = canonical_json(add_entry(doc, entries[harness]))
     # Recovery copies are evidence; normal uninstall removes only the owned entry.
     backups = {}
     root = state_root(home)
@@ -497,14 +506,14 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
             path = home / rel
             atomic_write(path, data, None)
             created.append((path, data))
-        for harness in harnesses:
+        for harness in revisions:
             path = config_path(home, harness)
             atomic_write(path, revisions[harness], originals[harness])
             changed_configs.append((path, revisions[harness], originals[harness]))
         manifest = {"schema": 1, "owner": OWNER, "installed_at": now(), "harnesses": list(harnesses),
                     "source": {rel: sha(data) for rel, data in items.items()},
                     "files": {rel: sha(data) for rel, data in items.items()},
-                    "hooks": entries, "backups": backups,
+                    "hooks": entries, "adopted": adopted, "backups": backups,
                     "config_existed": {h: originals[h] is not None for h in originals}}
         atomic_write(manifest_file, canonical_json(manifest), None)
     except Exception:
@@ -539,7 +548,7 @@ def uninstall(home: Path) -> None:
         found = owned_entries(doc)
         if found and found != [manifest["hooks"][harness]]:
             raise Conflict(f"Owned {harness} hook changed or duplicated during uninstall")
-        if found:
+        if found and harness not in manifest.get("adopted", []):
             originals[harness] = raw
             revisions[harness] = canonical_json(remove_entry(doc, manifest["hooks"][harness]))
     # Check all owned artifacts before the first removal, then re-read each config
