@@ -1,0 +1,20 @@
+---
+name: thinker-worker
+description: Coordinate a substantial task with Astra or Fable planning and acceptance, and explicit Sol or Opus execution. Use when the user requests this thinker/worker mode; ordinary tasks retain their existing routing.
+---
+
+# Thinker/worker
+
+Use this mode for the current task when the user invokes it. Preserve a manually chosen front-end model and effort. If that choice conflicts with the intended thinker role, explain the conflict; only an explicit user instruction deactivates the mode. Do not change global defaults or infer that this skill switched the running model.
+
+The coordinator (Astra in Codex, Fable in Claude Code) owns framing, planning, dispatch, adversarial review, changed assumptions, and final acceptance. Sol or Opus owns substantial bounded execution. The coordinator may read sources, run deterministic checks, and handle small bookkeeping directly. Reuse a compliant worker where useful; before continuation, check its actual identity, role, model/effort evidence, and assignment. An unknown or preactivation child is not qualified by a new prompt. Workers do not launch children unless the coordinator has explicitly authorized a bounded exception; the fresh-dispatch guard does not prove caller identity on every surface.
+
+Keep briefs compact: task, owned files, input sources, constraints, check and stopping condition, checkpoint requirement, and whether the worker can edit. A worker returns exact artifacts, checks, and uncertainty. The coordinator spot-checks load-bearing claims and accepts or redirects. Escalate a changed objective, scientific assumption, or consequential finding; ordinary fixes stay with the worker. Independent review is optional unless requested or justified by risk, and requires a bounded authorization cited in its brief.
+
+Fresh worker briefs start with exactly `TW-Role: worker`. A narrowly checkable optional Codex Luna or Claude Sonnet task starts with `TW-Role: leaf`; an authorized independent review starts with `TW-Role: independent-review`. These are prompt declarations, not native tool fields and not proof of task semantics. Do not claim model identity from a worker's self-report.
+
+Read [Codex routing](references/codex.md) when using Codex, or [Claude routing](references/claude.md) when using Claude Code. Both describe session activation, native dispatch fields, and what runtime evidence must be checked. A guard admits only fresh native dispatch in an activated exact session. Accepted calls remain subject to normal permissions. Installation, activation, hook trust/loading, live interception, and effective child model/effort are separate observations.
+
+For Codex MultiAgentV2, the native PreToolUse payload encrypts the brief. The guard can check visible model/effort and session flags, but cannot verify the role line or review scope. The coordinator must check the actual brief; see [Codex routing](references/codex.md) for the reduced guard contract.
+
+In Claude Code, this skill's rendered content supplies the exact current session ID and installed skill directory. To request activation in that session, run `python "${CLAUDE_SKILL_DIR}/scripts/tw.py" activate --harness claude --session "${CLAUDE_SESSION_ID}"`; append `--sonnet` only when opting into a Sonnet leaf. These substitutions apply here in `SKILL.md`; do not expect them to expand in a separately read reference. The command only writes activation state, so check hook loading and child metadata separately.
