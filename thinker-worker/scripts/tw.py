@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 
 OWNER = "thinker-worker-v1"
+HARNESSES = ("codex", "claude")
 SKILL_FILES = ("SKILL.md", "references/codex.md", "references/claude.md", "scripts/tw.py")
 AGENT_FILES = ("thinker-worker-opus.md", "thinker-worker-fable-review.md", "thinker-worker-sonnet.md")
 CODEX_WORKERS = {"gpt-6-sol", "gpt-5.6-sol"}
@@ -300,15 +301,20 @@ def source_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def source_items() -> dict[str, bytes]:
+def source_items(harnesses: tuple[str, ...] = HARNESSES) -> dict[str, bytes]:
     root = source_root()
     out = {}
-    for harness in ("codex", "claude"):
+    for harness in harnesses:
         for rel in SKILL_FILES:
             out[f".{harness}/skills/thinker-worker/{rel}"] = (root / rel).read_bytes()
-    for name in AGENT_FILES:
-        out[f".claude/agents/{name}"] = (root / "claude-agents" / name).read_bytes()
+    if "claude" in harnesses:
+        for name in AGENT_FILES:
+            out[f".claude/agents/{name}"] = (root / "claude-agents" / name).read_bytes()
     return out
+
+
+def installed_harnesses(manifest: dict) -> tuple[str, ...]:
+    return tuple(manifest.get("harnesses", HARNESSES))  # manifests before --harness cover both
 
 
 def portable_command(python_cmd: str | None) -> str:
@@ -426,7 +432,7 @@ def check(home: Path, quiet: bool = False) -> dict:
         path = home / rel
         if not path.is_file() or sha(path.read_bytes()) != digest:
             problems.append(f"owned file changed or missing: {path}")
-    for harness in ("codex", "claude"):
+    for harness in installed_harnesses(manifest):
         path = config_path(home, harness)
         try:
             doc, _ = config_doc(path)
@@ -442,9 +448,10 @@ def check(home: Path, quiet: bool = False) -> dict:
     return value
 
 
-def install(home: Path, python: Path, portable: bool = False, python_cmd: str | None = None) -> None:
+def install(home: Path, python: Path, portable: bool = False, python_cmd: str | None = None,
+            harnesses: tuple[str, ...] = HARNESSES) -> None:
     manifest_file = manifest_path(home)
-    items = source_items()
+    items = source_items(harnesses)
     if manifest_file.exists():
         manifest = load_manifest(home)
         if manifest["source"] != {rel: sha(data) for rel, data in items.items()}:
@@ -458,10 +465,10 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
     collisions = [str(path) for path in paths.values() if path.exists()]
     if collisions:
         raise Conflict("Unowned target collision; no overwrite: " + ", ".join(collisions))
-    entries = {h: hook_entry(h, home, python, portable, python_cmd) for h in ("codex", "claude")}
+    entries = {h: hook_entry(h, home, python, portable, python_cmd) for h in harnesses}
     originals = {}
     revisions = {}
-    for harness in ("codex", "claude"):
+    for harness in harnesses:
         path = config_path(home, harness)
         doc, raw = config_doc(path)
         if owned_entries(doc):
@@ -490,11 +497,11 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
             path = home / rel
             atomic_write(path, data, None)
             created.append((path, data))
-        for harness in ("codex", "claude"):
+        for harness in harnesses:
             path = config_path(home, harness)
             atomic_write(path, revisions[harness], originals[harness])
             changed_configs.append((path, revisions[harness], originals[harness]))
-        manifest = {"schema": 1, "owner": OWNER, "installed_at": now(),
+        manifest = {"schema": 1, "owner": OWNER, "installed_at": now(), "harnesses": list(harnesses),
                     "source": {rel: sha(data) for rel, data in items.items()},
                     "files": {rel: sha(data) for rel, data in items.items()},
                     "hooks": entries, "backups": backups,
@@ -526,7 +533,7 @@ def uninstall(home: Path) -> None:
         atomic_write(path, canonical_json(manifest), before)
     revisions = {}
     originals = {}
-    for harness in ("codex", "claude"):
+    for harness in installed_harnesses(manifest):
         path = config_path(home, harness)
         doc, raw = config_doc(path)
         found = owned_entries(doc)
@@ -609,6 +616,7 @@ def main() -> int:
             p.add_argument("--python", type=Path, default=Path(sys.executable))
             p.add_argument("--portable", action="store_true",
                            help="Claude hook as a home-relative bash command (settings synced across machines)")
+            p.add_argument("--harness", choices=("claude", "codex", "both"), default="both")
             p.add_argument("--python-cmd", help="with --portable: interpreter command tried first, inserted verbatim")
         if name == "hook":
             p.add_argument("--owner", required=True)
@@ -616,7 +624,8 @@ def main() -> int:
     home = args.home.expanduser().resolve()
     try:
         if args.command == "install":
-            install(home, args.python.expanduser().resolve(), args.portable, args.python_cmd)
+            install(home, args.python.expanduser().resolve(), args.portable, args.python_cmd,
+                    HARNESSES if args.harness == "both" else (args.harness,))
         elif args.command == "uninstall":
             uninstall(home)
         elif args.command == "check":

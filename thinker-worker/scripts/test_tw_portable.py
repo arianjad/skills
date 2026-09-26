@@ -73,6 +73,24 @@ def seam2_command_runs_guard():
     print("PASS seam2 portable command runs the guard (deny bad, admit good; both OS branches; fallback)")
 
 
+def seam4_claude_only_leaves_no_codex():
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        r = run_tw("install", "--portable", "--harness", "claude", "--home", str(home))
+        assert r.returncode == 0, r.stderr
+        assert not (home / ".codex").exists(), list((home / ".codex").rglob("*"))
+        assert (home / ".claude" / "skills" / "thinker-worker" / "scripts" / "tw.py").is_file()
+        r = run_tw("check", "--home", str(home))
+        assert r.returncode == 0, r.stdout + r.stderr
+        r = run_tw("uninstall", "--home", str(home))
+        assert r.returncode == 0, r.stderr
+        assert not (home / ".codex").exists()
+        assert not (home / ".claude" / "skills" / "thinker-worker").exists()
+        assert not (home / ".claude" / "settings.json").exists()
+    print("PASS seam4 --harness claude creates no ~/.codex; check and uninstall pass")
+
+
 if __name__ == "__main__":
     seam1_no_absolute_home_paths()
     seam2_command_runs_guard()
+    seam4_claude_only_leaves_no_codex()
