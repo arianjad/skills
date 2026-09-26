@@ -475,6 +475,43 @@ def write_ledger(ledger_dir: Path, mid: str, status: str, flags: dict, hooks: di
     atomic_write(path, canonical_json(doc), old)
 
 
+def read_ledgers(ledger_dir: Path) -> list[dict]:
+    docs = [read_json(p, {}) for p in sorted(ledger_dir.glob("*.json"))] if ledger_dir.is_dir() else []
+    return [d for d in docs if isinstance(d, dict) and d.get("machine_id")]
+
+
+def install_command(flags: dict) -> str:
+    tw_cmd = "python thinker-worker/scripts/tw.py"
+    args = [tw_cmd, "install"]
+    if flags.get("portable"):
+        args.append("--portable")
+    if flags.get("harness") and len(flags["harness"]) == 1:
+        args += ["--harness", flags["harness"][0]]
+    if flags.get("python_cmd"):
+        args += ["--python-cmd", shlex.quote(flags["python_cmd"])]
+    # A changed tw.py makes install refuse an existing install, so the fix is uninstall then install.
+    return f"{tw_cmd} uninstall && " + " ".join(args)
+
+
+def machines(home: Path, ledger_dir: Path | None) -> None:
+    manifest = read_json(manifest_path(home), {})
+    manifest = manifest if isinstance(manifest, dict) else {}
+    ledger_dir = ledger_dir or Path(manifest.get("ledger_dir") or default_ledger_dir(home))
+    me = manifest.get("machine_id") or machine_id()
+    docs = read_ledgers(ledger_dir)
+    live = [d for d in docs if d.get("status") == "installed"]
+    newest = max(live, key=lambda d: d.get("updated_at", "")) if live else None
+    if not docs:
+        print(f"No install ledgers in {ledger_dir}")
+    for d in docs:
+        stale = newest is not None and d in live and d.get("tw_sha256") != newest.get("tw_sha256")
+        note = ("STALE (newest tw.py is on " + newest["machine_id"] + ") -> run: " + install_command(d.get("flags", {}))
+                if stale else "current" if d in live else "")
+        print(" ".join(["*" if d["machine_id"] == me else " ", d["machine_id"], str(d.get("os")),
+                        str(d.get("status")), "updated", str(d.get("updated_at")),
+                        "tw.py", str(d.get("tw_sha256", ""))[:12], note]).rstrip())
+
+
 def load_manifest(home: Path) -> dict:
     doc = read_json(manifest_path(home), None)
     if not isinstance(doc, dict) or doc.get("owner") != OWNER or doc.get("schema") != 1:
@@ -678,7 +715,7 @@ def uninstall(home: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook"):
+    for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
         if name in {"activate", "deactivate", "status", "hook"}:
@@ -689,6 +726,9 @@ def main() -> int:
             p.add_argument("--review", action="store_true")
             p.add_argument("--luna", action="store_true")
             p.add_argument("--sonnet", action="store_true")
+        if name == "machines":
+            p.add_argument("--ledger-dir", type=Path, help="default: the one recorded at install, "
+                           "else <home>/.claude/thinker-worker-installs")
         if name == "install":
             p.add_argument("--python", type=Path, default=Path(sys.executable))
             p.add_argument("--portable", action="store_true",
@@ -708,6 +748,8 @@ def main() -> int:
                     args.ledger_dir.expanduser().resolve() if args.ledger_dir else None)
         elif args.command == "uninstall":
             uninstall(home)
+        elif args.command == "machines":
+            machines(home, args.ledger_dir.expanduser().resolve() if args.ledger_dir else None)
         elif args.command == "check":
             return 1 if check(home)["problems"] else 0
         elif args.command == "activate":

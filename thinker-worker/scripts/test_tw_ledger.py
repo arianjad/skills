@@ -57,5 +57,32 @@ def seam_a_install_writes_ledger():
     print("PASS seam a install writes this machine's ledger with the listed fields")
 
 
+def seam_b_machines_flags_stale():
+    with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as led:
+        a, b, led = Path(a), Path(b), Path(led)
+        assert run_tw("pc-a", "install", "--portable", "--harness", "claude", "--python-cmd", "python3",
+                      "--home", str(a), "--ledger-dir", str(led)).returncode == 0
+        assert run_tw("pc-b", "install", "--home", str(b), "--ledger-dir", str(led)).returncode == 0
+        # pc-a ran an older tw.py: different sha, older timestamp.
+        path = led / "pc-a.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc.update(tw_sha256="0" * 64, updated_at="2026-01-01T00:00:00+00:00")
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        before = sorted((p.name, p.read_bytes()) for p in led.iterdir())
+        r = run_tw("pc-b", "machines", "--home", str(b), "--ledger-dir", str(led))
+        assert r.returncode == 0, r.stderr
+        lines = {l.split()[1] if l.startswith("*") else l.split()[0]: l for l in r.stdout.splitlines() if l.strip()}
+        assert set(lines) == {"pc-a", "pc-b"}, r.stdout
+        assert lines["pc-b"].startswith("*") and not lines["pc-a"].startswith("*"), r.stdout
+        assert "STALE" not in lines["pc-b"], r.stdout
+        want = ("python thinker-worker/scripts/tw.py uninstall && "
+                "python thinker-worker/scripts/tw.py install --portable --harness claude --python-cmd python3")
+        assert "STALE" in lines["pc-a"] and lines["pc-a"].endswith(want), r.stdout
+        assert sorted((p.name, p.read_bytes()) for p in led.iterdir()) == before, "machines must be read-only"
+        print(r.stdout)
+    print("PASS seam b machines marks this machine and flags the stale one with its own install command")
+
+
 if __name__ == "__main__":
     seam_a_install_writes_ledger()
+    seam_b_machines_flags_stale()
