@@ -647,13 +647,23 @@ def uninstall(home: Path) -> None:
         atomic_write(path, canonical_json(manifest), before)
     revisions = {}
     originals = {}
+    mid = manifest.get("machine_id") or machine_id()
+    ledger_dir = Path(manifest.get("ledger_dir") or default_ledger_dir(home))
+    others = [d for d in read_ledgers(ledger_dir)
+              if d["machine_id"] != mid and d.get("status") == "installed"]
+    kept = []
     for harness in installed_harnesses(manifest):
         path = config_path(home, harness)
         doc, raw = config_doc(path)
         found = owned_entries(doc)
         if found and found != [manifest["hooks"][harness]]:
             raise Conflict(f"Owned {harness} hook changed or duplicated during uninstall")
-        if found and harness not in manifest.get("adopted", []):
+        # The config syncs: keep a shared entry while another installed machine's ledger claims it.
+        holders = [d["machine_id"] for d in others
+                   if (d.get("hooks") or {}).get(harness, {}).get("entry") == manifest["hooks"][harness]]
+        if found and holders:
+            kept.append(f"{harness} (claimed by {', '.join(holders)})")
+        elif found:
             originals[harness] = raw
             revisions[harness] = canonical_json(remove_entry(doc, manifest["hooks"][harness]))
     # Check all owned artifacts before the first removal, then re-read each config
@@ -706,7 +716,13 @@ def uninstall(home: Path) -> None:
     state_dir = state_root(home) / "state"
     if state_dir.exists() and not any(state_dir.iterdir()):
         state_dir.rmdir()
+    adopted = manifest.get("adopted", [])
+    write_ledger(ledger_dir, mid, "uninstalled", manifest.get("flags", {}),
+                 {h: {"entry": manifest["hooks"][h], "mode": "adopted" if h in adopted else "written"}
+                  for h in installed_harnesses(manifest)})
     manifest_path(home).unlink()
+    if kept:
+        print("Kept shared hook entry for " + "; ".join(kept) + ": that machine still relies on it.")
     print("Removed unchanged owned files, hook entries, and activation records; later unrelated settings retained. Receipts remain as evidence.")
     if preserved:
         print("Preserved paths changed during uninstall: " + ", ".join(preserved))

@@ -83,6 +83,38 @@ def seam_b_machines_flags_stale():
     print("PASS seam b machines marks this machine and flags the stale one with its own install command")
 
 
+def seam_c_uninstall_keeps_entry_claimed_by_other_machine():
+    with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as led:
+        a, b, led = Path(a), Path(b), Path(led)
+        flags = ("install", "--portable", "--harness", "claude", "--ledger-dir", str(led))
+        def status(m):
+            return json.loads((led / f"{m}.json").read_text(encoding="utf-8"))["status"]
+        assert run_tw("pc-a", *flags, "--home", str(a)).returncode == 0
+        [entry] = owned(a / ".claude" / "settings.json")
+        (b / ".claude").mkdir()  # only ~/.claude travels between machines
+        (b / ".claude" / "settings.json").write_bytes((a / ".claude" / "settings.json").read_bytes())
+        assert run_tw("pc-b", *flags, "--home", str(b)).returncode == 0
+        # B uninstalls while A's ledger says installed: the shared entry stays, naming pc-a.
+        r = run_tw("pc-b", "uninstall", "--home", str(b))
+        assert r.returncode == 0, r.stderr
+        assert owned(b / ".claude" / "settings.json") == [entry] and "pc-a" in r.stdout, r.stdout
+        assert status("pc-b") == "uninstalled" and status("pc-a") == "installed"
+        assert not (b / ".claude" / "skills" / "thinker-worker").exists()
+        # Symmetric: A uninstalls while B (reinstalled, adopting) claims it: A keeps it too.
+        assert run_tw("pc-b", *flags, "--home", str(b)).returncode == 0
+        r = run_tw("pc-a", "uninstall", "--home", str(a))
+        assert r.returncode == 0, r.stderr
+        assert owned(a / ".claude" / "settings.json") == [entry] and "pc-b" in r.stdout, r.stdout
+        assert status("pc-a") == "uninstalled"
+        # No other machine claims it now: B's uninstall removes it.
+        r = run_tw("pc-b", "uninstall", "--home", str(b))
+        assert r.returncode == 0, r.stderr
+        assert owned(b / ".claude" / "settings.json") == [], r.stdout
+        assert status("pc-b") == "uninstalled"
+    print("PASS seam c uninstall keeps an entry another installed machine claims, removes it otherwise")
+
+
 if __name__ == "__main__":
     seam_a_install_writes_ledger()
     seam_b_machines_flags_stale()
+    seam_c_uninstall_keeps_entry_claimed_by_other_machine()

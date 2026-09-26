@@ -103,16 +103,17 @@ def seam5_second_machine_adopts_synced_entry():
         claude_command(b)  # asserts exactly one owned entry
         r = run_tw("check", "--home", str(b))
         assert r.returncode == 0, r.stdout + r.stderr
-        # Adopted, not written here: uninstall on B keeps the shared entry machine A relies on.
+        # No other machine's ledger is visible from B here (only settings.json was copied), so B's
+        # uninstall removes the adopted entry; keeping it for a claiming machine is test_tw_ledger seam c.
         r = run_tw("uninstall", "--home", str(b))
         assert r.returncode == 0, r.stderr
-        assert json.loads((b / ".claude" / "settings.json").read_text(encoding="utf-8")) == json.loads(synced)
+        assert "thinker-worker-v1" not in (b / ".claude" / "settings.json").read_text(encoding="utf-8")
         assert not (b / ".claude" / "skills" / "thinker-worker").exists()
         # A differing owned entry still refuses, naming the fix.
         r = run_tw("install", "--portable", "--harness", "claude", "--python-cmd", "python3.99", "--home", str(c))
         assert r.returncode == 2 and "differs" in r.stderr and "--python-cmd" in r.stderr, r.stderr
         assert (c / ".claude" / "settings.json").read_bytes() == synced
-    print("PASS seam5 second machine adopts identical synced entry; uninstall keeps it; differing entry refuses")
+    print("PASS seam5 second machine adopts identical synced entry; unclaimed uninstall removes it; differing entry refuses")
 
 
 def seam6_no_interpreter_blocks_only_when_activated():
