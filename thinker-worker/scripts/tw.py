@@ -28,6 +28,11 @@ CODEX_LEAF = {"gpt-6-luna"}
 CLAUDE_WORKERS = {"opus", "claude-opus-5", "claude-opus-5-5"}
 CLAUDE_REVIEW = {"fable", "claude-fable-5", "claude-fable-5-1"}
 CLAUDE_LEAF = {"sonnet", "claude-sonnet-5"}
+# role -> (owned agent type, allowed models, effortmining miners allowed). Miners pin effort only.
+CLAUDE_ROLES = {"worker": ("thinker-worker-opus", CLAUDE_WORKERS, True),
+                "leaf": ("thinker-worker-sonnet", CLAUDE_LEAF, True),
+                "independent-review": ("thinker-worker-fable-review", CLAUDE_REVIEW, False)}
+MINER_TYPE = re.compile(r"effortmining:miner-(low|medium|high|xhigh|max)")
 CODEX_EFFORTS = {
     "gpt-6-sol": {"low", "medium", "high", "xhigh", "max", "ultra"},
     "gpt-5.6-sol": {"low", "medium", "high", "xhigh", "max", "ultra"},
@@ -208,16 +213,11 @@ def decide(harness: str, envelope: dict, record: dict) -> tuple[bool, str, str |
         if not valid_codex_fork(inp.get("fork_turns")):
             return False, "fork_turns must be explicit 'none' or a bounded positive count", role, model, effort
     else:
-        expected_type = {"worker": "thinker-worker-opus", "leaf": "thinker-worker-sonnet",
-                         "independent-review": "thinker-worker-fable-review"}[role]
-        allowed = {"worker": CLAUDE_WORKERS, "leaf": CLAUDE_LEAF,
-                   "independent-review": CLAUDE_REVIEW}[role]
+        expected_type, allowed, miner_ok = CLAUDE_ROLES[role]
         st = inp.get("subagent_type")
-        # effortmining miners pin effort only; model is still checked against the role below.
-        miner = (role in ("worker", "leaf") and isinstance(st, str)
-                 and re.fullmatch(r"effortmining:miner-(low|medium|high|xhigh|max)", st))
+        miner = miner_ok and isinstance(st, str) and MINER_TYPE.fullmatch(st)
         if st != expected_type and not miner:
-            alt = " or effortmining:miner-<tier>" if role in ("worker", "leaf") else ""
+            alt = " or effortmining:miner-<tier>" if miner_ok else ""
             return False, f"subagent_type must be {expected_type}{alt}", role, model, None
         if model not in allowed:
             return False, f"model is not allowed for {role}", role, model, None
@@ -611,13 +611,11 @@ def main() -> int:
         elif args.command == "status":
             status(home, args.harness, session_value(args.session))
         else:
-            hook(home, args.harness, args.owner)
-    except Exception as exc:
-        if args.command == "hook":  # fail closed: any guard bug denies the dispatch
-            denial(f"guard error: {type(exc).__name__}: {exc}")
-            return 0
-        if not isinstance(exc, (Conflict, OSError, KeyError, TypeError)):
-            raise
+            try:
+                hook(home, args.harness, args.owner)
+            except Exception as exc:  # fail closed: any guard bug denies the dispatch
+                denial(f"guard error: {type(exc).__name__}: {exc}")
+    except (Conflict, OSError, KeyError, TypeError) as exc:
         print(f"Conflict: {exc}", file=sys.stderr)
         return 2
     return 0

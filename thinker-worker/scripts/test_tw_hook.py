@@ -27,7 +27,8 @@ def boom(*_a, **_k):
 
 
 if __name__ == "__main__":
-    home = tempfile.mkdtemp()
+    tmp = tempfile.TemporaryDirectory()
+    home = tmp.name
     session = "11111111-2222-3333-4444-555555555555"
     assert run_main(["activate", "--home", home, "--harness", "claude", "--session", session])[0] == 0
     envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
