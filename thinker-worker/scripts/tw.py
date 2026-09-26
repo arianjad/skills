@@ -612,10 +612,12 @@ def main() -> int:
             status(home, args.harness, session_value(args.session))
         else:
             hook(home, args.harness, args.owner)
-    except (Conflict, OSError, KeyError, TypeError) as exc:
-        if args.command == "hook":
-            denial(f"guard error: {exc}")
+    except Exception as exc:
+        if args.command == "hook":  # fail closed: any guard bug denies the dispatch
+            denial(f"guard error: {type(exc).__name__}: {exc}")
             return 0
+        if not isinstance(exc, (Conflict, OSError, KeyError, TypeError)):
+            raise
         print(f"Conflict: {exc}", file=sys.stderr)
         return 2
     return 0
