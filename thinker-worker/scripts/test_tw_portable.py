@@ -115,8 +115,36 @@ def seam5_second_machine_adopts_synced_entry():
     print("PASS seam5 second machine adopts identical synced entry; uninstall keeps it; differing entry refuses")
 
 
+def seam6_no_interpreter_blocks_only_when_activated():
+    import os
+    import shutil
+    bash = shutil.which("bash")
+    session = "33333333-4444-5555-6666-777777777777"
+    envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
+                           "tool_input": {"subagent_type": "thinker-worker-opus", "model": "opus",
+                                          "prompt": "TW-Role: worker\nx"}})
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as empty_bin:
+        home = Path(tmp)
+        assert run_tw("install", "--portable", "--harness", "claude", "--home", str(home)).returncode == 0
+        cmd = claude_command(home)["command"]
+        for windows_branch in (True, False):
+            env = {**os.environ, "PATH": empty_bin, "HOME": home.as_posix(), "USERPROFILE": str(home),
+                   "OS": "Windows_NT" if windows_branch else ""}
+            def run():
+                return subprocess.run([bash, "-c", cmd], input=envelope, capture_output=True, text=True, env=env)
+            r = run()  # no activation state: inactive sessions are unaffected
+            assert r.returncode == 0 and r.stdout == "" and r.stderr == "", (r.returncode, r.stdout, r.stderr)
+            assert run_tw("activate", "--home", str(home), "--harness", "claude", "--session", session).returncode == 0
+            r = run()
+            assert r.returncode == 2, (r.returncode, r.stderr)
+            assert "could not run" in r.stderr and "--python-cmd" in r.stderr, r.stderr
+            assert run_tw("deactivate", "--home", str(home), "--harness", "claude", "--session", session).returncode == 0
+    print("PASS seam6 no interpreter: exit 2 with activation state, exit 0 without")
+
+
 if __name__ == "__main__":
     seam1_no_absolute_home_paths()
     seam2_command_runs_guard()
     seam4_claude_only_leaves_no_codex()
     seam5_second_machine_adopts_synced_entry()
+    seam6_no_interpreter_blocks_only_when_activated()

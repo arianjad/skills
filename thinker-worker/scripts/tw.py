@@ -322,10 +322,14 @@ def portable_command(python_cmd: str | None) -> str:
     via $USERPROFILE (Windows) or $HOME, runs the first interpreter that starts, no-ops if absent."""
     run = f'"$tw" hook --home "$h" --harness claude --owner {OWNER}'
     candidates = ([python_cmd] if python_cmd else []) + ["python3", "python", "py -3"]
-    # ponytail: probing costs one extra interpreter start per dispatch; no interpreter at all -> no-op.
+    # ponytail: probing costs one extra interpreter start per dispatch.
     probes = "".join(f'if {c} -c "" >/dev/null 2>&1; then exec {c} {run}; fi; ' for c in candidates)
+    # No interpreter: block (exit 2) only if this machine holds activation state; inactive is a no-op.
+    blocked = ('for f in "$h"/.thinker-worker/state/*/*.json; do if [ -f "$f" ]; then '
+               f'echo "{OWNER}: guard could not run: no Python interpreter started. Put python3 or python on PATH, '
+               'reinstall with --portable --python-cmd <interpreter>, or deactivate the session." >&2; exit 2; fi; done; ')
     return ('h="$HOME"; if [ "$OS" = Windows_NT ] && [ -n "$USERPROFILE" ]; then h="$USERPROFILE"; fi; '
-            'tw="$h/.claude/skills/thinker-worker/scripts/tw.py"; [ -f "$tw" ] || exit 0; ' + probes + "exit 0")
+            'tw="$h/.claude/skills/thinker-worker/scripts/tw.py"; [ -f "$tw" ] || exit 0; ' + probes + blocked + "exit 0")
 
 
 def hook_entry(harness: str, home: Path, python: Path, portable: bool = False,

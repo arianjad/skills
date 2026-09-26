@@ -7,3 +7,4 @@
 - docs: README install section covers --harness, --portable, --python-cmd
 - seam 5 green: install adopts an identical synced owned entry (manifest "adopted"), refuses a differing one naming --python-cmd; test_tw_portable.py seam5
   - decision: uninstall keeps adopted entries (removes only entries this machine wrote). Reason: settings.json syncs, so B removing A's entry would silently unguard A; the machine that wrote it owns its removal.
+- seam 6 green: portable hook with no interpreter exits 2 (stderr fix hint) when any activation state exists under $h/.thinker-worker/state, else exit 0; test_tw_portable.py seam6 (PATH=empty dir, both OS branches)
