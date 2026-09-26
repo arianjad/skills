@@ -12,8 +12,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shlex
+import socket
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -450,6 +452,29 @@ def manifest_path(home: Path) -> Path:
     return state_root(home) / "manifest.json"
 
 
+def machine_id() -> str:
+    """Stable, non-secret machine label: TW_MACHINE_ID (tests, overrides) else OS + hostname."""
+    raw = os.environ.get("TW_MACHINE_ID") or f"{platform.system()}-{socket.gethostname()}"
+    return re.sub(r"[^a-z0-9._-]+", "-", raw.lower()).strip("-") or "unknown"
+
+
+def default_ledger_dir(home: Path) -> Path:
+    return home / ".claude" / "thinker-worker-installs"  # inside the git-synced ~/.claude
+
+
+def write_ledger(ledger_dir: Path, mid: str, status: str, flags: dict, hooks: dict) -> None:
+    path = ledger_dir / f"{mid}.json"
+    old = path.read_bytes() if path.exists() else None
+    prior = read_json(path, {}) if old is not None else {}
+    stamp = now()
+    doc = {"machine_id": mid, "os": platform.system(), "status": status,
+           "installed_at": prior.get("installed_at", stamp) if status == "installed" else prior.get("installed_at"),
+           "updated_at": stamp,
+           "tw_sha256": sha((source_root() / "scripts" / "tw.py").read_bytes()),
+           "flags": flags, "hooks": hooks}
+    atomic_write(path, canonical_json(doc), old)
+
+
 def load_manifest(home: Path) -> dict:
     doc = read_json(manifest_path(home), None)
     if not isinstance(doc, dict) or doc.get("owner") != OWNER or doc.get("schema") != 1:
@@ -481,8 +506,11 @@ def check(home: Path, quiet: bool = False) -> dict:
 
 
 def install(home: Path, python: Path, portable: bool = False, python_cmd: str | None = None,
-            harnesses: tuple[str, ...] = HARNESSES) -> None:
+            harnesses: tuple[str, ...] = HARNESSES, ledger_dir: Path | None = None) -> None:
     manifest_file = manifest_path(home)
+    ledger_dir = ledger_dir or default_ledger_dir(home)
+    mid = machine_id()
+    flags = {"portable": portable, "harness": list(harnesses), "python_cmd": python_cmd}
     items = source_items(harnesses)
     if manifest_file.exists():
         manifest = load_manifest(home)
@@ -491,6 +519,11 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
         state = check(home, quiet=True)
         if state["problems"]:
             raise Conflict("Existing installation conflict: " + "; ".join(state["problems"]))
+        adopted = manifest.get("adopted", [])
+        write_ledger(Path(manifest.get("ledger_dir") or ledger_dir), manifest.get("machine_id", mid), "installed",
+                     manifest.get("flags", flags),
+                     {h: {"entry": e, "mode": "adopted" if h in adopted else "written"}
+                      for h, e in manifest["hooks"].items()})
         print("Already installed; owned files and hook entries match. Trust/loading and live routing remain unverified.")
         return
     paths = {rel: home / rel for rel in items}
@@ -546,7 +579,8 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
                     "source": {rel: sha(data) for rel, data in items.items()},
                     "files": {rel: sha(data) for rel, data in items.items()},
                     "hooks": entries, "adopted": adopted, "backups": backups,
-                    "config_existed": {h: originals[h] is not None for h in originals}}
+                    "config_existed": {h: originals[h] is not None for h in originals},
+                    "machine_id": mid, "ledger_dir": str(ledger_dir), "flags": flags}
         atomic_write(manifest_file, canonical_json(manifest), None)
     except Exception:
         for path, replacement, original in reversed(changed_configs):
@@ -559,6 +593,8 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
             if path.exists() and path.read_bytes() == written:
                 path.unlink()
         raise
+    write_ledger(ledger_dir, mid, "installed", flags,
+                 {h: {"entry": entries[h], "mode": "adopted" if h in adopted else "written"} for h in harnesses})
     print("Installed owned skill copies, Claude agents, and one guard entry per harness. Review Codex /hooks trust; activation and live verification are separate.")
 
 
@@ -659,6 +695,8 @@ def main() -> int:
                            help="Claude hook as a home-relative bash command (settings synced across machines)")
             p.add_argument("--harness", choices=("claude", "codex", "both"), default="both")
             p.add_argument("--python-cmd", help="with --portable: interpreter command tried first, inserted verbatim")
+            p.add_argument("--ledger-dir", type=Path, help="synced dir for per-machine install ledgers "
+                           "(default <home>/.claude/thinker-worker-installs)")
         if name == "hook":
             p.add_argument("--owner", required=True)
     args = parser.parse_args()
@@ -666,7 +704,8 @@ def main() -> int:
     try:
         if args.command == "install":
             install(home, args.python.expanduser().resolve(), args.portable, args.python_cmd,
-                    HARNESSES if args.harness == "both" else (args.harness,))
+                    HARNESSES if args.harness == "both" else (args.harness,),
+                    args.ledger_dir.expanduser().resolve() if args.ledger_dir else None)
         elif args.command == "uninstall":
             uninstall(home)
         elif args.command == "check":
