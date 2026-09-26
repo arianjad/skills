@@ -47,9 +47,12 @@ A session-scoped PreToolUse guard (`scripts/tw.py hook`) checks every fresh agen
 **Files:**
 - `SKILL.md` — the contract; `references/claude.md`, `references/codex.md` — per-harness routing.
 - `claude-agents/` — the three Claude worker agents the installer places in `~/.claude/agents/`.
-- `scripts/tw.py` — reversible installer, activation, and the guard hook; `scripts/test_tw_*.py` — guard routing, hook fail-closed, and install round-trip tests (`python scripts/test_tw_<name>.py`).
+- `scripts/tw.py` — reversible installer, activation, and the guard hook; `scripts/test_tw_*.py` — guard routing, hook fail-closed, install round-trip, and portable-hook tests (`python scripts/test_tw_<name>.py`).
 
 **Install:** clone the repo, then `python thinker-worker/scripts/tw.py install` (writes both `~/.claude` and `~/.codex` copies plus one guard hook per harness; `uninstall` reverses it, `check` verifies). Activate per session with the command in `SKILL.md`.
+
+- `--harness claude` (or `codex`) installs one harness only; the default `both` is the behaviour above.
+- `--portable` writes the Claude hook as a home-relative bash command instead of absolute paths, for a `settings.json` synced between machines. It finds the skill under `$USERPROFILE` on Windows and `$HOME` elsewhere, runs the first of `python3`, `python`, `py -3` that starts, and does nothing if the skill is not installed on that machine. `--python-cmd '<cmd>'` puts your own interpreter first, inserted verbatim (for example `--python-cmd '"$USERPROFILE/anaconda3/python.exe"'`); if it does not start, the search falls back to the list. The Codex hook is unchanged.
 
 ## Adding more
 
