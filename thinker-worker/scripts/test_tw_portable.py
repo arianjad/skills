@@ -55,7 +55,7 @@ def seam2_command_runs_guard():
     session = "22222222-3333-4444-5555-666666666666"
     def envelope(subagent_type):
         return {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
-                "tool_input": {"subagent_type": subagent_type, "model": "opus", "prompt": "TW-Role: worker\nx"}}
+                "tool_input": {"subagent_type": subagent_type, "model": "opus", "prompt": "TW-Role: worker\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}}
     # A bogus first-choice interpreter must fall back to the PATH search.
     for extra in ([], ["--python-cmd", '"$USERPROFILE/no-such/python.exe"']):
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,7 +123,7 @@ def seam6_no_interpreter_blocks_only_when_activated():
     session = "33333333-4444-5555-6666-777777777777"
     envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
                            "tool_input": {"subagent_type": "thinker-worker-opus", "model": "opus",
-                                          "prompt": "TW-Role: worker\nx"}})
+                                          "prompt": "TW-Role: worker\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}})
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as empty_bin:
         home = Path(tmp)
         assert run_tw("install", "--portable", "--harness", "claude", "--home", str(home)).returncode == 0

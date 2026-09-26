@@ -33,7 +33,7 @@ if __name__ == "__main__":
     assert run_main(["activate", "--home", home, "--harness", "claude", "--session", session])[0] == 0
     envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
                            "tool_input": {"subagent_type": "thinker-worker-opus", "model": "opus",
-                                          "prompt": "TW-Role: worker\nx"}})
+                                          "prompt": "TW-Role: worker\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}})
     hook_argv = ["hook", "--home", home, "--harness", "claude", "--owner", tw.OWNER]
 
     code, out = run_main(hook_argv, envelope)  # sanity: a valid dispatch is admitted (no output)

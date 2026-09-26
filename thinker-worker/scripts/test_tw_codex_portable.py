@@ -26,7 +26,7 @@ def codex_handler(home):
 
 def envelope(model):
     return json.dumps({"hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "session_id": SESSION,
-                       "tool_input": {"message": "TW-Role: worker\nx", "model": model,
+                       "tool_input": {"message": "TW-Role: worker\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx", "model": model,
                                       "reasoning_effort": "high", "fork_turns": "none"}})
 
 

@@ -43,6 +43,12 @@ CODEX_EFFORTS = {
     "gpt-6-luna": {"low", "medium", "high", "xhigh", "max"},
 }
 ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review)$")
+# Routing header: labeled input for the routing classifier. Classes are effortmining's vocabulary.
+HEADER_KEYS = ("TW-Class", "TW-Deliverable", "TW-Accept", "TW-Risk")
+TASK_CLASSES = {"T1-mechanical", "T2-simple-transform", "T3-moderate-reasoning",
+                "T4-hard-reasoning", "R-research", "C-coding"}
+RISKS = {"destructive", "external", "physics"}
+HEADER_MAX = 600
 
 
 class Conflict(Exception):
@@ -168,6 +174,29 @@ def review_details(brief: str) -> bool:
             any(x.startswith("TW-Scope: ") and x[10:].strip() for x in lines))
 
 
+def routing_header(brief: str) -> tuple[str | None, str]:
+    """Return (normalized header text, "") or (None, problem). Keys may sit anywhere in lines 2-12."""
+    found: dict[str, str] = {}
+    for line in brief.split("\n")[1:12]:  # "\n" only: splitlines() would split on U+2028 etc.
+        key, sep, value = line.partition(": ")
+        if sep and key in HEADER_KEYS:
+            if key in found:
+                return None, f"routing header repeats {key}"
+            found[key] = value.strip()
+    missing = [k for k in HEADER_KEYS if not found.get(k)]
+    if missing:
+        return None, "routing header needs non-empty " + ", ".join(missing)
+    if found["TW-Class"] not in TASK_CLASSES:
+        return None, "routing header TW-Class is not an effortmining class"
+    risks = [r.strip() for r in found["TW-Risk"].split(",")]
+    if risks != ["none"] and not (set(risks) <= RISKS and len(set(risks)) == len(risks)):
+        return None, "routing header TW-Risk must be none or distinct values from " + ", ".join(sorted(RISKS))
+    text = "\n".join(f"{k}: {found[k]}" for k in HEADER_KEYS)
+    if len(text) > HEADER_MAX:
+        return None, f"routing header exceeds {HEADER_MAX} characters"
+    return text, ""
+
+
 def valid_codex_fork(value: object) -> bool:
     return value == "none" or (isinstance(value, str) and
                                bool(re.fullmatch(r"[1-9][0-9]*", value)))
@@ -192,6 +221,8 @@ def decide(harness: str, envelope: dict, record: dict) -> tuple[bool, str, str |
             return False, "model is not allowed for namespaced Codex dispatch", None, model if isinstance(model, str) else None, effort
     else:
         role, problem = first_role(brief)
+        if not problem:
+            _, problem = routing_header(brief)
         if problem:
             return False, problem, role, model if isinstance(model, str) else None, effort
     if role == "independent-review" and not record["review"]:

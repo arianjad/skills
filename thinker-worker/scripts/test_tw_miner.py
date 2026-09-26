@@ -8,7 +8,7 @@ REVIEW_HDR = "TW-Authorization: t\nTW-Scope: t\n"
 
 def admitted(st, model, role):
     hdr = REVIEW_HDR if role == "independent-review" else ""
-    env = {"tool_input": {"subagent_type": st, "model": model, "prompt": f"TW-Role: {role}\n{hdr}x"}}
+    env = {"tool_input": {"subagent_type": st, "model": model, "prompt": f"TW-Role: {role}\n{hdr}TW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}}
     return tw.decide("claude", env, REC)[0]
 
 
