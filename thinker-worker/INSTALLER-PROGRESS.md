@@ -9,3 +9,4 @@
   - decision: uninstall keeps adopted entries (removes only entries this machine wrote). Reason: settings.json syncs, so B removing A's entry would silently unguard A; the machine that wrote it owns its removal.
 - seam 6 green: portable hook with no interpreter exits 2 (stderr fix hint) when any activation state exists under $h/.thinker-worker/state, else exit 0; test_tw_portable.py seam6 (PATH=empty dir, both OS branches)
 - seam 7 green: --portable Codex entry = POSIX command (same search as Claude) + PowerShell -EncodedCommand commandWindows (PATH search; --python-cmd not applied); test_tw_codex_portable.py covers no-absolute-path, posix + cmd/C execution deny/admit, no-interpreter exit 2 only when activated, round trip
+- docs: README covers adopt, no-interpreter block, Codex --portable
