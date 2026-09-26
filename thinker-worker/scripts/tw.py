@@ -34,7 +34,8 @@ CLAUDE_LEAF = {"sonnet", "claude-sonnet-5"}
 # role -> (owned agent type, allowed models, effortmining miners allowed). Miners pin effort only.
 CLAUDE_ROLES = {"worker": ("thinker-worker-opus", CLAUDE_WORKERS, True),
                 "leaf": ("thinker-worker-sonnet", CLAUDE_LEAF, True),
-                "independent-review": ("thinker-worker-fable-review", CLAUDE_REVIEW, False)}
+                "independent-review": ("thinker-worker-fable-review", CLAUDE_REVIEW, False),
+                "ideation": ("thinker-worker-dreamer", CLAUDE_REVIEW, False)}
 MINER_TYPE = re.compile(r"effortmining:miner-(low|medium|high|xhigh|max)")
 CODEX_EFFORTS = {
     "gpt-6-sol": {"low", "medium", "high", "xhigh", "max", "ultra"},
@@ -42,7 +43,7 @@ CODEX_EFFORTS = {
     "gpt-6-astra": {"low", "medium", "high", "xhigh", "max", "ultra"},
     "gpt-6-luna": {"low", "medium", "high", "xhigh", "max"},
 }
-ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review)$")
+ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")
 # Routing header: labeled input for the routing classifier. Classes are effortmining's vocabulary.
 HEADER_KEYS = ("TW-Class", "TW-Deliverable", "TW-Accept", "TW-Risk")
 TASK_CLASSES = {"T1-mechanical", "T2-simple-transform", "T3-moderate-reasoning",
@@ -116,12 +117,13 @@ def activation(home: Path, harness: str, session: str) -> dict | None:
     if (not isinstance(obj, dict) or obj.get("schema") != 1 or
             obj.get("harness") != harness or obj.get("session_id") != session or
             type(obj.get("review")) is not bool or type(obj.get("luna")) is not bool or
-            type(obj.get("sonnet", False)) is not bool):
+            type(obj.get("sonnet", False)) is not bool or type(obj.get("ideation", False)) is not bool):
         raise Conflict(f"Invalid activation record at {path}; deactivate and reactivate this session")
     return obj
 
 
-def activate(home: Path, harness: str, session: str, review: bool, luna: bool, sonnet: bool = False) -> None:
+def activate(home: Path, harness: str, session: str, review: bool, luna: bool, sonnet: bool = False,
+             ideation: bool = False) -> None:
     if harness == "claude" and luna:
         raise Conflict("Luna is Codex-only")
     if harness == "codex" and sonnet:
@@ -132,7 +134,8 @@ def activate(home: Path, harness: str, session: str, review: bool, luna: bool, s
         activation(home, harness, session)
     obj = {"schema": 1, "harness": harness, "session_id": session,
            "review": review, "luna": luna if harness == "codex" else False,
-           "sonnet": sonnet if harness == "claude" else False, "activated_at": now()}
+           "sonnet": sonnet if harness == "claude" else False, "ideation": ideation,
+           "activated_at": now()}
     atomic_write(path, canonical_json(obj), old)
     print(f"Activation requested for {harness} session {session}; hook trust/loading, interception, and effective child model remain unverified.")
 
@@ -152,6 +155,7 @@ def status(home: Path, harness: str, session: str) -> None:
                  "review": record["review"] if record else False,
                  "luna": record["luna"] if record else False,
                  "sonnet": record.get("sonnet", False) if record else False,
+                 "ideation": record.get("ideation", False) if record else False,
                  "hook_loaded": "unknown", "native_interception": "unknown",
                  "effective_child_model_effort": "unknown"}
     except Conflict as exc:
@@ -165,7 +169,7 @@ def first_role(brief: object) -> tuple[str | None, str]:
     if not isinstance(brief, str) or not brief:
         return None, "missing brief"
     match = ROLE_LINE.fullmatch(brief.splitlines()[0])
-    return (match.group(1), "") if match else (None, "first brief line must be exactly TW-Role: worker, leaf, or independent-review")
+    return (match.group(1), "") if match else (None, "first brief line must be exactly TW-Role: worker, leaf, independent-review, or ideation")
 
 
 def review_details(brief: str) -> bool:
@@ -197,6 +201,12 @@ def routing_header(brief: str) -> tuple[str | None, str]:
     return text, ""
 
 
+def opus_reason(brief: str) -> bool:
+    """Ideation may run on Opus only when Arian asked for it or Fable credits are exhausted."""
+    return any(x in ("TW-Opus-Reason: user-request", "TW-Opus-Reason: fable-exhausted")
+               for x in brief.split("\n")[1:12])
+
+
 def valid_codex_fork(value: object) -> bool:
     return value == "none" or (isinstance(value, str) and
                                bool(re.fullmatch(r"[1-9][0-9]*", value)))
@@ -214,21 +224,28 @@ def decide(harness: str, envelope: dict, record: dict) -> tuple[bool, str, str |
     if v2:
         # MultiAgentV2 exposes the brief as ciphertext at PreToolUse. Infer the
         # route only from visible native model metadata; never parse ciphertext.
-        role = ("worker" if isinstance(model, str) and model in CODEX_WORKERS else
-                "leaf" if isinstance(model, str) and model in CODEX_LEAF else
-                "independent-review" if isinstance(model, str) and model in CODEX_REVIEW else None)
-        if role is None:
+        route = ("worker" if isinstance(model, str) and model in CODEX_WORKERS else
+                 "leaf" if isinstance(model, str) and model in CODEX_LEAF else
+                 "independent-review" if isinstance(model, str) and model in CODEX_REVIEW else None)
+        if route is None:
             return False, "model is not allowed for namespaced Codex dispatch", None, model if isinstance(model, str) else None, effort
+        # Astra serves review and ideation; the ciphertext brief cannot say which, so record no role.
+        role = None if route == "independent-review" else route
+        if role is None and not (record["review"] or record.get("ideation", False)):
+            return False, "neither independent review nor ideation is activated for this session", None, model, effort
     else:
         role, problem = first_role(brief)
         if not problem:
             _, problem = routing_header(brief)
         if problem:
             return False, problem, role, model if isinstance(model, str) else None, effort
+        route = role
     if role == "independent-review" and not record["review"]:
         return False, "independent review is not activated for this session", role, model, effort
-    if role == "independent-review" and not v2 and not review_details(brief):
-        return False, "review brief needs TW-Authorization and TW-Scope lines", role, model, effort
+    if role == "ideation" and not record.get("ideation", False):
+        return False, "ideation is not activated for this session", role, model, effort
+    if role in ("independent-review", "ideation") and not review_details(brief):
+        return False, f"{role} brief needs TW-Authorization and TW-Scope lines", role, model, effort
     if role == "leaf" and harness == "codex" and not record["luna"]:
         return False, "Luna leaf is not activated for this Codex session", role, model, effort
     if role == "leaf" and harness == "claude" and not record.get("sonnet", False):
@@ -239,10 +256,12 @@ def decide(harness: str, envelope: dict, record: dict) -> tuple[bool, str, str |
         if inp.get("agent_type") not in (None, "default"):
             return False, "custom agent_type is outside this route", role, model, effort
         allowed = {"worker": CODEX_WORKERS, "leaf": CODEX_LEAF,
-                   "independent-review": CODEX_REVIEW}[role]
+                   "independent-review": CODEX_REVIEW, "ideation": CODEX_REVIEW}[route]
         if model not in allowed:
-            return False, f"model is not allowed for {role}", role, model, effort
-        if effort not in CODEX_EFFORTS[model]:
+            return False, f"model is not allowed for {route}", role, model, effort
+        # Review/ideation effort is unpinned (Arian 2026-09-26): omitted means inherited.
+        unpinned = route in ("independent-review", "ideation") and raw_effort is None
+        if not unpinned and effort not in CODEX_EFFORTS[model]:
             return False, f"explicit supported reasoning_effort is required for {model}", role, model, effort
         if not valid_codex_fork(inp.get("fork_turns")):
             return False, "fork_turns must be explicit 'none' or a bounded positive count", role, model, effort
@@ -253,7 +272,8 @@ def decide(harness: str, envelope: dict, record: dict) -> tuple[bool, str, str |
         if st != expected_type and not miner:
             alt = " or effortmining:miner-<tier>" if miner_ok else ""
             return False, f"subagent_type must be {expected_type}{alt}", role, model, None
-        if model not in allowed:
+        opus_ok = role == "ideation" and model in CLAUDE_WORKERS and opus_reason(brief)
+        if model not in allowed and not opus_ok:
             return False, f"model is not allowed for {role}", role, model, None
         if inp.get("fork_context") or inp.get("fork"):
             return False, "Claude inherited-model fork is outside fresh dispatch", role, model, None
@@ -773,6 +793,7 @@ def main() -> int:
             p.add_argument("--review", action="store_true")
             p.add_argument("--luna", action="store_true")
             p.add_argument("--sonnet", action="store_true")
+            p.add_argument("--ideation", action="store_true")
         if name == "machines":
             p.add_argument("--ledger-dir", type=Path, help="default: the one recorded at install, "
                            "else <home>/.claude/thinker-worker-installs")
@@ -800,7 +821,7 @@ def main() -> int:
         elif args.command == "check":
             return 1 if check(home)["problems"] else 0
         elif args.command == "activate":
-            activate(home, args.harness, session_value(args.session), args.review, args.luna, args.sonnet)
+            activate(home, args.harness, session_value(args.session), args.review, args.luna, args.sonnet, args.ideation)
         elif args.command == "deactivate":
             deactivate(home, args.harness, session_value(args.session))
         elif args.command == "status":
