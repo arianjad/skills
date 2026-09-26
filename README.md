@@ -42,12 +42,12 @@ npx skills@latest add arianjad/skills/read-it-fully
 
 Coordinator/worker mode for substantial tasks: a strong model owns framing, planning, adversarial review and acceptance; bounded workers do the execution. Built for Codex (Astra/Sol/Luna) and ported to Claude Code (Opus workers, Sonnet leaves, Fable independent review).
 
-A session-scoped PreToolUse guard (`scripts/tw.py hook`) checks every fresh agent dispatch in an activated session: the brief must start with `TW-Role: worker|leaf|independent-review`, the `model` must be explicit and allowed for that role, and the agent type must match the role. Worker and leaf roles also accept [effortmining](https://github.com/nagisanzenin/effortmining) `miner-<tier>` agents, which pin reasoning effort; the per-role model check still applies. The guard checks request fields only; it cannot confirm the model or effort the child actually ran.
+A session-scoped PreToolUse guard (`scripts/tw.py hook`) checks every fresh agent dispatch in an activated session: the brief must start with `TW-Role: worker|leaf|independent-review`, the `model` must be explicit and allowed for that role, and the agent type must match the role. Worker and leaf roles also accept [effortmining](https://github.com/nagisanzenin/effortmining) `effortmining:miner-<tier>` agents, which pin reasoning effort; the per-role model check still applies. The guard checks request fields only; it cannot confirm the model or effort the child actually ran, and it denies the dispatch if it hits an internal error.
 
 **Files:**
 - `SKILL.md` — the contract; `references/claude.md`, `references/codex.md` — per-harness routing.
 - `claude-agents/` — the three Claude worker agents the installer places in `~/.claude/agents/`.
-- `scripts/tw.py` — reversible installer, activation, and the guard hook; `scripts/test_tw_miner.py` — guard routing test.
+- `scripts/tw.py` — reversible installer, activation, and the guard hook; `scripts/test_tw_*.py` — guard routing, hook fail-closed, and install round-trip tests (`python scripts/test_tw_<name>.py`).
 
 **Install:** clone the repo, then `python thinker-worker/scripts/tw.py install` (writes both `~/.claude` and `~/.codex` copies plus one guard hook per harness; `uninstall` reverses it, `check` verifies). Activate per session with the command in `SKILL.md`.
 
