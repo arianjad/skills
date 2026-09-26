@@ -16,7 +16,7 @@ def run_tw(*args):
     return subprocess.run([sys.executable, TW, *args], capture_output=True, text=True)
 
 
-def round_trip(prior_settings):
+def round_trip(prior_settings, *extra):
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
         (home / ".claude").mkdir()
@@ -26,7 +26,7 @@ def round_trip(prior_settings):
         if prior_settings is not None:
             settings.write_text(json.dumps(prior_settings), encoding="utf-8")
 
-        r = run_tw("install", "--home", str(home), "--python", sys.executable)
+        r = run_tw("install", "--home", str(home), "--python", sys.executable, *extra)
         assert r.returncode == 0, r.stderr
         assert run_tw("check", "--home", str(home)).returncode == 0, "check after install"
         hooks = tw.read_json(settings, {})["hooks"]["PreToolUse"]
@@ -41,7 +41,9 @@ def round_trip(prior_settings):
 
 
 if __name__ == "__main__":
-    round_trip(None)
-    round_trip({"env": {"X": "1"}, "hooks": {"PreToolUse": [
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo keep"}]}]}})
-    print("PASS install round trip (no prior settings, prior settings)")
+    prior = {"env": {"X": "1"}, "hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo keep"}]}]}}
+    for extra in ((), ("--portable",)):
+        round_trip(None, *extra)
+        round_trip(prior, *extra)
+    print("PASS install round trip (no prior settings, prior settings; exec and --portable)")
