@@ -27,24 +27,24 @@ def hook(home, harness, tool, inp):
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        hook(home, "claude", "Agent", {"subagent_type": "effortmining:miner-medium", "model": "opus",
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-medium",
                                        "prompt": "TW-Role: worker\n" + HDR + BODY})
-        hook(home, "claude", "Agent", {"subagent_type": "thinker-worker-opus", "model": "opus",
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",
                                        "prompt": "TW-Role: worker\n" + BODY})
         admit, deny = receipts(home, "claude")
         assert admit["decision"] == "admit" and admit["kind"] == "dispatch", admit
-        assert admit["subagent_type"] == "effortmining:miner-medium", admit
+        assert admit["subagent_type"] == "tw-worker-medium" and admit["tier"] == "medium", admit
         assert admit["header"] == ("TW-Class: C-coding\nTW-Deliverable: patch\n"
                                    "TW-Accept: tests pass\nTW-Risk: destructive"), admit
         assert deny["decision"] == "deny" and deny["header"] is None, deny
-        assert deny["subagent_type"] == "thinker-worker-opus", deny
+        assert deny["subagent_type"] == "tw-worker-high", deny
         raw = next(Path(home).rglob("receipts/claude/*.jsonl")).read_text(encoding="utf-8")
         assert "SECRET-BODY-TEXT" not in raw
 
     with tempfile.TemporaryDirectory() as home:
-        run_main(["activate", "--home", home, "--harness", "codex", "--session", SESSION, "--review"])
+        run_main(["activate", "--home", home, "--harness", "codex", "--session", SESSION])
         hook(home, "codex", "collaborationspawn_agent", {"message": "<ciphertext>", "model": "gpt-6-astra",
-                                                         "fork_turns": "none"})
+                                                         "reasoning_effort": "high", "fork_turns": "none"})
         (rec,) = receipts(home, "codex")
         assert rec["decision"] == "admit" and rec["role"] is None and rec["header"] is None, rec
         assert rec["kind"] == "dispatch" and rec["subagent_type"] is None, rec

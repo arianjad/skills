@@ -17,7 +17,7 @@ def outcome(home, tool_use_id, accepted):
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        hook(home, "claude", "Agent", {"subagent_type": "thinker-worker-opus", "model": "opus",
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",
                                        "prompt": "TW-Role: worker\n" + HDR + "x"})
         assert outcome(home, "toolu_x", "no") == 0
         last = receipts(home, "claude")[-1]

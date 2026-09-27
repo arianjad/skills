@@ -32,7 +32,7 @@ if __name__ == "__main__":
     session = "11111111-2222-3333-4444-555555555555"
     assert run_main(["activate", "--home", home, "--harness", "claude", "--session", session])[0] == 0
     envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
-                           "tool_input": {"subagent_type": "thinker-worker-opus", "model": "opus",
+                           "tool_input": {"subagent_type": "tw-worker-high",
                                           "prompt": "TW-Role: worker\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}})
     hook_argv = ["hook", "--home", home, "--harness", "claude", "--owner", tw.OWNER]
 

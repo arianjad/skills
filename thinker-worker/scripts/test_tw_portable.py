@@ -67,7 +67,7 @@ def seam2_command_runs_guard():
                 out = run_hook_command(cmd, home, envelope("general-purpose"), windows_branch)
                 assert out, "no output: the guard did not run"
                 assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny", out
-                assert run_hook_command(cmd, home, envelope("thinker-worker-opus"), windows_branch) == ""
+                assert run_hook_command(cmd, home, envelope("tw-worker-high"), windows_branch) == ""
             receipts = list((home / ".thinker-worker" / "receipts" / "claude").glob("*.jsonl"))
             assert len(receipts) == 1 and len(receipts[0].read_text().splitlines()) == 4, receipts
     print("PASS seam2 portable command runs the guard (deny bad, admit good; both OS branches; fallback)")
@@ -122,7 +122,7 @@ def seam6_no_interpreter_blocks_only_when_activated():
     bash = shutil.which("bash")
     session = "33333333-4444-5555-6666-777777777777"
     envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
-                           "tool_input": {"subagent_type": "thinker-worker-opus", "model": "opus",
+                           "tool_input": {"subagent_type": "tw-worker-high", "model": "opus",
                                           "prompt": "TW-Role: worker\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}})
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as empty_bin:
         home = Path(tmp)

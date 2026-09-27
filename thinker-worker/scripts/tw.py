@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Session-scoped fresh-agent routing guard and reversible skill installer.
 
-Receipts store the validated routing header (<= 600 chars) and never the brief body or a secret. The hook is a guardrail for
+Receipts store the validated routing header (each value cut at 256 chars) and never the brief body or a secret. The hook is a guardrail for
 native fresh dispatch; it cannot establish effective child model or permissions.
 """
 
@@ -13,47 +13,61 @@ import json
 import os
 from pathlib import Path
 import platform
+import random
 import re
 import shlex
 import socket
 import sys
 import tempfile
+import threading
+import time
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 
 OWNER = "thinker-worker-v1"
 HARNESSES = ("codex", "claude")
-SKILL_FILES = ("SKILL.md", "references/codex.md", "references/claude.md", "scripts/tw.py")
+SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "scripts/tw.py")
 AGENT_FILES = ("thinker-worker-opus.md", "thinker-worker-fable-review.md", "thinker-worker-sonnet.md")
-CODEX_WORKERS = {"gpt-6-sol", "gpt-5.6-sol"}
-CODEX_REVIEW = {"gpt-6-astra"}
-CODEX_LEAF = {"gpt-6-luna"}
-CLAUDE_WORKERS = {"opus", "claude-opus-5", "claude-opus-5-5"}
-CLAUDE_REVIEW = {"fable", "claude-fable-5", "claude-fable-5-1"}
-CLAUDE_LEAF = {"sonnet", "claude-sonnet-5"}
-# role -> (owned agent type, allowed models, effortmining miners allowed). Miners pin effort only.
-CLAUDE_ROLES = {"worker": ("thinker-worker-opus", CLAUDE_WORKERS, True),
-                "leaf": ("thinker-worker-sonnet", CLAUDE_LEAF, True),
-                "independent-review": ("thinker-worker-fable-review", CLAUDE_REVIEW, False),
-                "ideation": ("thinker-worker-dreamer", CLAUDE_REVIEW, False)}
-MINER_TYPE = re.compile(r"effortmining:miner-(low|medium|high|xhigh|max)")
-CODEX_EFFORTS = {
-    "gpt-6-sol": {"low", "medium", "high", "xhigh", "max", "ultra"},
-    "gpt-5.6-sol": {"low", "medium", "high", "xhigh", "max", "ultra"},
-    "gpt-6-astra": {"low", "medium", "high", "xhigh", "max", "ultra"},
-    "gpt-6-luna": {"low", "medium", "high", "xhigh", "max"},
-}
+TIERS = ("low", "medium", "high", "xhigh")
+AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh)")
+VALUE_MAX = 1000  # per header value at the gate; receipts truncate at 256
 ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")
 # Routing header: labeled input for the routing classifier. Classes are effortmining's vocabulary.
 HEADER_KEYS = ("TW-Class", "TW-Deliverable", "TW-Accept", "TW-Risk")
 TASK_CLASSES = {"T1-mechanical", "T2-simple-transform", "T3-moderate-reasoning",
                 "T4-hard-reasoning", "R-research", "C-coding"}
 RISKS = {"destructive", "external", "physics"}
-HEADER_MAX = 600
 
 
 class Conflict(Exception):
     pass
+
+
+class Decision(NamedTuple):
+    admitted: bool
+    reason: str
+    role: str | None = None
+    model: str | None = None
+    tier: str | None = None
+    fields: dict | None = None
+
+
+def agent_name(role: str, tier: str) -> str:
+    return f"tw-{role}-{tier}"
+
+
+def load_routes(path: Path | None = None) -> dict:
+    path = path or source_root() / "routes.json"
+    doc = read_json(path, None)
+    if not isinstance(doc, dict) or doc.get("schema") != 1:
+        raise Conflict(f"routes.json missing or not schema 1: {path}")
+    for harness in HARNESSES:
+        for role, pol in doc["harnesses"][harness]["roles"].items():
+            if (not pol.get("models") or not pol.get("tiers") or any(t not in TIERS for t in pol["tiers"])
+                    or pol.get("default") not in pol["tiers"]):
+                raise Conflict(f"routes.json: bad policy for {harness}/{role}")
+    return doc
 
 
 def now() -> str:
@@ -116,26 +130,19 @@ def activation(home: Path, harness: str, session: str) -> dict | None:
     obj = read_json(path, {})
     if (not isinstance(obj, dict) or obj.get("schema") != 1 or
             obj.get("harness") != harness or obj.get("session_id") != session or
-            type(obj.get("review")) is not bool or type(obj.get("luna")) is not bool or
-            type(obj.get("sonnet", False)) is not bool or type(obj.get("ideation", False)) is not bool):
+            type(obj.get("store_bodies", False)) is not bool):
+        # Pre-routes.json records carry review/luna/sonnet/ideation flags; they are ignored.
         raise Conflict(f"Invalid activation record at {path}; deactivate and reactivate this session")
     return obj
 
 
-def activate(home: Path, harness: str, session: str, review: bool, luna: bool, sonnet: bool = False,
-             ideation: bool = False) -> None:
-    if harness == "claude" and luna:
-        raise Conflict("Luna is Codex-only")
-    if harness == "codex" and sonnet:
-        raise Conflict("Sonnet leaf is Claude-only")
+def activate(home: Path, harness: str, session: str, store_bodies: bool = False) -> None:
     path = record_path(home, harness, session)
     old = path.read_bytes() if path.exists() else None
     if old is not None:
         activation(home, harness, session)
     obj = {"schema": 1, "harness": harness, "session_id": session,
-           "review": review, "luna": luna if harness == "codex" else False,
-           "sonnet": sonnet if harness == "claude" else False, "ideation": ideation,
-           "activated_at": now()}
+           "store_bodies": store_bodies, "activated_at": now()}
     atomic_write(path, canonical_json(obj), old)
     print(f"Activation requested for {harness} session {session}; hook trust/loading, interception, and effective child model remain unverified.")
 
@@ -152,10 +159,7 @@ def status(home: Path, harness: str, session: str) -> None:
         record = activation(home, harness, session)
         value = {"activation": "requested" if record else "inactive",
                  "harness": harness, "session_id": session,
-                 "review": record["review"] if record else False,
-                 "luna": record["luna"] if record else False,
-                 "sonnet": record.get("sonnet", False) if record else False,
-                 "ideation": record.get("ideation", False) if record else False,
+                 "store_bodies": record.get("store_bodies", False) if record else False,
                  "hook_loaded": "unknown", "native_interception": "unknown",
                  "effective_child_model_effort": "unknown"}
     except Conflict as exc:
@@ -168,20 +172,20 @@ def status(home: Path, harness: str, session: str) -> None:
 def first_role(brief: object) -> tuple[str | None, str]:
     if not isinstance(brief, str) or not brief:
         return None, "missing brief"
-    match = ROLE_LINE.fullmatch(brief.splitlines()[0])
+    match = ROLE_LINE.fullmatch(brief.split("\n")[0])  # "\n" only: splitlines() splits on U+2028 etc.
     return (match.group(1), "") if match else (None, "first brief line must be exactly TW-Role: worker, leaf, independent-review, or ideation")
 
 
 def review_details(brief: str) -> bool:
-    lines = brief.splitlines()[1:12]
+    lines = brief.split("\n")[1:12]
     return (any(x.startswith("TW-Authorization: ") and x[18:].strip() for x in lines) and
             any(x.startswith("TW-Scope: ") and x[10:].strip() for x in lines))
 
 
-def routing_header(brief: str) -> tuple[str | None, str]:
-    """Return (normalized header text, "") or (None, problem). Keys may sit anywhere in lines 2-12."""
+def header_fields(brief: str) -> tuple[dict | None, str]:
+    """Return ({key: value}, "") or (None, problem). Keys may sit anywhere in lines 2-12."""
     found: dict[str, str] = {}
-    for line in brief.split("\n")[1:12]:  # "\n" only: splitlines() would split on U+2028 etc.
+    for line in brief.split("\n")[1:12]:
         key, sep, value = line.partition(": ")
         if sep and key in HEADER_KEYS:
             if key in found:
@@ -195,16 +199,16 @@ def routing_header(brief: str) -> tuple[str | None, str]:
     risks = [r.strip() for r in found["TW-Risk"].split(",")]
     if risks != ["none"] and not (set(risks) <= RISKS and len(set(risks)) == len(risks)):
         return None, "routing header TW-Risk must be none or distinct values from " + ", ".join(sorted(RISKS))
-    text = "\n".join(f"{k}: {found[k]}" for k in HEADER_KEYS)
-    if len(text) > HEADER_MAX:
-        return None, f"routing header exceeds {HEADER_MAX} characters"
-    return text, ""
+    long = [k for k in HEADER_KEYS if len(found[k]) > VALUE_MAX]
+    if long:
+        return None, f"routing header value over {VALUE_MAX} characters: " + ", ".join(long)
+    return found, ""
 
 
-def opus_reason(brief: str) -> bool:
-    """Ideation may run on Opus only when Arian asked for it or Fable credits are exhausted."""
-    return any(x in ("TW-Opus-Reason: user-request", "TW-Opus-Reason: fable-exhausted")
-               for x in brief.split("\n")[1:12])
+def header_text(fields: dict, cap: int = 256) -> str:
+    def cut(v: str) -> str:
+        return v if len(v) <= cap else f"{v[:cap]}…[+{len(v) - cap}]"
+    return "\n".join(f"{k}: {cut(fields[k])}" for k in HEADER_KEYS)
 
 
 def valid_codex_fork(value: object) -> bool:
@@ -212,72 +216,56 @@ def valid_codex_fork(value: object) -> bool:
                                bool(re.fullmatch(r"[1-9][0-9]*", value)))
 
 
-def decide(harness: str, envelope: dict, record: dict) -> tuple[bool, str, str | None, str | None, str | None]:
+def decide(harness: str, envelope: dict, routes: dict) -> Decision:
     inp = envelope.get("tool_input")
     if not isinstance(inp, dict):
-        return False, "missing tool_input", None, None, None
-    v2 = harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent"
-    brief = inp.get("message" if harness == "codex" else "prompt")
+        return Decision(False, "missing tool_input")
+    roles = routes["harnesses"][harness]["roles"]
     model = inp.get("model")
-    raw_effort = inp.get("reasoning_effort") if harness == "codex" else None
-    effort = raw_effort if isinstance(raw_effort, str) else None
-    if v2:
-        # MultiAgentV2 exposes the brief as ciphertext at PreToolUse. Infer the
-        # route only from visible native model metadata; never parse ciphertext.
-        route = ("worker" if isinstance(model, str) and model in CODEX_WORKERS else
-                 "leaf" if isinstance(model, str) and model in CODEX_LEAF else
-                 "independent-review" if isinstance(model, str) and model in CODEX_REVIEW else None)
+    model = model if isinstance(model, str) else None
+    brief = inp.get("message" if harness == "codex" else "prompt")
+    fields = None
+    if harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent":
+        # v2 brief is ciphertext: route from the visible model only; Astra = review or ideation, role unknown.
+        route = next((r for r in ("worker", "leaf", "independent-review") if model in roles[r]["models"]), None)
         if route is None:
-            return False, "model is not allowed for namespaced Codex dispatch", None, model if isinstance(model, str) else None, effort
-        # Astra serves review and ideation; the ciphertext brief cannot say which, so record no role.
+            return Decision(False, "model is not allowed for namespaced Codex dispatch", None, model)
         role = None if route == "independent-review" else route
-        if role is None and not (record["review"] or record.get("ideation", False)):
-            return False, "neither independent review nor ideation is activated for this session", None, model, effort
     else:
         role, problem = first_role(brief)
         if not problem:
-            _, problem = routing_header(brief)
+            fields, problem = header_fields(brief)
         if problem:
-            return False, problem, role, model if isinstance(model, str) else None, effort
+            return Decision(False, problem, role, model)
         route = role
-    if role == "independent-review" and not record["review"]:
-        return False, "independent review is not activated for this session", role, model, effort
-    if role == "ideation" and not record.get("ideation", False):
-        return False, "ideation is not activated for this session", role, model, effort
-    if role in ("independent-review", "ideation") and not review_details(brief):
-        return False, f"{role} brief needs TW-Authorization and TW-Scope lines", role, model, effort
-    if role == "leaf" and harness == "codex" and not record["luna"]:
-        return False, "Luna leaf is not activated for this Codex session", role, model, effort
-    if role == "leaf" and harness == "claude" and not record.get("sonnet", False):
-        return False, "Sonnet leaf is not activated for this Claude session", role, model, effort
-    if not isinstance(model, str):
-        return False, "explicit model is required; inherited/omitted model is disallowed", role, None, effort
+        if role in ("independent-review", "ideation") and not review_details(brief):
+            return Decision(False, f"{role} brief needs TW-Authorization and TW-Scope lines", role, model)
+    pol = roles[route]
     if harness == "codex":
+        if model is None:
+            return Decision(False, "explicit model is required; inherited/omitted model is disallowed", role)
         if inp.get("agent_type") not in (None, "default"):
-            return False, "custom agent_type is outside this route", role, model, effort
-        allowed = {"worker": CODEX_WORKERS, "leaf": CODEX_LEAF,
-                   "independent-review": CODEX_REVIEW, "ideation": CODEX_REVIEW}[route]
-        if model not in allowed:
-            return False, f"model is not allowed for {route}", role, model, effort
-        # Review/ideation effort is unpinned (Arian 2026-09-26): omitted means inherited.
-        unpinned = route in ("independent-review", "ideation") and raw_effort is None
-        if not unpinned and effort not in CODEX_EFFORTS[model]:
-            return False, f"explicit supported reasoning_effort is required for {model}", role, model, effort
+            return Decision(False, "custom agent_type is outside this route", role, model)
+        if model not in pol["models"]:
+            return Decision(False, f"model is not allowed for {route}", role, model)
+        tier = inp.get("reasoning_effort")
+        if tier not in pol["tiers"]:
+            return Decision(False, f"reasoning_effort must be one of {', '.join(pol['tiers'])} for {route}", role, model)
         if not valid_codex_fork(inp.get("fork_turns")):
-            return False, "fork_turns must be explicit 'none' or a bounded positive count", role, model, effort
+            return Decision(False, "fork_turns must be explicit 'none' or a bounded positive count", role, model)
     else:
-        expected_type, allowed, miner_ok = CLAUDE_ROLES[role]
         st = inp.get("subagent_type")
-        miner = miner_ok and isinstance(st, str) and MINER_TYPE.fullmatch(st)
-        if st != expected_type and not miner:
-            alt = " or effortmining:miner-<tier>" if miner_ok else ""
-            return False, f"subagent_type must be {expected_type}{alt}", role, model, None
-        opus_ok = role == "ideation" and model in CLAUDE_WORKERS and opus_reason(brief)
-        if model not in allowed and not opus_ok:
-            return False, f"model is not allowed for {role}", role, model, None
+        match = AGENT_NAME.fullmatch(st) if isinstance(st, str) else None
+        if not match or match.group(1) != role:
+            return Decision(False, f"subagent_type must be tw-{role}-<tier>", role, model)
+        tier = match.group(2)
+        if tier not in pol["tiers"]:
+            return Decision(False, f"tier {tier} is outside {role}'s tiers {pol['tiers']}", role, model)
+        if model is not None and model not in pol["models"]:
+            return Decision(False, f"per-call model {model} differs from the {role} agent's model", role, model)
         if inp.get("fork_context") or inp.get("fork"):
-            return False, "Claude inherited-model fork is outside fresh dispatch", role, model, None
-    return True, "admitted-request-only", role, model, effort
+            return Decision(False, "Claude inherited-model fork is outside fresh dispatch", role, model)
+    return Decision(True, "admitted-request-only", role, model, tier, fields)
 
 
 def denial(reason: str) -> None:
@@ -285,9 +273,7 @@ def denial(reason: str) -> None:
                        "permissionDecision": "deny", "permissionDecisionReason": f"{OWNER}: {reason}"}}))
 
 
-def receipt(home: Path, harness: str, session: str, envelope: dict,
-            decision: str, reason: str, role: str | None, model: str | None,
-            effort: str | None) -> None:
+def receipt(home: Path, harness: str, session: str, envelope: dict, d: Decision) -> None:
     # Never store the brief body or any unknown input field; the validated routing header is the
     # labeled input for the routing classifier (Arian 2026-09-26).
     def small(value: object) -> str | None:
@@ -296,15 +282,13 @@ def receipt(home: Path, harness: str, session: str, envelope: dict,
         return value if len(value) <= 128 and not any(c in value for c in "\r\n\0") else "<invalid-field>"
 
     inp = envelope.get("tool_input") if isinstance(envelope.get("tool_input"), dict) else {}
-    brief = inp.get("message" if harness == "codex" else "prompt")
-    v2 = harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent"
-    header = routing_header(brief)[0] if isinstance(brief, str) and not v2 else None
+    header = header_text(d.fields) if d.fields else None
     entry = {"kind": "dispatch", "at": now(), "harness": harness, "session_id": session,
              "subagent_type": small(inp.get("subagent_type")), "header": header,
              "tool_use_id": small(envelope.get("tool_use_id")),
-             "tool_name": envelope.get("tool_name"), "decision": decision,
-             "reason": reason, "role": role, "requested_model": small(model),
-             "requested_effort": small(effort), "effective_model": None, "effective_effort": None,
+             "tool_name": envelope.get("tool_name"), "decision": "admit" if d.admitted else "deny",
+             "reason": d.reason, "role": d.role, "requested_model": small(d.model),
+             "tier": d.tier, "effective_model": None, "effective_effort": None,
              "brief_checks": "unavailable-encrypted-v2" if harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent" else "plaintext-route"}
     append_receipt(home, harness, session, entry)
 
@@ -357,23 +341,23 @@ def hook(home: Path, harness: str, owner: str) -> None:
         record = activation(home, harness, session)
     except Conflict as exc:
         denial(str(exc))
-        receipt(home, harness, session, envelope, "deny", "invalid-state", None, None, None)
+        receipt(home, harness, session, envelope, Decision(False, "invalid-state"))
         return
     if record is None:
         return
     if envelope.get("hook_event_name") != "PreToolUse":
         denial("unexpected hook_event_name on native dispatch")
-        receipt(home, harness, session, envelope, "deny", "invalid-event", None, None, None)
+        receipt(home, harness, session, envelope, Decision(False, "invalid-event"))
         return
     inp = envelope.get("tool_input")
     if isinstance(inp, dict) and any(k in inp for k in ("resume", "resume_id", "agent_id")):
-        receipt(home, harness, session, envelope, "deny", "resume-key-on-fresh-dispatch", None, None, None)
+        receipt(home, harness, session, envelope, Decision(False, "resume-key-on-fresh-dispatch"))
         denial("resume fields are outside fresh dispatch; coordinator must verify child identity before native continuation")
         return
-    admitted, reason, role, model, effort = decide(harness, envelope, record)
-    receipt(home, harness, session, envelope, "admit" if admitted else "deny", reason, role, model, effort)
-    if not admitted:
-        denial(reason)
+    d = decide(harness, envelope, load_routes())
+    receipt(home, harness, session, envelope, d)
+    if not d.admitted:
+        denial(d.reason)
 
 
 def source_root() -> Path:
@@ -819,10 +803,7 @@ def main() -> int:
             p.add_argument("--tool-use-id", required=True)
             p.add_argument("--accepted", choices=("yes", "no"), required=True)
         if name == "activate":
-            p.add_argument("--review", action="store_true")
-            p.add_argument("--luna", action="store_true")
-            p.add_argument("--sonnet", action="store_true")
-            p.add_argument("--ideation", action="store_true")
+            p.add_argument("--store-bodies", action="store_true")
         if name == "machines":
             p.add_argument("--ledger-dir", type=Path, help="default: the one recorded at install, "
                            "else <home>/.claude/thinker-worker-installs")
@@ -850,7 +831,7 @@ def main() -> int:
         elif args.command == "check":
             return 1 if check(home)["problems"] else 0
         elif args.command == "activate":
-            activate(home, args.harness, session_value(args.session), args.review, args.luna, args.sonnet, args.ideation)
+            activate(home, args.harness, session_value(args.session), args.store_bodies)
         elif args.command == "deactivate":
             deactivate(home, args.harness, session_value(args.session))
         elif args.command == "status":
