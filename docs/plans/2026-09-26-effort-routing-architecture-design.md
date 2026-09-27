@@ -271,20 +271,28 @@ block 2.7 % of main.
      read "clean" in exactly the dirty case.
    - Take the process start from the first ancestor of the hook process named `claude.exe` (Windows) or
      `claude`/`node` (Mac). The chain is ~5 hops: cmd → bash ×3 → claude.exe, per the same [3P]
-     measurement. Compute it once per `session_id` and cache it in tw.py's existing per-session state,
-     because a PowerShell/wmic query costs ~300 ms and psutil is not in the hook's Python [3P].
+     measurement. On Windows tw.py walks the ancestors with stdlib ctypes (`CreateToolhelp32Snapshot`,
+     `GetProcessTimes`): 11–14 ms per call [V, 2026-09-26], so it is not cached. The Mac path uses `ps`
+     and is unverified.
+   - A context-mode entry "applies to Agent" by Claude Code's own matcher rule, read from the binary [V]:
+     `""`/`*` match all; a plain `[A-Za-z0-9_|]` matcher is split on `|` and compared exactly after the
+     legacy map (`Task` → `Agent`); anything else is `RegExp.test` (match anywhere).
    - The current `hooks.json` mtime is 2026-07-06 [V], so ordinary sessions do not false-positive.
-   - **Tripwire:** at the next dispatch, for each earlier rewrite not yet checked, compare the child's
-     `meta.json` `agentType`, which is written at spawn. If it differs from the router's pick, or the
-     child's first user message contains `<context_window_protection>`, write a `race` receipt with
-     `lost: true` and set the
-     session to `advisory`. A lost race is then never silent.
+   - **Tripwire:** at each dispatch and at `outcome` (so a session's last rewrite is checked before it is
+     labeled), for each earlier rewrite not yet checked, compare the child's `meta.json` `agentType`,
+     which is written at spawn, with the router's pick. If it differs, write a `race` receipt with
+     `lost: true` and set the session to `advisory`. The `<context_window_protection>` text in the child's
+     first user message counts only when `meta.json` lacks `agentType`, since briefs in this project can
+     quote that tag. A lost race is then never silent, and `promote` counts only rewrites whose race row
+     says `lost: false`.
 5. **Measure:** the parent-silent subagent ctx rate was 24/511 (4.7 %) with the old block. Re-run the split
    after a week with the one-line nudge. If it falls well below that, lengthen the nudge; do not restore the
    prompt append.
 
-Until 1-2 and the O4b re-probe pass (router wins, no `<context_window_protection>` in the child prompt),
-`active` stays off. `shadow` and `advisory` return no `updatedInput` and are unaffected.
+Steps 1-2 landed on 2026-09-26 (home repo `a127a91`), and the O7a–c re-probe passed 3/3: the router's
+`miner-xhigh` pick ran, with no `<context_window_protection>` and two nudge lines in each child prompt [V]
+(the pre-patch O4b ran `low` with the block). `active` still stays off until a backend is switched on.
+`shadow` and `advisory` return no `updatedInput` and are unaffected.
 
 ### 4.7 What is deleted (audit-backed)
 
