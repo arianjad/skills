@@ -18,7 +18,9 @@ exploration for the five-session run, ε = 0.2, exploration one tier below witho
 - Python: `C:/Users/Arian/anaconda3/envs/claude-code/python.exe` (`$PY`); stdlib only; tests are plain
   scripts run from `thinker-worker/scripts/` (`"$PY" test_tw_<x>.py`), no pytest.
 - TDD per task: add or change the test first, run it and paste the failing message, then implement, then the
-  full suite: `cd thinker-worker/scripts && for f in test_tw_*.py; do "$PY" "$f" >/dev/null 2>&1 || echo "FAIL $f"; done; echo SUITE_DONE`
+  full suite. A red run may fail with a TypeError (e.g. `out[...]` on a `None` hook output), a KeyError on a
+  row field not yet written, or argparse's exit (T1: `unrecognized arguments: --cause tier`) rather than an
+  AssertionError; paste whichever it is. Full suite: `cd thinker-worker/scripts && for f in test_tw_*.py; do "$PY" "$f" >/dev/null 2>&1 || echo "FAIL $f"; done; echo SUITE_DONE`
   (expected: only `SUITE_DONE`).
 - Real `~/.claude`, `~/.codex`, `~/.thinker-worker` are untouched until Task 6. No push. No `rm -rf` on
   computed paths. Commit by pathspec, message ends with the attribution line.
@@ -32,14 +34,17 @@ exploration for the five-session run, ε = 0.2, exploration one tier below witho
 ## File map
 
 - Modify `thinker-worker/scripts/tw.py`:
-  - `outcome()` (~L335) and the `outcome` parser (~L1275): optional `--cause tier|brief|other`, only with
-    `--accepted no`; recorded as `cause` (null when absent). (Task 1)
+  - `outcome()` (~L335), the `outcome` parser (~L1275) and `main` (~L1311): optional `--cause`, validated in
+    `main` against `tier|brief|other`, only with `--accepted no`; recorded as `cause` (null when absent). (Task 1)
   - `cost_row()` (~L422) and `promote()` (~L437): advisor-call detection and exclusion. (Task 1b)
-  - `route()` (L518–557): backend-free exploration one tier below the coordinator. (Task 2)
+  - `route()` (L518–557): backend-free exploration one tier below the coordinator; the hook's route row
+    (~L762) records `explore`. (Task 2)
   - `load_routes()` (L59–78): validate `router.risk_floor`. (Task 3)
-  - `act()` (L668–705): per-flag floor replaces "never the role's cheapest tier". (Task 3)
+  - `act()` (L668–708): per-flag floor replaces "never the role's cheapest tier" and returns the floored
+    target; the hook's route row records `target_tier` and derives `router_agent` from it; `promote()`
+    compares the floored target. (Task 3)
 - Modify `thinker-worker/routes.json`: `risk_floor` (Task 3); `"*"` → advisory, explore 0.2 (Task 4).
-- Modify tests: `test_tw_outcome.py` (1), `test_tw_settle.py` (1b), `test_tw_promote.py` (1b),
+- Modify tests: `test_tw_outcome.py` (1), `test_tw_settle.py` (1b), `test_tw_promote.py` (1b, 3),
   `test_tw_route.py` (2, 4), `test_tw_act.py` (2, 3), `test_tw_routes.py` (3).
 - Modify docs: `thinker-worker/SKILL.md`, `references/claude.md`, `references/codex.md`, `README.md`
   thinker-worker section (Task 4).
@@ -83,17 +88,20 @@ and append inside `if __name__ == "__main__":`, before the final `print`:
 Code:
 
 ```python
-# parser, next to --accepted
-p.add_argument("--cause", choices=("tier", "brief", "other"))
-# main, outcome branch
+# parser, next to --accepted. No argparse `choices`: argparse's SystemExit(2) escapes run_main (it catches
+# nothing), so the closed vocabulary is checked in main, where a Conflict returns 2.
+p.add_argument("--cause")
+# main, outcome branch, before the outcome() call so a refusal writes nothing
+if args.cause is not None and args.cause not in ("tier", "brief", "other"):
+    raise Conflict(f"--cause must be tier, brief or other, not {args.cause!r}")
 if args.cause and args.accepted == "yes":
     raise Conflict("--cause explains a rejection; use it only with --accepted no")
 outcome(home, args.harness, session_value(args.session), args.tool_use_id, args.accepted == "yes", args.cause)
 # outcome(): signature gains cause=None; the appended row gains "cause": cause
 ```
 
-(Read `main`'s handler: a `Conflict` there must give a nonzero exit, as the existing "no receipt" refusal
-does; if it does not, return that refusal's exit code.)
+`main`'s handler returns 2 on `Conflict` (tw.py L1328–1330), so both refusals exit nonzero, before any row
+is appended.
 
 Check: `"$PY" test_tw_outcome.py` → `PASS outcome …`; then the full suite → `SUITE_DONE` only.
 Commit: `git add -- thinker-worker/scripts/tw.py thinker-worker/scripts/test_tw_outcome.py && git commit -m "tw: outcome --cause tier|brief|other labels why a rejection happened (switch-on T1)" -- <same paths>`
@@ -186,13 +194,25 @@ Commit: `git add -- thinker-worker/scripts/tw.py thinker-worker/scripts/test_tw_
 
 ### Task 2: exploration one tier below the coordinator, no backend
 
-Files: `tw.py` (`route`), `test_tw_route.py`, `test_tw_act.py`.
+Files: `tw.py` (`route`, the hook's route row), `test_tw_route.py`, `test_tw_act.py`.
 Interfaces: `route()` returns `source: "explore"`, `tier` = the role's next tier below `coord_tier`,
 `probs {tier: 1.0}`, `confidence 0.0` when (a) no backend answered, (b) the class's `explore` > 0, (c) the
 ticket fraction `int(ticket, 16) / 16 ** 12` < `explore` (the same draw `act()` uses), and (d) `coord_tier`
-is not the role's cheapest tier. `act()` is unchanged: its existing `explored` test fires on these rows and
-advises with "exploration"; `prior_route` caches `explore` rows like any backend decision, so a re-dispatch
-of the same brief at either tier is admitted (`source: "cached:explore"`, explore 0).
+is not the role's cheapest tier. The explore pick is computed in any mode and acted on in advisory/active:
+a `shadow` class with `explore` > 0 logs `source: "explore"` rows and stays silent (a free control-arm
+generator). `act()` is unchanged: its existing `explored` test fires on these rows and advises with
+"exploration"; `prior_route` caches `explore` rows like any backend decision, so a re-dispatch of the same
+brief at either tier is admitted (`source: "cached:explore"`, explore 0).
+The hook's route row gains `"explore": r["explore"]` on every row: the class ε at this dispatch (0.0 on a
+cached row). With `ticket` it says whether the coin fell below ε, which the phase-2 control arm needs.
+
+**Promote on the five-session run gives counts, not a verdict.** Under advisory + explore, `promote`'s
+coordinator arm (action None, non-coordinator source, eligible, lower) is fed only by explored rows the
+coordinator kept with `TW-Override`, a selected sample. The valid control is the coordinator-source rows
+whose coin fell ≥ ε, compared with the complied explore rows: `action None and source == "coordinator" and
+explore > 0 and coordinator_tier == <the explored rows' original tier>` (the tier condition also drops
+cheapest-tier rows, which are never explored). Until that arm lands (phase 2), read `n_router`, `n_coord`
+and the labels from `promote`, not its `verdict` or `p`.
 
 Red tests. Append to `test_tw_route.py`'s main block (match its imports):
 
@@ -216,15 +236,20 @@ In `test_tw_act.py`, give `run()` a `backends=("stub",)` parameter used in
     out, row = run("advisory", explore=1.0, backends=())            # no backend: explore one tier below
     assert "tw-worker-medium" in out["permissionDecisionReason"] and "exploration" in out["permissionDecisionReason"]
     assert row["source"] == "explore" and row["router_tier"] == "medium" and row["eligible"] is True, row
+    assert row["explore"] == 1.0, row                                                      # ε recorded
+    out, row = run("advisory", explore=1e-9, backends=())           # coin >= ε: the phase-2 control shape
+    assert out is None and row["source"] == "coordinator" and row["explore"] == 1e-9, row
     out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-medium", ""))   # take the pick
-    assert out is None and row["source"] == "cached:explore", row
+    assert out is None and row["source"] == "cached:explore" and row["explore"] == 0.0, row
     out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-high", ""))     # rejected, back to high
     assert out is None and row["source"] == "cached:explore", row
     assert run("advisory", explore=1.0, backends=(), st="tw-worker-low")[0] is None       # nothing below low
-    assert run("shadow", explore=1.0, backends=())[0] is None                              # shadow logs only
+    out, row = run("shadow", explore=1.0, backends=())              # computed in shadow, not acted on
+    assert out is None and row["source"] == "explore" and row["action"] is None, row
 ```
 
-Code, in `route()` just before the final `return`:
+Code, in the hook's route-row dict (~L762), next to `"mode": r["mode"]`: `"explore": r["explore"],`.
+In `route()` just before the final `return`:
 
 ```python
     if found["source"] == "coordinator" and explore > 0 and int(tick, 16) / 16 ** 12 < explore \
@@ -238,14 +263,26 @@ Commit: `git add -- thinker-worker/scripts/tw.py thinker-worker/scripts/test_tw_
 
 ### Task 3: per-flag risk floor
 
-Files: `tw.py` (`load_routes`, `act`), `routes.json` (add `risk_floor` only; modes unchanged here),
-`test_tw_act.py`, `test_tw_routes.py`.
+Files: `tw.py` (`load_routes`, `act`, the hook's route row, `promote`), `routes.json` (add `risk_floor`
+only; modes unchanged here), `test_tw_act.py`, `test_tw_routes.py`, `test_tw_promote.py`.
 Interfaces: `routes["router"]["risk_floor"]: {"physics": "high", "destructive": "medium", "external": "medium"}`
 (Arian, 2026-09-27; keys exactly `RISKS`, values in `TIERS`). `act()` semantics: the router's pick (backend
 or explore) is raised to the highest floor among the brief's flags; if the raise leaves it at or above the
 coordinator's tier, no action and `eligible` is false (a floored row cannot reach the router arm, design
 phase-2 eligible rule). This replaces "risk-flagged briefs never route to the role's cheapest tier", so
 review/ideation (tiers high–xhigh) can now be advised down to `high` when flagged.
+The floor only lifts the router's pick. A coordinator dispatching a physics brief at `medium` is not advised
+up; "physics never below `high`" stays a coordinator prompt rule (Task 4 docs). Enforcing it would belong in
+`decide()` as strict model policy (a deny), not in `act()`.
+`act()` returns a 5-tuple `(hook output | None, action, guard, eligible, target)`: `target` is the floored
+tier, computed first and returned on every path (on a coordinator-source row it is the coordinator's tier:
+there is no router pick to floor). Its only call site is `hook()` (tw.py L773); no test calls `act()` directly
+(`grep -n "act(" thinker-worker/scripts/*.py`). The hook writes `row["target_tier"] = target` (the raw
+`r["tier"]` when `act()` raises) and derives `router_agent` from `target`, so `race_check` compares a
+rewritten child with the agent actually picked. `router_tier` stays the raw backend/explore pick (the
+backend's evidence). `promote` compares `target_tier` (falling back to `router_tier` on rows written before
+this task) in the `advised` map, `rewrite_lower`, and the coordinator-arm lower test, so a coordinator who
+complies at the floored tier counts as `complied`.
 
 Red tests. In `test_tw_act.py` replace the three risk lines with:
 
@@ -253,14 +290,34 @@ Red tests. In `test_tw_act.py` replace the three risk lines with:
     assert run("advisory", risk="physics")[0] is None                    # floor high = coordinator's high
     out, row = run("advisory", risk="external")                          # floor medium: advised to medium
     assert "tw-worker-medium" in out["permissionDecisionReason"] and row["router_tier"] == "low", (out, row)
+    assert (row["target_tier"], row["router_agent"]) == ("medium", "tw-worker-medium"), row   # floored target
     assert run("advisory", risk="destructive,physics")[0] is None        # the highest flag wins
     assert run("advisory", pick="medium", risk="physics")[0] is None     # a pick below the floor is raised
     assert run("advisory", risk="physics")[1]["eligible"] is False       # floored rows stay out of promote
     assert run("advisory", explore=1.0, backends=(), st="tw-worker-xhigh", risk="physics")[0]["permissionDecisionReason"].count("tw-worker-high") == 1
 ```
 
-(`row["router_tier"]` stays the raw pick; the denial names the floored agent. If `run()`'s `HDR`
-replacement cannot express two flags, extend it the same way it handles one.) In `test_tw_routes.py`'s
+and extend the existing `act()`-raises assertion (`run("active", guard=boom)`) with
+`and row["target_tier"] == "low"` (the raw tier when `act()` fails).
+(`row["router_tier"]` stays the raw pick; `target_tier`, `router_agent` and the denial name the floored
+tier. `HDR.replace("TW-Risk: destructive", f"TW-Risk: {risk}")` already carries `destructive,physics`.)
+
+In `test_tw_promote.py`'s main block, before the final `print`:
+
+```python
+    with tempfile.TemporaryDirectory() as tmp:           # floored advise, then compliance at the floored tier
+        home = Path(tmp)
+        base = {"kind": "route", "ticket": "fl", "class": "C-coding", "router_tier": "low", "target_tier": "medium"}
+        tw.append_receipt(home, "claude", S, {**base, "tool_use_id": "f0", "action": "advise", "source": "table",
+                                              "coordinator_tier": "high", "eligible": True})
+        tw.append_receipt(home, "claude", S, {**base, "tool_use_id": "f1", "action": None, "source": "cached:table",
+                                              "coordinator_tier": "medium", "eligible": False})
+        tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": "f1", "accepted": True})
+        v = tw.promote(home, "claude")
+        assert (v["n_router"], v["n_coord"]) == (1, 0), v    # complied at the floored tier: router arm
+```
+
+In `test_tw_routes.py`'s
 router-validation list, with `good` gaining `"risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"}`, add:
 
 ```python
@@ -282,7 +339,8 @@ Code. `load_routes`, in the router check:
 ```python
     raw = r["tier"]
     flags = [] if d.fields["TW-Risk"] == "none" else [x.strip() for x in d.fields["TW-Risk"].split(",")]
-    floor = max((TIERS.index(routes["router"]["risk_floor"][f]) for f in flags), default=0)
+    floor = 0 if r["source"] == "coordinator" else max(   # the floor lifts the router's pick only
+        (TIERS.index(routes["router"]["risk_floor"][f]) for f in flags), default=0)
     target = TIERS[max(TIERS.index(raw), floor)]
     floored = target != raw
     lower = TIERS.index(target) < TIERS.index(d.tier)
@@ -290,14 +348,32 @@ Code. `load_routes`, in the router check:
     explored = lower and r["explore"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["explore"]
     eligible = r["source"] != "coordinator" and (disagree or explored) and not (floored and not lower)
     if floored and not lower:
-        return None, None, None, eligible
+        return None, None, None, eligible, target
 ```
 
-A floored target outside the role's tiers (a physics leaf) is at or above every leaf tier, so it is never
-`lower` and never acts. Update the docstring's "risk floor" wording and the `test_tw_act.py` header line.
+Every other `return` in `act()` gains `target` as its 5th element (the rewrite and advise paths already use
+`target` for the pick). In `hook()`: drop `"router_agent"` from the row literal; unpack
+`out, row["action"], row["guard"], row["eligible"], target = act(...)`; in its `except` set `target = r["tier"]`;
+then `row["target_tier"] = target` and
+`row["router_agent"] = agent_name(d.role, target) if harness == "claude" else None`.
+In `promote`, after `routes = …`:
 
-Check: `"$PY" test_tw_act.py && "$PY" test_tw_routes.py` → both PASS lines; full suite → `SUITE_DONE` only.
-Commit: `git add -- thinker-worker/scripts/tw.py thinker-worker/routes.json thinker-worker/scripts/test_tw_act.py thinker-worker/scripts/test_tw_routes.py && git commit -m "tw: per-flag risk_floor replaces never-the-cheapest-tier (switch-on T3)" -- <same paths>`
+```python
+    tgt = lambda r: r.get("target_tier") or r["router_tier"]  # floored pick; rows before switch-on T3 lack it
+```
+
+and replace `r["router_tier"]` with `tgt(r)` in the `advised` map (both the value and the lower test),
+`rewrite_lower`, and the coordinator-arm lower test. On eligible rows target-lower ⇔ raw-lower (eligible
+excludes floored-not-lower), so the coordinator arm's counts do not move; the change there is uniformity.
+
+A floored target outside the role's tiers (a physics leaf) is at or above every leaf tier, so it is never
+`lower` and never acts; its `router_agent` names no installed agent, and `race_check` never reads it (it
+checks rewrite rows only). Update the docstrings of `act()` and `promote()`, and the `test_tw_act.py`
+header line.
+
+Check: `"$PY" test_tw_act.py && "$PY" test_tw_routes.py && "$PY" test_tw_promote.py` → three PASS lines;
+full suite → `SUITE_DONE` only.
+Commit: `git add -- thinker-worker/scripts/tw.py thinker-worker/routes.json thinker-worker/scripts/test_tw_act.py thinker-worker/scripts/test_tw_routes.py thinker-worker/scripts/test_tw_promote.py && git commit -m "tw: per-flag risk_floor replaces never-the-cheapest-tier; route rows carry the floored target (switch-on T3)" -- <same paths>`
 
 ### Task 4: routes.json switch-on + docs
 
@@ -328,8 +404,10 @@ Docs (describe what the code does now; delete the old assertion, do not keep it 
   2. Judge the result as usual. Rejected because the tier was too low → `tw.py outcome … --accepted no
      --cause tier`, then re-dispatch the same brief unchanged at your original tier (admitted: cached, no
      re-exploration). Rejected for another reason → `--cause brief` or `--cause other`.
-  3. If the brief must change before re-dispatch, add `TW-Override: exploration rejected at <tier>` in lines
-     2–12, since a changed brief is a new ticket and may be explored again.
+  3. If the brief must change before a re-dispatch (at the explored tier or back at yours), add
+     `TW-Override: exploration re-dispatch, brief changed` in lines 2–12. A changed brief is a new ticket, so
+     without `TW-Override` a re-dispatch at t−1 can itself be explored down to t−2, and one at t can be
+     explored again.
   4. Keep your tier with `TW-Override: <reason>` only where exploration is unsafe for a reason the risk flags
      do not capture; the override is logged.
 - `SKILL.md`: the coordinator's tier rule from design §7 decision 7: `medium` by default; `low` for
@@ -356,6 +434,11 @@ installed skill; `uninstall` deletes every activation record under `~/.thinker-w
 re-run `activate`). Ask Arian immediately before running it. Codex `/hooks` trust must be renewed by Arian
 afterwards (his manual step).
 
+Ordering rule (hard): because `uninstall` clears every activation record, Task 6 finishes before the first of
+the five launches and never runs while any of the five sessions is live. A switch-on change after the run has
+started (a routes.json or tw.py edit needs this reinstall) requires all five sessions to re-run `activate`;
+until they do, their dispatches pass unguarded and unrouted, with no receipt.
+
 Steps:
 1. `"$PY" thinker-worker/scripts/tw.py machines` and read this machine's recorded flags; run the
    `uninstall && install` command those flags give (`install_command()` in `tw.py`), not a remembered one.
@@ -364,7 +447,8 @@ Steps:
    dispatch `tw-worker-high` with a real header and `TW-Risk: none`. To see exploration without luck, pick a
    brief whose ticket falls under 0.2: compute `int(tw.ticket(brief)[0], 16) / 16 ** 12` offline and vary a
    trailing line until it is < 0.2. Expected: deny with `(exploration)` naming `tw-worker-medium`; route row
-   `source: "explore"`, `router_tier: "medium"`, `mode: "advisory"`; the re-dispatch at `tw-worker-medium`
+   `source: "explore"`, `router_tier: "medium"`, `target_tier: "medium"`, `explore: 0.2`, `mode: "advisory"`;
+   the re-dispatch at `tw-worker-medium`
    is admitted with `source: "cached:explore"`; `tw.py outcome … --accepted yes` writes the outcome and cost
    rows.
 
@@ -377,11 +461,15 @@ Files: the five `C:\Users\Arian\Desktop\handoffs\*-prompt.md` and
 `~/.claude/handoffs/2026-09-26-launch-five-project-sessions.md`.
 Edits, unique-match replace with read-back (backups first in the session scratchpad):
 - (d): add `--cause tier|brief|other` on every rejection.
-- New (e): the four-step exploration protocol from Task 4, verbatim.
+- New (e): the four-step exploration protocol from Task 4, verbatim, including step 3's "A changed brief is
+  a new ticket, so without `TW-Override` a re-dispatch at t−1 can itself be explored down to t−2".
 - Handoff HOLD line: "the router is switched on (advisory, exploration 0.2 one tier below, installed <date>,
-  live check <session id>)". Lifting the HOLD stays Arian's call.
+  live check <session id>). Reinstall (Task 6) finished before the first launch and never runs during the
+  run; a mid-run switch-on change means all five sessions re-run `activate`." Lifting the HOLD stays
+  Arian's call.
 
-Check: `grep -c "cause tier" <each file>` = 1 and `grep -c "(exploration)" <each file>` ≥ 1 for all six.
+Check: `grep -c "cause tier" <each file>` = 1, `grep -c "(exploration)" <each file>` ≥ 1 and
+`grep -c "explored down to" <each file>` = 1 for all six; `grep -c "re-run \`activate\`"` on the handoff ≥ 1.
 Commit: the handoff in the home repo by pathspec (the Desktop prompts are not in git).
 
 ## Self-review
@@ -394,5 +482,11 @@ Commit: the handoff in the home repo by pathspec (the Desktop prompts are not in
   2026-09-27).
 - Advisor contamination (Task 1b): detected per dispatch and excluded from promotion; the advisor itself is
   off (Arian, 2026-09-27).
-- Names agree: `cause`, `advisor_calls`, `n_advisor_excluded`, `risk_floor`, `source: "explore"`,
-  `cached:explore`, `load_routes`, `cost_row`, `promote`, `route`, `act`.
+- Promote on this run: counts only. Its coordinator arm under advisory + explore holds only `TW-Override`
+  rows (selected); the valid control (coordinator-source rows with `explore` > 0 whose coin fell ≥ ε, at the
+  explored rows' original tier) is phase 2. Task 2 records `explore` on every route row so that arm can be
+  built from this run's receipts.
+- Floor vs. data (Task 3): route rows keep the raw pick in `router_tier` and the floored pick in
+  `target_tier`; `promote` and `race_check` (via `router_agent`) read the floored one.
+- Names agree: `cause`, `advisor_calls`, `n_advisor_excluded`, `risk_floor`, `target_tier`, `explore`,
+  `source: "explore"`, `cached:explore`, `load_routes`, `cost_row`, `promote`, `route`, `act`.

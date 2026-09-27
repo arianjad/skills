@@ -343,8 +343,9 @@ the source of the `table` prior.
 
 **Stage 2, exploration one tier below the coordinator (label generation; Arian, 2026-09-27).** Exploration
 needs no backend and no table: with no Opus 5.5 calibration a table is only a constant. When no backend
-answers, a fraction ε of dispatches (by ticket hash) in an `advisory` class is advised to the role's next
-tier below the coordinator's tier t (`source: "explore"`, the denial says "exploration"); the risk floor
+answers, a fraction ε of dispatches (by ticket hash) in a class with `explore` > 0 gets the role's next
+tier below the coordinator's tier t (`source: "explore"`), computed in any mode and acted on in `advisory`
+or `active` (the denial says "exploration"; a `shadow` class only logs the row); the risk floor
 applies (below), and a dispatch at the role's cheapest tier is never explored. Accepted at t−1: c ≤ t−1, a
 tighter upper bound. Rejected at t−1 for tier reasons (`--cause tier`) and then accepted at t: c = t exactly,
 a two-sided row. One tier below was chosen over the role's cheapest tier because every rejection gives an
