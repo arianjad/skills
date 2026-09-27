@@ -513,6 +513,47 @@ def competing_agent_writer(home: Path) -> str | None:
         return f"guard could not read context-mode state: {type(exc).__name__}"
 
 
+def advisory_flag(home: Path, harness: str, session: str) -> Path:
+    return state_root(home) / "state" / harness / f"{sha(session.encode('utf-8'))}.advisory"
+
+
+def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: dict, routes: dict):
+    """(hook output | None, action None/"advise"/"rewrite", guard | None) for an admitted, routed dispatch."""
+    if r["mode"] == "shadow" or r["source"] == "coordinator":
+        return None, None, None
+    inp = envelope["tool_input"]
+    brief = inp.get("message" if harness == "codex" else "prompt")
+    # Checked before the cached decision is used: the ticket ignores TW-Override, so an override
+    # re-dispatch of an advised brief reuses the decision that advised it.
+    if any(x.startswith("TW-Override: ") and x[13:].strip() for x in brief.split("\n")[1:]):
+        return None, None, None
+    pol = routes["harnesses"][harness]["roles"][d.role]
+    target = r["tier"]
+    risky = d.fields["TW-Risk"] != "none"  # design §5: any risk-flagged brief (Fable review, finding 6)
+    if risky and target == pol["tiers"][0]:
+        return None, None, None  # risk-flagged briefs never route to the role's cheapest tier
+    lower = TIERS.index(target) < TIERS.index(d.tier)
+    disagree = target != d.tier and r["confidence"] >= routes["router"]["cutoff"]
+    explored = lower and r["explore"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["explore"]
+    if not (disagree or explored):
+        return None, None, None
+    guard = None
+    if r["mode"] == "active" and harness == "claude":
+        guard = competing_agent_writer(home)
+        if guard is None and advisory_flag(home, harness, session).exists():
+            guard = "lost race recorded earlier this session"
+        if guard is None:
+            new = {**inp, "subagent_type": agent_name(d.role, target)}  # whole tool_input, one key changed
+            return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+                                            "updatedInput": new}}, "rewrite", None)
+    why = "exploration" if explored and not disagree else f"p={r['confidence']:.2f}"
+    pick = agent_name(d.role, target) if harness == "claude" else "reasoning_effort=" + target
+    reason = (f"router picks {target} ({why}); dispatch {pick} or add `TW-Override: <reason>` to keep {d.tier}"
+              + (f" [active held: {guard}]" if guard else ""))
+    return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                    "permissionDecisionReason": f"{OWNER}: {reason}"}}, "advise", guard)
+
+
 def hook(home: Path, harness: str, owner: str) -> None:
     if owner != OWNER:
         denial("unknown installed hook owner")
@@ -573,11 +614,14 @@ def hook(home: Path, harness: str, owner: str) -> None:
                "action": None, "guard": None}
         if r.get("errors"):
             row["errors"] = r["errors"]
+        out, row["action"], row["guard"] = act(home, harness, session, envelope, d, r, routes)
         if record.get("store_bodies"):
             body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
             body.parent.mkdir(parents=True, exist_ok=True)
             body.write_text(brief, encoding="utf-8")
         append_receipt(home, harness, session, row)
+        if out:  # printed only after the route row is recorded; any earlier failure leaves the admit standing
+            print(json.dumps(out))
     except Exception as exc:
         try:
             append_receipt(home, harness, session, {"kind": "error", "at": now(), "harness": harness,
