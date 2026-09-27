@@ -1216,7 +1216,9 @@ Rule (design §5): let k be the accepted count out of n router-arm dispatches. T
 `p_router ~ Beta(1+k, 1+n−k)`, and the same form holds for the coordinator arm. Promote when
 `P(p_router − p_coord ≥ −0.15) > 0.8`, demote when it is `< 0.2`, and hold otherwise. The arms are:
 - **Router arm:** labeled route rows that ran at a lower router tier. That is either an `active` rewrite
-  whose `router_tier < coordinator_tier`, or a re-dispatch of an advised-lower ticket whose
+  whose `router_tier < coordinator_tier` and whose race row says `lost: false` (`outcome` runs
+  `race_check` before labeling, gate-2 fix 2, so every labeled rewrite is verified; an unchecked one is in
+  neither arm), or a re-dispatch of an advised-lower ticket whose
   `coordinator_tier` equals the advised tier.
 - **Coordinator arm:** labeled route rows where a backend (not the coordinator fallback) picked a lower
   tier but the child ran at the coordinator's tier: `action is None`, `router_tier < coordinator_tier`,
@@ -1231,18 +1233,18 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
             draws: int = 200_000, seed: int = 7) -> dict:
     rows = []
     for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
-        rows += [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        rows += read_rows(path)  # T6: skips torn lines
     label = {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"}
-    lost = {r["tool_use_id"] for r in rows if r.get("kind") == "race" and r.get("lost")}  # ran at neither arm's tier
+    race = {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"}  # outcome runs race_check
     routes = [r for r in rows if r.get("kind") == "route" and (cls is None or r.get("class") == cls)]
     advised = {r["ticket"]: r["router_tier"] for r in routes if r.get("action") == "advise"
                and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])}
     router, coord = [], []
     for r in routes:
         ok = label.get(r.get("tool_use_id"))
-        if ok is None or r.get("tool_use_id") in lost:
-            continue
-        rewrite_lower = (r.get("action") == "rewrite"
+        if ok is None or race.get(r.get("tool_use_id")) is True:
+            continue  # lost race: ran at neither arm's tier
+        rewrite_lower = (r.get("action") == "rewrite" and race.get(r.get("tool_use_id")) is False  # verified only
                          and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"]))
         complied = (r.get("action") is None and r.get("source", "").startswith("cached:")
                     and advised.get(r["ticket"]) == r["coordinator_tier"])
@@ -1289,7 +1291,13 @@ def verdict(k, n=10, lost=0):
             tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"r{i}", "ticket": f"t{i}",
                                                   "class": "C-coding", "action": "rewrite",
                                                   "router_tier": "low", "coordinator_tier": "high"})
+            tw.append_receipt(home, "claude", S, {"kind": "race", "tool_use_id": f"r{i}", "lost": False})
             tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"r{i}", "accepted": i < k})
+        for i in range(5):  # rewrites never race-checked: unverified, in neither arm
+            tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"q{i}", "ticket": f"z{i}",
+                                                  "class": "C-coding", "action": "rewrite",
+                                                  "router_tier": "low", "coordinator_tier": "high"})
+            tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"q{i}", "accepted": False})
         for i in range(1000):  # coordinator arm: table wanted low, ran at high
             tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"c{i}", "ticket": f"u{i}",
                                                   "class": "C-coding", "action": None, "source": "table",
