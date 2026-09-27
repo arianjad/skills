@@ -20,6 +20,6 @@
     "cutoff": 0.85,
     "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"},
     "table": {"path": "~/Code/effortmining/bench/state/calibration.json"},
-    "classes": {"*": {"mode": "shadow", "explore": 0.0}}
+    "classes": {"*": {"mode": "advisory", "explore": 0.2}}
   }
 }

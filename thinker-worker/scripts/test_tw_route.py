@@ -19,7 +19,8 @@ REAL_LOAD = tw.load_routes
 
 def routes_with(cal_path, backends=("table",), budget=2.0):
     r = REAL_LOAD()
-    r["router"] = {**r["router"], "backends": list(backends), "budget_s": budget, "table": {"path": str(cal_path)}}
+    r["router"] = {**r["router"], "backends": list(backends), "budget_s": budget, "table": {"path": str(cal_path)},
+                   "classes": {"*": {"mode": "shadow"}}}  # independent of the shipped mode
     return r
 
 
@@ -80,12 +81,17 @@ if __name__ == "__main__":
         finally:
             tw.load_routes = REAL_LOAD
 
-    with tempfile.TemporaryDirectory() as home:  # real routes.json: backends [] -> coordinator rows, never cached
-        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF})
-        a, b = [x for x in receipts(home, "claude") if x["kind"] == "route"]
-        assert a["source"] == b["source"] == "coordinator" and b["router_tier"] == "low", (a, b)
+    # real routes.json, exploration pinned off: backends [] -> coordinator rows, never cached
+    tw.load_routes = lambda path=None: {**REAL_LOAD(), "router": {**REAL_LOAD()["router"], "classes": {"*": {"mode": "shadow"}}}}
+    try:
+        with tempfile.TemporaryDirectory() as home:
+            run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+            hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
+            hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF})
+            a, b = [x for x in receipts(home, "claude") if x["kind"] == "route"]
+            assert a["source"] == b["source"] == "coordinator" and b["router_tier"] == "low", (a, b)
+    finally:
+        tw.load_routes = REAL_LOAD
 
     with tempfile.TemporaryDirectory() as home:  # torn last line from a concurrent hook is skipped
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
@@ -128,5 +134,7 @@ if __name__ == "__main__":
     assert tw.route(r0, "claude", "leaf", f, "x", "medium")["tier"] == "low"
     r0["router"]["classes"]["*"]["explore"] = 0.0
     assert tw.route(r0, "claude", "worker", f, "x", "high")["source"] == "coordinator"
+    shipped = tw.load_routes()  # switch-on: no backend, every class advisory with exploration 0.2
+    assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": 0.2}
     print("PASS route: table clamp, coordinator fallback (missing/invalid/overrun), route rows, no body, body store, "
           "header truncation, CLI, backend-only cache, TW-Override ticket, backend errors, torn line, fail-open error row")
