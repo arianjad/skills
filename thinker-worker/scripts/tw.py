@@ -330,7 +330,8 @@ def read_rows(path: Path) -> list[dict]:
     return rows
 
 
-def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: bool) -> None:
+def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: bool,
+            cause: str | None = None) -> None:
     """Label a guarded dispatch; the last outcome for a tool_use_id wins. Claude: one cost row, written once."""
     if harness == "claude":
         race_check(home, harness, session, None)  # verify the session's last rewrite before it is labeled; never raises
@@ -339,7 +340,7 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
         raise Conflict(f"no receipt for tool_use_id {tool_use_id} in {harness} session {session}")
     append_receipt(home, harness, session, {"kind": "outcome", "at": now(), "harness": harness,
                                             "session_id": session, "tool_use_id": tool_use_id,
-                                            "accepted": accepted})
+                                            "accepted": accepted, "cause": cause})
     if harness == "claude" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id for r in rows):
         try:  # the label above stands even if the child's files are unreadable
             row = cost_row(home, harness, session, tool_use_id)
@@ -1273,6 +1274,8 @@ def main() -> int:
         if name == "outcome":
             p.add_argument("--tool-use-id", required=True)
             p.add_argument("--accepted", choices=("yes", "no"), required=True)
+            # No argparse `choices`: its SystemExit(2) escapes run_main, so main checks the closed vocabulary.
+            p.add_argument("--cause", help="why a rejection happened: tier, brief or other (only with --accepted no)")
         if name == "activate":
             p.add_argument("--store-bodies", action="store_true")
         if name == "machines":
@@ -1308,7 +1311,12 @@ def main() -> int:
         elif args.command == "status":
             status(home, args.harness, session_value(args.session))
         elif args.command == "outcome":
-            outcome(home, args.harness, session_value(args.session), args.tool_use_id, args.accepted == "yes")
+            if args.cause is not None and args.cause not in ("tier", "brief", "other"):
+                raise Conflict(f"--cause must be tier, brief or other, not {args.cause!r}")
+            if args.cause and args.accepted == "yes":
+                raise Conflict("--cause explains a rejection; use it only with --accepted no")
+            outcome(home, args.harness, session_value(args.session), args.tool_use_id, args.accepted == "yes",
+                    args.cause)
         elif args.command == "promote":
             print(json.dumps(promote(home, args.harness, args.cls)))
         elif args.command == "route":
