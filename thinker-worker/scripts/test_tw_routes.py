@@ -2,7 +2,7 @@
 Run: python test_tw_routes.py"""
 import tw
 
-R = tw.load_routes()
+R = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
 HDR = "TW-Class: C-coding\nTW-Deliverable: patch\nTW-Accept: tests pass\nTW-Risk: none\n"
 AUTH = "TW-Authorization: t\nTW-Scope: t\n"
 W = "TW-Role: worker\n" + HDR + "x"
@@ -69,7 +69,8 @@ if __name__ == "__main__":
     import json, tempfile
     from pathlib import Path
     good = {"backends": [], "budget_s": 2.0, "cutoff": 0.85, "classes": {"*": {"mode": "shadow"}},
-            "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"}}
+            "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"},
+            "priors": {"*": "medium"}}
     no_cutoff = {k: v for k, v in good.items() if k != "cutoff"}
     with tempfile.TemporaryDirectory() as tmp:
         for router, ok in [(good, True), (None, False), ([], False), ({**good, "backends": "table"}, False),
@@ -80,7 +81,14 @@ if __name__ == "__main__":
                            ({**good, "cutoff": 0}, True),
                            ({**good, "risk_floor": {"physics": "high"}}, False),                         # every flag needs a floor
                            ({**good, "risk_floor": {**good["risk_floor"], "physics": "max"}}, False),    # a real tier
-                           ({k: v for k, v in good.items() if k != "risk_floor"}, False)]:
+                           ({k: v for k, v in good.items() if k != "risk_floor"}, False),
+                           ({k: v for k, v in good.items() if k != "priors"}, False),                    # priors required
+                           ({**good, "priors": {"C-coding": "high"}}, False),                            # "*" required
+                           ({**good, "priors": {"*": "medium", "C-cooding": "high"}}, False),            # unknown class
+                           ({**good, "priors": {"*": "max"}}, False),                                    # a real tier
+                           ({**good, "classes": {"*": {"mode": "bogus"}}}, False),                       # a real mode
+                           ({**good, "classes": {"*": {"mode": "shadow"}, "X": {"mode": "shadow"}}}, False),
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": 1.5}}}, False)]:
             doc = {**R, "router": router}
             if router is None:
                 del doc["router"]
@@ -105,4 +113,86 @@ if __name__ == "__main__":
             assert tw.load_routes(arg_file)["router"]["classes"]["*"]["mode"] == "active"
         finally:
             os.environ.pop("TW_ROUTES") if old is None else os.environ.__setitem__("TW_ROUTES", old)
-    print(f"PASS {len(CASES)} route-policy cases; router block validated")
+    # switch-on T4c: tier priors live in router.priors; no role carries a `default`
+    assert R["router"]["priors"] == {"*": "medium", "T1-mechanical": "low", "T2-simple-transform": "low",
+                                     "T3-moderate-reasoning": "medium", "T4-hard-reasoning": "high",
+                                     "R-research": "medium", "C-coding": "high"}, R["router"]["priors"]
+    assert not [(h, r) for h in R["harnesses"] for r, pol in R["harnesses"][h]["roles"].items() if "default" in pol]
+    assert tw.prior(R, "claude", "worker", "C-coding") == "high"
+    assert tw.prior(R, "claude", "independent-review", "T1-mechanical") == "high"      # clamped to the review ladder
+    assert tw.prior(R, "codex", "ideation", "T1-mechanical") == "medium"
+
+    from test_tw_hook import pinned_routes, run_main
+    hdr = "TW-Class: {}\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"
+    with pinned_routes(), tempfile.TemporaryDirectory() as tmp:     # route CLI: prior tier, exploration pinned off
+        for cls, role, want in (("C-coding", "worker", "high"), ("T1-mechanical", "worker", "low"),
+                                ("T1-mechanical", "independent-review", "high")):
+            f = Path(tmp) / "b.md"
+            f.write_text(f"TW-Role: {role}\n" + hdr.format(cls), encoding="utf-8")
+            code, out = run_main(["route", "--harness", "claude", "--role", role, "--brief-file", str(f)])
+            assert code == 0 and json.loads(out)["tier"] == want, (cls, role, out)
+        code, out = run_main(["activate", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
+        assert code == 0 and "C-coding=high" in out and "T1-mechanical=low" in out, out
+        assert "Tier priors (installed routes.json): *=medium," in out and "risk floors: physics=high" in out, out
+        code, out = run_main(["status", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
+        assert code == 0 and "C-coding=high" in out and "T1-mechanical=low" in out, out
+
+    # user override file: TW_ROUTES_OVERRIDE (else ~/.thinker-worker/routes.json), read only with no path/TW_ROUTES
+    saved = {k: os.environ.pop(k, None) for k in ("TW_ROUTES", "TW_ROUTES_OVERRIDE")}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ov = Path(tmp) / "override.json"
+            os.environ["TW_ROUTES_OVERRIDE"] = str(ov)
+
+            def loaded(text):
+                ov.write_text(text, encoding="utf-8")
+                return tw.load_routes()
+            doc = loaded(json.dumps({"router": {"priors": {"C-coding": "medium"}}}))
+            assert doc["router"]["priors"]["C-coding"] == "medium" and doc["router"]["priors"]["T1-mechanical"] == "low"
+            assert doc["_override"] == str(ov) and "_override_error" not in doc, doc
+            assert tw.prior(doc, "claude", "worker", "C-coding") == "medium"
+            doc = loaded(json.dumps({"router": {"classes": {"C-coding": {"explore": 0.5}}}}))   # partial entry
+            assert tw.class_mode(doc, "C-coding") == ("advisory", 0.5), doc["router"]["classes"]  # inherits "*" mode
+            assert tw.class_mode(doc, "T1-mechanical") == ("advisory", 0.2)
+            doc = loaded(json.dumps({"router": {"classes": {"*": {"mode": "shadow"}, "C-coding": {"explore": 0.5}}}}))
+            assert tw.class_mode(doc, "C-coding") == ("shadow", 0.5), doc["router"]["classes"]
+            doc = loaded(json.dumps({"router": {"risk_floor": {"physics": "xhigh"}}}))
+            assert doc["router"]["risk_floor"] == {"physics": "xhigh", "destructive": "medium", "external": "medium"}
+            # fails open: any bad override leaves the installed doc unchanged and says why
+            for bad in (json.dumps({"harnesses": {}}), json.dumps({"router": {"backends": ["table"]}}), "{not json",
+                        json.dumps({"router": {"priors": {"C-coding": "max"}}}),
+                        json.dumps({"router": {"classes": {"C-coding": {"mode": "bogus"}}}}), "[]"):
+                doc = loaded(bad)
+                assert doc.get("_override_error") and "_override" not in doc, (bad, doc)
+                assert doc["router"] == R["router"] and doc["harnesses"] == R["harnesses"], bad
+            os.environ["TW_ROUTES"] = str(tw.source_root() / "routes.json")   # a pin skips the override entirely
+            doc = tw.load_routes()
+            assert "_override_error" not in doc and "_override" not in doc, doc
+            del os.environ["TW_ROUTES"]
+            doc = tw.load_routes(tw.source_root() / "routes.json")                # so does an explicit path
+            assert "_override_error" not in doc and "_override" not in doc, doc
+            ov.unlink()
+            assert "_override_error" not in tw.load_routes() and "_override" not in tw.load_routes()   # absent file
+
+            # a bad override: the dispatch is admitted, one error row names it, status says it was ignored
+            ov.write_text(json.dumps({"harnesses": {}}), encoding="utf-8")
+            session = "s-override"
+            code, out = run_main(["activate", "--home", tmp, "--harness", "claude", "--session", session])
+            assert code == 0 and "Tier priors (override ignored: " in out, out
+            code, out = run_main(["status", "--home", tmp, "--harness", "claude", "--session", session])
+            assert code == 0 and "override ignored" in out, out
+            coin = lambda b: int(tw.ticket(b)[0], 16) / 16 ** 12
+            brief = next(b for b in ("TW-Role: worker\n" + hdr.format("C-coding") + str(i) for i in range(50))
+                         if coin(b) >= 0.2)                                   # shipped explore 0.2: stay unexplored
+            env = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session, "tool_use_id": "t1",
+                   "tool_input": {"subagent_type": "tw-worker-high", "prompt": brief}}
+            code, out = run_main(["hook", "--home", tmp, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))
+            assert code == 0 and out == "", out
+            rows = tw.read_rows(tw.receipts_path(Path(tmp), "claude", session))
+            assert [r["kind"] for r in rows] == ["dispatch", "error", "route"] and rows[0]["decision"] == "admit", rows
+            assert rows[1]["where"] == "override" and "override" in rows[1]["error"], rows[1]
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    print(f"PASS {len(CASES)} route-policy cases; router block validated; priors, route CLI, activate/status line, "
+          "user override (merge, fail-open, pinned-out)")

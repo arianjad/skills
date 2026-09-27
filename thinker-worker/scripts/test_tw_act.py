@@ -9,18 +9,20 @@ import tempfile
 from pathlib import Path
 
 import tw
-from test_tw_hook import run_main
+from test_tw_hook import pinned_routes, run_main
 from test_tw_receipt import HDR, SESSION, receipts
 
-BASE = tw.load_routes()
+BASE = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
 
 
 def run(mode, pick="low", conf=0.95, explore=0.0, brief_extra="", guard=None, flag=False, risk="none",
-        st="tw-worker-high", then=None, backends=("stub",)):
+        st="tw-worker-high", then=None, backends=("stub",), prior=None):
     """One dispatch in a fresh temp home (plus `then=(st, brief_extra)`, a re-dispatch in the same home).
-    Returns (hookSpecificOutput | None, last non-dispatch row). The real guard is never consulted."""
+    Returns (hookSpecificOutput | None, last non-dispatch row). The real guard is never consulted. The tier prior
+    is the last dispatch's tier unless `prior` is given, so the prior reminder stays out of the act() cases."""
     routes = json.loads(json.dumps(BASE))
-    routes["router"].update(backends=list(backends), classes={"*": {"mode": mode, "explore": explore}})
+    routes["router"].update(backends=list(backends), classes={"*": {"mode": mode, "explore": explore}},
+                            priors={"*": prior or (then or (st,))[0].rsplit("-", 1)[1]})
     tw.BACKENDS["stub"] = lambda *a: {"tier": pick, "probs": {pick: 1.0}, "confidence": conf, "body_chars_sent": 0}
     tw.load_routes = lambda path=None: routes
     tw.competing_agent_writer = guard if callable(guard) else (lambda home: guard)
@@ -43,6 +45,8 @@ def boom(home):
 
 
 if __name__ == "__main__":
+    pin = pinned_routes()  # held for the run: run() stubs load_routes; the pin keeps run_main's routing assertion
+    pin.__enter__()
     out, row = run("shadow")
     assert out is None and row["action"] is None and row["router_tier"] == "low"
     # eligible (would the router act?) is recorded in shadow too: the promote coordinator arm matches on it
@@ -101,5 +105,13 @@ if __name__ == "__main__":
     assert run("advisory", explore=1.0, backends=(), st="tw-worker-low")[0] is None       # nothing below low
     out, row = run("shadow", explore=1.0, backends=())              # computed in shadow, not acted on
     assert out is None and row["source"] == "explore" and row["action"] is None, row
+    out, row = run("shadow", pick="high", prior="medium")             # no router action, tier != prior: reminder only
+    assert out == {"hookEventName": "PreToolUse", "additionalContext":
+                   "thinker-worker: prior for C-coding is medium; you dispatched high (fine if deliberate)"}, out
+    assert row["prior_tier"] == "medium", row
+    out, row = run("advisory", prior="medium")                          # an advise already speaks: no reminder
+    assert out["permissionDecision"] == "deny" and "additionalContext" not in out, out
+    out, row = run("active", prior="medium")                            # nor does a rewrite add the reminder
+    assert out["permissionDecision"] == "allow" and "prior for" not in out["additionalContext"], out
     print("PASS act: shadow, advisory, override, cutoff, risk floor, cached re-dispatch, active rewrite, "
           "guard/flag hold, exploration, fail-open")

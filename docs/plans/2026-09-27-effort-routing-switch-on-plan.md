@@ -644,6 +644,10 @@ Steps:
    is admitted with `source: "cached:explore"`; `tw.py outcome … --accepted yes` writes the outcome and cost
    rows. Then dispatch `tw-ideation-high` with `model: opus` and label it: route row `agent_model: "opus"`,
    cost row `model` a `claude-opus-*` id (the per-call override of the file's `model: fable`, Task 1c).
+4. Prior reminder (T4c, Fable addendum): dispatch at a non-prior tier (e.g. `TW-Class: C-coding` at
+   `tw-worker-medium`, a brief whose coin is ≥ 0.2); confirm the `additionalContext` line
+   `thinker-worker: prior for C-coding is high; you dispatched medium (fine if deliberate)` arrives (docs [D]);
+   if it doesn't, keep activate/status only; never pair it with allow. `activate` prints the `Tier priors` line.
 
 Check: the rows above, pasted from the receipts file.
 Record: `ROUTING-PROGRESS.md` switch-on section with the session id and rows; commit by pathspec.

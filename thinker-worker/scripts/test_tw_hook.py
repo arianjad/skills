@@ -12,6 +12,9 @@ import tw
 
 
 def run_main(argv, stdin=""):
+    if argv[:1] and argv[0] in ("hook", "activate", "status", "route"):  # these read routes.json (+ user override)
+        assert os.environ.get("TW_ROUTES") or os.environ.get("TW_ROUTES_OVERRIDE"), \
+            "tests must pin routing: TW_ROUTES (pinned_routes) or TW_ROUTES_OVERRIDE, never the real home override"
     out = io.StringIO()
     old_argv, old_stdin = sys.argv, sys.stdin
     sys.argv, sys.stdin = ["tw.py", *argv], io.StringIO(stdin)
@@ -54,7 +57,7 @@ if __name__ == "__main__":
     assert run_main(["activate", "--home", home, "--harness", "claude", "--session", session])[0] == 0
     envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
                            "tool_input": {"subagent_type": "tw-worker-high",
-                                          "prompt": "TW-Role: worker\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}})
+                                          "prompt": "TW-Role: worker\nTW-Class: C-coding\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}})
     hook_argv = ["hook", "--home", home, "--harness", "claude", "--owner", tw.OWNER]
 
     code, out = run_main(hook_argv, envelope)  # sanity: a valid dispatch is admitted (no output)

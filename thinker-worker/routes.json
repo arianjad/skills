@@ -2,16 +2,16 @@
   "schema": 1,
   "harnesses": {
     "claude": {"roles": {
-      "worker":             {"models": ["opus", "claude-opus-5", "claude-opus-5-5"], "tiers": ["low", "medium", "high", "xhigh"], "default": "medium", "tools": null},
-      "leaf":               {"models": ["sonnet", "claude-sonnet-5"],               "tiers": ["low", "medium"],                 "default": "low",  "tools": null},
-      "independent-review": {"models": ["fable", "claude-fable-5", "claude-fable-5-1"], "tiers": ["high", "xhigh"],             "default": "high", "tools": null},
-      "ideation":           {"models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5"], "tiers": ["high", "xhigh"], "default": "high", "tools": null}
+      "worker":             {"models": ["opus", "claude-opus-5", "claude-opus-5-5"], "tiers": ["low", "medium", "high", "xhigh"], "tools": null},
+      "leaf":               {"models": ["sonnet", "claude-sonnet-5"],               "tiers": ["low", "medium"],  "tools": null},
+      "independent-review": {"models": ["fable", "claude-fable-5", "claude-fable-5-1"], "tiers": ["high", "xhigh"], "tools": null},
+      "ideation":           {"models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5"], "tiers": ["high", "xhigh"], "tools": null}
     }},
     "codex": {"roles": {
-      "worker":             {"models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"], "tiers": ["low", "medium", "high", "xhigh"], "default": "medium"},
-      "leaf":               {"models": ["gpt-6-luna"],  "tiers": ["low", "medium"],          "default": "low"},
-      "independent-review": {"models": ["gpt-6-astra"], "tiers": ["medium", "high", "xhigh"], "default": "high"},
-      "ideation":           {"models": ["gpt-6-astra"], "tiers": ["medium", "high", "xhigh"], "default": "high"}
+      "worker":             {"models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"], "tiers": ["low", "medium", "high", "xhigh"]},
+      "leaf":               {"models": ["gpt-6-luna"],  "tiers": ["low", "medium"]},
+      "independent-review": {"models": ["gpt-6-astra"], "tiers": ["medium", "high", "xhigh"]},
+      "ideation":           {"models": ["gpt-6-astra"], "tiers": ["medium", "high", "xhigh"]}
     }}
   },
   "router": {
@@ -19,6 +19,8 @@
     "budget_s": 2.0,
     "cutoff": 0.85,
     "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"},
+    "priors": {"*": "medium", "T1-mechanical": "low", "T2-simple-transform": "low", "T3-moderate-reasoning": "medium",
+               "T4-hard-reasoning": "high", "R-research": "medium", "C-coding": "high"},
     "table": {"path": "~/Code/effortmining/bench/state/calibration.json"},
     "classes": {"*": {"mode": "advisory", "explore": 0.2}}
   }

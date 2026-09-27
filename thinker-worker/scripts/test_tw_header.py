@@ -2,7 +2,7 @@
 Run: python test_tw_header.py"""
 import tw
 
-R = tw.load_routes()
+R = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
 AUTH = "TW-Authorization: t\nTW-Scope: t\n"
 HDR = ("TW-Class: T3-moderate-reasoning\nTW-Deliverable: patch to f.py\n"
        "TW-Accept: python test_f.py passes\nTW-Risk: none\n")

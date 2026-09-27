@@ -11,7 +11,7 @@ import tw
 TW = str(Path(__file__).with_name("tw.py"))
 
 if __name__ == "__main__":
-    routes = tw.load_routes()
+    routes = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
     want = {tw.agent_name(r, t) for r, p in routes["harnesses"]["claude"]["roles"].items() for t in p["tiers"]}
     assert len(want) == 10, want
     with tempfile.TemporaryDirectory() as tmp:

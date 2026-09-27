@@ -485,6 +485,15 @@ Decided 2026-09-26 (Arian):
      `"risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"}`.
      Contract (c)'s physics-or-convention floor is a coordinator rule, not this flag: a convention
      judgment carries no `TW-Risk` flag.
+   - **Priors in one place (Arian, 2026-09-27; switch-on T4c).** The per-role `default` is deleted from
+     `routes.json` in both harnesses (the §4.2 sketch's `default` keys and "Where it lands" above predate this).
+     The tier priors now live in `routes.json` `router.priors` (`*` medium; `T1-mechanical`, `T2-simple-transform`
+     low; `T3-moderate-reasoning`, `R-research` medium; `T4-hard-reasoning`, `C-coding` high), merged key by key
+     with a user override file (`TW_ROUTES_OVERRIDE`, else `~/.thinker-worker/routes.json`; only `router.priors`,
+     `router.classes`, `router.risk_floor`; not installer-owned; fails open with a logged reason), which is where
+     usage data will later write learned priors. `activate`/`status` print the effective priors, route rows
+     record `prior_tier`, the `route` CLI routes at `prior()`, and `SKILL.md` and the references point the
+     coordinator at the printed priors instead of hand-written tier numbers.
 
 Defaults taken unless objected to: everything in §4.7; `TW-Class` stays required as the coordinator's label;
 per-dispatch cutoff 0.85; exploration ε = 0.2 in §5 Stage 2 (one tier below the coordinator) and Stage 4.

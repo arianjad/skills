@@ -64,7 +64,8 @@ if __name__ == "__main__":
                     assert rows[1]["coordinator_tier"] == "high" and rows[1]["action"] is None, rows[1]
                     assert rows[1]["router_agent"] == tw.agent_name("worker", rows[1]["router_tier"]), rows[1]
                     assert rows[1]["source"] == "table" and "errors" not in rows[1], rows[1]
-                    assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF}) == (0, "")  # same ticket
+                    code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF})  # same ticket
+                    assert code == 0 and "you dispatched low" in out, out            # admitted; only the prior reminder
                     again = receipts(home, "claude")[-1]
                     assert again["source"] == "cached:table", again
                     assert again["router_tier"] == "xhigh" and again["coordinator_tier"] == "low", again
@@ -89,10 +90,13 @@ if __name__ == "__main__":
     try:
         with tempfile.TemporaryDirectory() as home:
             run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-            assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")
-            assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF}) == (0, "")
+            assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")  # = prior
+            code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF})
+            assert code == 0 and json.loads(out) == {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                "additionalContext": "thinker-worker: prior for C-coding is high; you dispatched low (fine if deliberate)"}}, out
             a, b = [x for x in receipts(home, "claude") if x["kind"] == "route"]
             assert a["source"] == b["source"] == "coordinator" and b["router_tier"] == "low", (a, b)
+            assert a["prior_tier"] == b["prior_tier"] == "high", (a, b)                    # C-coding worker prior
     finally:
         tw.load_routes = REAL_LOAD
 
@@ -138,8 +142,8 @@ if __name__ == "__main__":
     r0["router"]["classes"]["*"]["explore"] = 0.0
     assert tw.route(r0, "claude", "worker", f, "x", "high")["source"] == "coordinator"
 
-    pin.__exit__(None, None, None)  # the one deliberate test of the SHIPPED routes.json: no TW_ROUTES from here
-    assert "TW_ROUTES" not in os.environ
+    pin.__exit__(None, None, None)  # the one deliberate test of the SHIPPED routes.json: TW_ROUTES names it, so
+    os.environ["TW_ROUTES"] = str(tw.source_root() / "routes.json")  # a real-home override file is never read
     shipped = tw.load_routes()  # switch-on: no backend, every class advisory with exploration 0.2
     assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": 0.2}
     coin = lambda b: int(tw.ticket(b)[0], 16) / 16 ** 12      # the draw route() and act() use

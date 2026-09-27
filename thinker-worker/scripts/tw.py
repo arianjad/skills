@@ -56,29 +56,89 @@ def agent_name(role: str, tier: str) -> str:
     return f"tw-{role}-{tier}"
 
 
+MODES = ("shadow", "advisory", "active")
+OVERRIDABLE = {"priors", "classes", "risk_floor"}  # the only router keys the user override file may set
+
+
 def load_routes(path: Path | None = None) -> dict:
-    # an explicit path wins, then TW_ROUTES (tests pin their routing with it), then the skill's own file
-    path = path or Path(os.environ.get("TW_ROUTES") or source_root() / "routes.json")
+    """An explicit path wins, then TW_ROUTES (tests pin their routing with it); either is used as is. Otherwise the
+    skill's own routes.json (installer-owned, fails closed) with the user override file merged over it:
+    TW_ROUTES_OVERRIDE, else ~/.thinker-worker/routes.json. The override fails open: any problem leaves the installed
+    doc unchanged with `_override_error` set (the hook logs it per dispatch; activate/status print it)."""
+    pinned = path or os.environ.get("TW_ROUTES")
+    path = Path(pinned or source_root() / "routes.json")
     doc = read_json(path, None)
+    check_routes(doc, path)
+    if pinned:
+        return doc
+    ov_path = Path(os.environ.get("TW_ROUTES_OVERRIDE") or Path.home() / ".thinker-worker" / "routes.json")
+    try:
+        return merge_override(doc, ov_path) if ov_path.exists() else doc
+    except Exception as exc:
+        return {**doc, "_override_error": f"override {ov_path}: {exc}"[:300]}
+
+
+def merge_override(doc: dict, ov_path: Path) -> dict:
+    """Key by key over the installed router block; a class entry inherits the merged "*" entry. The merged doc is
+    validated like the installed one."""
+    ov = read_json(ov_path, None)
+    rt = ov.get("router") if isinstance(ov, dict) else None
+    if (not isinstance(ov, dict) or set(ov) != {"router"} or not isinstance(rt, dict) or not set(rt) <= OVERRIDABLE
+            or not all(isinstance(v, dict) for v in rt.values())
+            or not all(isinstance(v, dict) for v in rt.get("classes", {}).values())):
+        raise Conflict("may set only router.priors, router.classes and router.risk_floor, each an object")
+    merged = json.loads(json.dumps(doc))
+    mr = merged["router"]
+    mr["priors"].update(rt.get("priors", {}))
+    mr["risk_floor"].update(rt.get("risk_floor", {}))
+    star = {**mr["classes"]["*"], **rt.get("classes", {}).get("*", {})}
+    for cls, entry in rt.get("classes", {}).items():
+        mr["classes"][cls] = star if cls == "*" else {**star, **mr["classes"].get(cls, {}), **entry}
+    check_routes(merged, ov_path)
+    merged["_override"] = str(ov_path)
+    return merged
+
+
+def check_routes(doc: object, path: Path) -> None:
     if not isinstance(doc, dict) or doc.get("schema") != 1:
         raise Conflict(f"routes.json missing or not schema 1: {path}")
     for harness in HARNESSES:
         for role, pol in doc["harnesses"][harness]["roles"].items():
-            if (not pol.get("models") or not pol.get("tiers") or any(t not in TIERS for t in pol["tiers"])
-                    or pol.get("default") not in pol["tiers"]):
+            if not pol.get("models") or not pol.get("tiers") or any(t not in TIERS for t in pol["tiers"]):
                 raise Conflict(f"routes.json: bad policy for {harness}/{role}")
+
+    def good_class(name: object, entry: object) -> bool:
+        ex = entry.get("explore", 0.0) if isinstance(entry, dict) else None
+        return ((name == "*" or name in TASK_CLASSES) and isinstance(entry, dict) and entry.get("mode") in MODES
+                and not isinstance(ex, bool) and isinstance(ex, (int, float)) and 0 <= ex <= 1)
     rt = doc.get("router")
     budget = rt.get("budget_s") if isinstance(rt, dict) else None
     cutoff = rt.get("cutoff") if isinstance(rt, dict) else None
-    star = rt.get("classes", {}).get("*") if isinstance(rt, dict) and isinstance(rt.get("classes"), dict) else None
+    classes = rt.get("classes") if isinstance(rt, dict) else None
     floors = rt.get("risk_floor") if isinstance(rt, dict) else None
+    priors = rt.get("priors") if isinstance(rt, dict) else None
     if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list)
             or isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0
             or isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)) or not 0 <= cutoff <= 1
-            or not isinstance(star, dict) or "mode" not in star
-            or not isinstance(floors, dict) or set(floors) != RISKS or any(v not in TIERS for v in floors.values())):
+            or not isinstance(classes, dict) or "*" not in classes or not all(good_class(k, v) for k, v in classes.items())
+            or not isinstance(floors, dict) or set(floors) != RISKS or any(v not in TIERS for v in floors.values())
+            or not isinstance(priors, dict) or "*" not in priors or not set(priors) <= TASK_CLASSES | {"*"}
+            or any(v not in TIERS for v in priors.values())):
         raise Conflict("routes.json: bad router block")
-    return doc
+
+
+def prior(routes: dict, harness: str, role: str, cls: str | None) -> str:
+    """The tier prior for a class (router.priors, "*" when the class has none), clamped into the role's tiers."""
+    priors = routes["router"]["priors"]
+    return clamp(priors.get(cls, priors["*"]), routes["harnesses"][harness]["roles"][role]["tiers"])
+
+
+def priors_line(routes: dict) -> str:
+    rt = routes["router"]
+    source = (f"override ignored: {routes['_override_error']}" if routes.get("_override_error")
+              else "installed routes.json" + (f" + {routes['_override']}" if routes.get("_override") else ""))
+    return (f"Tier priors ({source}): " + ", ".join(f"{k}={v}" for k, v in rt["priors"].items())
+            + "; risk floors: " + ", ".join(f"{k}={v}" for k, v in rt["risk_floor"].items()))
 
 
 def now() -> str:
@@ -156,6 +216,7 @@ def activate(home: Path, harness: str, session: str, store_bodies: bool = False)
            "store_bodies": store_bodies, "activated_at": now()}
     atomic_write(path, canonical_json(obj), old)
     print(f"Activation requested for {harness} session {session}; hook trust/loading, interception, and effective child model remain unverified.")
+    print(priors_line(load_routes()))
 
 
 def deactivate(home: Path, harness: str, session: str) -> None:
@@ -178,6 +239,7 @@ def status(home: Path, harness: str, session: str) -> None:
                  "error": str(exc), "hook_loaded": "unknown",
                  "native_interception": "unknown", "effective_child_model_effort": "unknown"}
     print(json.dumps(value, indent=2))
+    print(priors_line(load_routes()))
 
 
 def first_role(brief: object) -> tuple[str | None, str]:
@@ -791,6 +853,10 @@ def hook(home: Path, harness: str, owner: str) -> None:
     routes = load_routes()
     d = decide(harness, envelope, routes)
     receipt(home, harness, session, envelope, d)
+    if routes.get("_override_error"):  # the override failed open: the installed routes decided; say so every dispatch
+        append_receipt(home, harness, session, {"kind": "error", "at": now(), "harness": harness, "session_id": session,
+                                                "tool_use_id": envelope.get("tool_use_id"), "where": "override",
+                                                "error": routes["_override_error"]})
     if not d.admitted:
         denial(d.reason)
         return
@@ -798,11 +864,12 @@ def hook(home: Path, harness: str, owner: str) -> None:
         return  # ponytail: Codex v2 ciphertext; the task_name join is phase 2
     try:  # fail open after admission: the dispatch receipt already says admit, so a routing bug must not deny
         brief = inp.get("message" if harness == "codex" else "prompt")
-        prior = prior_route(home, harness, session, ticket(brief)[0])
-        r = route(routes, harness, d.role, d.fields, brief, d.tier, prior)
+        cached = prior_route(home, harness, session, ticket(brief)[0])
+        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
+               "prior_tier": prior(routes, harness, d.role, d.fields["TW-Class"]),
                "agent_model": d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0],  # requested
                "probs": r["probs"],
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "ms": r["ms"],
@@ -826,6 +893,11 @@ def hook(home: Path, harness: str, owner: str) -> None:
         append_receipt(home, harness, session, row)
         if out:  # printed only after the route row is recorded; any earlier failure leaves the admit standing
             print(json.dumps(out))
+        elif harness == "claude" and d.tier != row["prior_tier"]:  # no router action: point-of-use prior reminder
+            # ponytail: Claude only; Codex's handling of additionalContext without a decision is unverified.
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
+                              f"thinker-worker: prior for {row['class']} is {row['prior_tier']}; "
+                              f"you dispatched {d.tier} (fine if deliberate)"}}))
     except Exception as exc:
         try:
             append_receipt(home, harness, session, {"kind": "error", "at": now(), "harness": harness,
@@ -1372,8 +1444,8 @@ def main() -> int:
             fields, problem = header_fields(brief)
             if problem:
                 raise Conflict(problem)
-            default = routes["harnesses"][args.harness]["roles"][args.role]["default"]
-            r = route(routes, args.harness, args.role, fields, brief, default)
+            r = route(routes, args.harness, args.role, fields, brief,
+                      prior(routes, args.harness, args.role, fields["TW-Class"]))
             print(json.dumps({k: r[k] for k in ("tier", "probs", "confidence", "source", "ticket", "mode")}))
         else:
             try:
