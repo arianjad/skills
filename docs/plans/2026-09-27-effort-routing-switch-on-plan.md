@@ -576,6 +576,49 @@ Gate fixes applied 2026-09-27 (ROUTING-PROGRESS.md "T5 gate fixes"): `TW_ROUTES`
 copy of the shipped file (one deliberate shipped-file test left in `test_tw_route.py`), `<synthetic>` rows are
 not API calls in `cost_row`, worker `default` medium in both harnesses.
 
+### Task 4c: tier priors in one place (Arian, 2026-09-27; runs after the T5 gate, before T6)
+
+Why (Arian, 2026-09-27): "defaults" only in one place, not scattered, and that place is what decision models and
+usage data later take over. Today they are in three: per-role `default` in routes.json (read only by the `route`
+CLI), the tier-rule text in SKILL.md/references and the five launch prompts, and Claude Code's own session
+effort (settings.json, out of scope). SKILL.md is copied verbatim at install (no templating), so rendered docs
+would need new machinery; instead the effective priors are printed into the session by `activate`/`status`.
+
+Interfaces:
+- routes.json `router.priors`: `{"*": "medium", "T1-mechanical": "low", "T2-simple-transform": "low",
+  "T3-moderate-reasoning": "medium", "T4-hard-reasoning": "high", "R-research": "medium", "C-coding": "high"}`
+  (values Arian, 2026-09-27). The per-role `default` key is deleted from every role in both harnesses.
+- `load_routes()`: validates `router.priors` (`"*"` required; keys ⊆ `TASK_CLASSES ∪ {"*"}`; values in `TIERS`);
+  no longer requires `default`. When neither `path` nor `TW_ROUTES` is given, it merges a user override file
+  (`TW_ROUTES_OVERRIDE` env, else `~/.thinker-worker/routes.json`) if present: only `router.priors`,
+  `router.classes` and `router.risk_floor` may appear in it (merged key by key over the installed values); any
+  other key → `Conflict`. This file is not installer-owned, survives reinstalls, and is where usage data will
+  write learned priors (phase 2, `promote --write-priors`; not in this task).
+- `prior(routes, harness, role, cls) -> tier`: `priors.get(cls, priors["*"])` clamped into the role's tiers
+  (`clamp`). The `route` CLI uses it where it read `default`.
+- `activate` and `status` print, after their current output, one line: `Tier priors (<source>): *=medium,
+  T1-mechanical=low, …; risk floors: physics=high, destructive=medium, external=medium`, where `<source>` is
+  `installed routes.json` or `installed routes.json + <override path>`.
+
+Red tests first:
+- test_tw_routes.py: shipped routes have `priors` and no role `default`; validation cases (missing `"*"`,
+  unknown class key, tier `"max"`) → `Conflict`; the route CLI returns `high` for `C-coding` and `low` for
+  `T1-mechanical` on a worker, and `high` for a `T1-mechanical` review (clamped to the review ladder).
+- override: `TW_ROUTES_OVERRIDE` → temp file `{"router": {"priors": {"C-coding": "medium"}}}` gives C-coding
+  medium and leaves the rest; a file with `harnesses` → `Conflict`; with `TW_ROUTES` set the override is ignored
+  (tests pin routing via `TW_ROUTES`, so a real-home override can never leak into the suite).
+- activate/status: output contains `C-coding=high` and `T1-mechanical=low`.
+
+Docs: SKILL.md, references/claude.md, references/codex.md replace the hand-written tier numbers with: "Pick the
+tier from the priors `activate` prints for the brief's `TW-Class`; deviate by judgment when the brief is clearly
+easier or harder than its class; physics or convention judgment never below `high`; `xhigh` only for adversarial
+hard reasoning." Design §7 decision 7 notes the priors now live in `router.priors` (+ override file). Task 7's
+contract (c) uses the same sentence.
+
+Check: full suite → `SUITE_DONE` only; `grep -n '"default"' thinker-worker/routes.json` → nothing;
+`grep -rn "medium by default\|Worker tier: \`medium\`" thinker-worker/SKILL.md thinker-worker/references` → nothing.
+Commit: `git add -- thinker-worker/routes.json thinker-worker/scripts/tw.py thinker-worker/scripts/test_tw_routes.py <other tests touched> thinker-worker/SKILL.md thinker-worker/references/claude.md thinker-worker/references/codex.md docs/plans/2026-09-26-effort-routing-architecture-design.md thinker-worker/ROUTING-PROGRESS.md && git commit -m "thinker-worker: tier priors in one place (routes.json router.priors + user override), printed at activate (switch-on T4c)" -- <same paths>`
+
 ### Task 6: reinstall and live check (Arian's OK at this step)
 
 Destructive boundary: rewrites the real `~/.claude/settings.json` hook entry, `~/.codex/hooks.json` and the
