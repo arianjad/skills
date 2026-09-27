@@ -28,7 +28,6 @@ from typing import NamedTuple
 OWNER = "thinker-worker-v1"
 HARNESSES = ("codex", "claude")
 SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "scripts/tw.py")
-AGENT_FILES = ("thinker-worker-opus.md", "thinker-worker-fable-review.md", "thinker-worker-sonnet.md")
 TIERS = ("low", "medium", "high", "xhigh")
 AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh)")
 VALUE_MAX = 1000  # per header value at the gate; receipts truncate at 256
@@ -371,8 +370,44 @@ def source_items(harnesses: tuple[str, ...] = HARNESSES) -> dict[str, bytes]:
         for rel in SKILL_FILES:
             out[f".{harness}/skills/thinker-worker/{rel}"] = (root / rel).read_bytes()
     if "claude" in harnesses:
-        for name in AGENT_FILES:
-            out[f".claude/agents/{name}"] = (root / "claude-agents" / name).read_bytes()
+        for name, data in agent_files(load_routes(root / "routes.json")).items():
+            out[f".claude/agents/{name}"] = data
+    return out
+
+
+AGENT_TEXT = {  # role -> (description, body); bodies carried over from the retired hand-written agents
+    "worker": ("Bounded execution for thinker/worker mode; coordinator owns framing and acceptance.",
+               "Execute the coordinator's bounded assignment. Preserve other agents' edits. Checkpoint meaningful "
+               "progress, run proportional checks, and report exact artifacts, results, and uncertainties. Escalate a "
+               "changed objective or consequential assumption to the coordinator. Do not dispatch children without "
+               "explicit bounded authorization."),
+    "leaf": ("Short, objectively checkable leaf for an opted-in thinker/worker session.",
+             "Complete only the coordinator's bounded leaf assignment. Use supplied rules for extraction, inventory, or "
+             "simple reconciliation; report exact artifacts and checks. Escalate ambiguity or judgment calls to the "
+             "coordinator. Preserve other agents' edits and do not dispatch children."),
+    "independent-review": ("Bounded independent review when the coordinator cites authorization.",
+                           "Review the assigned artifact adversarially. Identify unsupported, incorrect, fragile, or "
+                           "overbuilt parts with exact source references; run a check yourself when it settles a claim. "
+                           "Report findings; do not edit the files under review. Stay within the bounded assignment. Do "
+                           "not treat the request's model name as evidence of the effective runtime model."),
+    "ideation": ("Bounded ideation (divergent) when the coordinator cites authorization.",
+                 "Propose at most the requested number of ranked directions. Label each speculative and state what "
+                 "would confirm or kill it; cite prior art you find. Do not edit project files. Stay within the bounded "
+                 "assignment."),
+}
+
+
+def agent_files(routes: dict) -> dict[str, bytes]:
+    out = {}
+    for role, pol in routes["harnesses"]["claude"]["roles"].items():
+        desc, body = AGENT_TEXT[role]
+        for tier in pol["tiers"]:
+            name = agent_name(role, tier)
+            head = ["---", f"name: {name}", f"description: {desc} Effort {tier}.",
+                    f"model: {pol['models'][0]}", f"effort: {tier}"]
+            if pol.get("tools"):
+                head.append("tools: " + ", ".join(pol["tools"]))
+            out[f"{name}.md"] = ("\n".join(head + ["---", "", body, ""])).encode("utf-8")
     return out
 
 

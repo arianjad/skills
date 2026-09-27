@@ -22,7 +22,7 @@ def round_trip(prior_settings, *extra):
         (home / ".claude").mkdir()
         (home / ".codex").mkdir()
         settings = home / ".claude" / "settings.json"
-        agent = home / ".claude" / "agents" / "thinker-worker-opus.md"
+        agent = home / ".claude" / "agents" / "tw-worker-high.md"
         if prior_settings is not None:
             settings.write_text(json.dumps(prior_settings), encoding="utf-8")
 
