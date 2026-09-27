@@ -501,7 +501,9 @@ Commit: `git commit -m "thinker-worker: install generates tw-<role>-<tier> agent
 
 ### Task 3: `route()` in shadow — coordinator and table backends, route rows, ticket, body store, `route` CLI
 
-Files: `scripts/tw.py`, `scripts/test_tw_route.py` (new), `scripts/test_tw_portable.py`.
+Files: `scripts/tw.py`, `scripts/test_tw_route.py` (new), `scripts/test_tw_portable.py`,
+`scripts/test_tw_receipt.py` (reads only `kind == "dispatch"` rows, since an admitted dispatch now also
+writes a route row).
 
 Interfaces consumed: `Decision`, `load_routes`, `header_text`. Produced:
 - `ticket(brief) -> (str12, digest)`
@@ -1211,7 +1213,13 @@ Rule (design §5): let k be the accepted count out of n router-arm dispatches. T
 - **Router arm:** labeled route rows that ran at a lower router tier. That is either an `active` rewrite
   whose `router_tier < coordinator_tier`, or a re-dispatch of an advised-lower ticket whose
   `coordinator_tier` equals the advised tier.
-- **Coordinator arm:** labeled route rows with `action is None` whose ticket was never advised.
+- **Coordinator arm:** labeled route rows where a backend (not the coordinator fallback) picked a lower
+  tier but the child ran at the coordinator's tier: `action is None`, `router_tier < coordinator_tier`,
+  source not `coordinator`/`cached:coordinator`, and not complied. That covers override re-dispatches of an
+  advised ticket (the ticket ignores `TW-Override:` lines, gate-1 fix 4) and disagreements the router did
+  not act on (below cutoff, not explored). Both arms are the same "router would go lower" population
+  (gate-1 review, 2026-09-26: the earlier "never advised" definition compared disagreements against
+  everything).
 
 ```python
 def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.15,
@@ -1235,8 +1243,9 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
                     and advised.get(r["ticket"]) == r["coordinator_tier"])
         if rewrite_lower or complied:
             router.append(ok)
-        elif r.get("action") is None and r["ticket"] not in advised:
-            coord.append(ok)
+        elif (r.get("action") is None and not r.get("source", "coordinator").endswith("coordinator")
+              and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])):
+            coord.append(ok)  # router wanted lower, child ran at the coordinator tier
     k, n, kc, nc = sum(router), len(router), sum(coord), len(coord)
     rng = random.Random(seed)
     hit = sum(rng.betavariate(1 + k, 1 + n - k) - rng.betavariate(1 + kc, 1 + nc - kc) >= -margin
@@ -1276,11 +1285,18 @@ def verdict(k, n=10, lost=0):
                                                   "class": "C-coding", "action": "rewrite",
                                                   "router_tier": "low", "coordinator_tier": "high"})
             tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"r{i}", "accepted": i < k})
-        for i in range(1000):  # coordinator arm
+        for i in range(1000):  # coordinator arm: table wanted low, ran at high
             tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"c{i}", "ticket": f"u{i}",
-                                                  "class": "C-coding", "action": None,
-                                                  "router_tier": "high", "coordinator_tier": "high"})
+                                                  "class": "C-coding", "action": None, "source": "table",
+                                                  "router_tier": "low", "coordinator_tier": "high"})
             tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"c{i}", "accepted": i < 850})
+        for i in range(50):  # agreement and coordinator-fallback rows: in neither arm
+            tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"a{i}", "ticket": f"w{i}",
+                                                  "class": "C-coding", "action": None,
+                                                  "source": "table" if i % 2 else "coordinator",
+                                                  "router_tier": "high" if i % 2 else "low",
+                                                  "coordinator_tier": "high"})
+            tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"a{i}", "accepted": False})
         return tw.promote(home, "claude")
 
 
@@ -1288,7 +1304,8 @@ if __name__ == "__main__":
     got = {k: verdict(k)["verdict"] for k in (9, 8, 6, 5)}
     assert got == {9: "promote", 8: "hold", 6: "hold", 5: "demote"}, got
     v = verdict(9, lost=5)
-    assert (v["n_router"], v["verdict"]) == (10, "promote"), v   # lost races count for neither arm
+    assert (v["n_router"], v["n_coord"], v["verdict"]) == (10, 1000, "promote"), v   # lost races, agreement
+                                                                                 # and coordinator-fallback rows count for neither arm
     print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5); lost races excluded")
 ```
 
@@ -1423,6 +1440,10 @@ Steps:
    - Routing modes (shadow, advisory, active) come from `routes.json` `router.classes`. `TW-Override:` keeps
      the coordinator's tier.
    - `tw.py route`, `tw.py promote` and `tw.py outcome` are described.
+   - Receipts: a `dispatch` row's `admit` means the gate admitted it; a router-advised denial still shows
+     `admit` there and `action: "advise"` on its route row. Count dispatches that ran by joining on the
+     route row's `action`, never by `admit` alone. A post-admission router failure writes a `kind: "error"`
+     row (`where: "route"`) and the admit stands.
    - Delete the miner, `TW-Opus-Reason`, `--review/--luna/--sonnet/--ideation`, `thinker-worker-opus/sonnet/fable-review/dreamer`
      and "600 characters" text.
    - Check with `rg -n "thinker-worker-(opus|sonnet|fable-review|dreamer)|miner|TW-Opus-Reason|--sonnet|--luna|--review|--ideation|600 char" thinker-worker README.md`.
@@ -1470,7 +1491,9 @@ Commit: `git commit -m "thinker-worker: docs for routes.json, tier agents, act m
 
 - `tw.py serve` and the resident scorers `semif4b` (with AnyJev L0), `kev`, `eos` and `laya` as `BACKENDS`
   entries, plus the Stage-1 offline bench over effortmining grids that picks `backends[0]`. This needs each
-  project's `choice`/logit API read first; this plan has not read them.
+  project's `choice`/logit API read first; this plan has not read them. Each HTTP backend passes a socket
+  timeout ≤ `budget_s` so its thread ends on its own; `route()`'s daemon thread only bounds the wait, and
+  a long-lived `serve` would otherwise accumulate stuck threads (gate-1 review, 2026-09-26).
 - The Codex v2 `task_name` join. First probe whether `task_name` reaches the hook unchanged, then have the
   `route` CLI write a route row keyed by ticket.
 - Codex rewrite (design §6: waits on the Codex hook-rewrite probe).
@@ -1522,3 +1545,11 @@ Second Fable review (2026-09-26): no objection to shipping phase 1 with `router.
 
 Note on deviation 3: with the table's confidence at 0, exploration is the only thing that can cause an
 advisory in phase 1. A 0 % advise rate at `explore: 0` is expected, not a bug.
+
+Gate-1 review (Fable, of 94f2c76..52a83c5), 2026-09-26. Must-fix 1–4 and can-wait 5–6 went to one fix
+commit after T3 (see ROUTING-PROGRESS.md): post-admission fail-open with an error row; header kept on
+post-parse denials; only backend decisions are cached; the ticket ignores `TW-Override:`; backend errors
+on the route row; router block validated. Plan edits: T7 coordinator arm redefined as same-population
+disagreements that ran at the coordinator tier (test gains agreement/fallback rows and an `n_coord`
+assert, checked to fail with either filter removed); T3 file list names `test_tw_receipt.py`; T9 docs
+note that `admit` ≠ ran; phase-2 backends carry a socket timeout ≤ `budget_s`.
