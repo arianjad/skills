@@ -1,5 +1,6 @@
 """route(): table backend clamps to the role's tiers, falls back to the coordinator on any failure or overrun;
-the hook appends a route row (no body) after an admitted dispatch; opt-in body store; ticket ignores TW-Route.
+the hook appends a route row (no body) after an admitted dispatch; opt-in body store; ticket ignores TW-Route;
+with no backend, a ticket under the class's explore goes one tier below the coordinator on the role's ladder.
 Run: python test_tw_route.py"""
 import json
 import tempfile
@@ -116,5 +117,16 @@ if __name__ == "__main__":
         f.write_text(BRIEF, encoding="utf-8")
         code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f)])
         assert code == 0 and json.loads(out)["ticket"] == tw.ticket(BRIEF)[0], out
+
+    r0 = json.loads(json.dumps(tw.load_routes()))  # no backend: explore one tier below the coordinator
+    r0["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": 1.0}})
+    f = {"TW-Class": "C-coding", "TW-Deliverable": "d", "TW-Accept": "a", "TW-Risk": "none"}
+    r = tw.route(r0, "claude", "worker", f, "x", "high")
+    assert (r["source"], r["tier"], r["confidence"]) == ("explore", "medium", 0.0), r
+    assert tw.route(r0, "claude", "worker", f, "x", "low")["source"] == "coordinator"       # cheapest: never explored
+    assert tw.route(r0, "claude", "independent-review", f, "x", "xhigh")["tier"] == "high"  # the role's own ladder
+    assert tw.route(r0, "claude", "leaf", f, "x", "medium")["tier"] == "low"
+    r0["router"]["classes"]["*"]["explore"] = 0.0
+    assert tw.route(r0, "claude", "worker", f, "x", "high")["source"] == "coordinator"
     print("PASS route: table clamp, coordinator fallback (missing/invalid/overrun), route rows, no body, body store, "
           "header truncation, CLI, backend-only cache, TW-Override ticket, backend errors, torn line, fail-open error row")

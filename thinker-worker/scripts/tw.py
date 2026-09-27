@@ -540,7 +540,8 @@ def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | Non
 
 def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
           prior: dict | None = None) -> dict:
-    """Fail-open router: the first backend giving a valid answer inside budget_s wins, else the coordinator."""
+    """Fail-open router: the first backend giving a valid answer inside budget_s wins, else the coordinator,
+    except that a ticket whose coin falls below the class's explore goes one tier below it (source "explore")."""
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
     tick, digest = ticket(brief)
@@ -576,6 +577,10 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
                  "body_chars_sent": 0}
         if result.get("errors"):
             found["errors"] = list(result["errors"])
+    if found["source"] == "coordinator" and explore > 0 and int(tick, 16) / 16 ** 12 < explore \
+            and coord_tier in pol["tiers"] and pol["tiers"].index(coord_tier) > 0:
+        below = pol["tiers"][pol["tiers"].index(coord_tier) - 1]  # design §5 Stage 2: one tier below, no backend
+        found = {**found, "tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
     return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
             "mode": mode, "explore": explore}
 
@@ -787,7 +792,7 @@ def hook(home: Path, harness: str, owner: str) -> None:
                "coordinator_tier": d.tier, "router_tier": r["tier"],
                "agent_model": d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0],  # requested
                "probs": r["probs"],
-               "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "ms": r["ms"],
+               "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator

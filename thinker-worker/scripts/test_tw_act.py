@@ -14,11 +14,11 @@ BASE = tw.load_routes()
 
 
 def run(mode, pick="low", conf=0.95, explore=0.0, brief_extra="", guard=None, flag=False, risk="none",
-        st="tw-worker-high", then=None):
+        st="tw-worker-high", then=None, backends=("stub",)):
     """One dispatch in a fresh temp home (plus `then=(st, brief_extra)`, a re-dispatch in the same home).
     Returns (hookSpecificOutput | None, last non-dispatch row). The real guard is never consulted."""
     routes = json.loads(json.dumps(BASE))
-    routes["router"].update(backends=["stub"], classes={"*": {"mode": mode, "explore": explore}})
+    routes["router"].update(backends=list(backends), classes={"*": {"mode": mode, "explore": explore}})
     tw.BACKENDS["stub"] = lambda *a: {"tier": pick, "probs": {pick: 1.0}, "confidence": conf, "body_chars_sent": 0}
     tw.load_routes = lambda path=None: routes
     tw.competing_agent_writer = guard if callable(guard) else (lambda home: guard)
@@ -81,5 +81,18 @@ if __name__ == "__main__":
     out, row = run("active", guard=boom)          # act() raises: fail open, the route row is kept, no error row
     assert out is None and row["kind"] == "route" and row["action"] is None, row
     assert row["guard"] == "act error: RuntimeError" and row["router_tier"] == "low", row
+    out, row = run("advisory", explore=1.0, backends=())            # no backend: explore one tier below
+    assert "tw-worker-medium" in out["permissionDecisionReason"] and "exploration" in out["permissionDecisionReason"]
+    assert row["source"] == "explore" and row["router_tier"] == "medium" and row["eligible"] is True, row
+    assert row["explore"] == 1.0, row                                                      # ε recorded
+    out, row = run("advisory", explore=1e-9, backends=())           # coin >= ε: the phase-2 control shape
+    assert out is None and row["source"] == "coordinator" and row["explore"] == 1e-9, row
+    out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-medium", ""))   # take the pick
+    assert out is None and row["source"] == "cached:explore" and row["explore"] == 0.0, row
+    out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-high", ""))     # rejected, back to high
+    assert out is None and row["source"] == "cached:explore", row
+    assert run("advisory", explore=1.0, backends=(), st="tw-worker-low")[0] is None       # nothing below low
+    out, row = run("shadow", explore=1.0, backends=())              # computed in shadow, not acted on
+    assert out is None and row["source"] == "explore" and row["action"] is None, row
     print("PASS act: shadow, advisory, override, cutoff, risk floor, cached re-dispatch, active rewrite, "
           "guard/flag hold, exploration, fail-open")
