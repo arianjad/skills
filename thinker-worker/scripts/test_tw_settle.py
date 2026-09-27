@@ -14,7 +14,7 @@ from test_tw_hook import run_main
 from test_tw_receipt import SESSION, receipts
 
 
-def child(home, agent_type, block, meta_text=None, torn=False, sibling=None):
+def child(home, agent_type, block, meta_text=None, torn=False, sibling=None, advisor=False):
     sub = Path(home) / ".claude" / "projects" / "p" / SESSION / "subagents"
     sub.mkdir(parents=True)
     prompt = "TW-Role: worker\n..." + ("\n<context_window_protection>x</context_window_protection>" if block else "")
@@ -23,7 +23,20 @@ def child(home, agent_type, block, meta_text=None, torn=False, sibling=None):
             {"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 1, "output_tokens": 40}}},
             {"type": "assistant", "message": {"id": "m2", "usage": {"input_tokens": 2, "cache_read_input_tokens": 100,
                                                                     "output_tokens": 7}}}]
-    lines = ['{"type": "user", "mess'] * torn + [json.dumps(r) for r in rows]
+    if advisor:  # one advisor call streamed over two rows (same block id); its tokens only in usage.iterations
+        rows += [
+            {"type": "assistant", "message": {"id": "m3", "content": [
+                {"type": "server_tool_use", "id": "srvtoolu_1", "name": "advisor", "input": {}}],
+                "usage": {"input_tokens": 1, "output_tokens": 2}}},
+            {"type": "assistant", "message": {"id": "m3", "content": [
+                {"type": "server_tool_use", "id": "srvtoolu_1", "name": "advisor", "input": {}},
+                {"type": "advisor_tool_result", "tool_use_id": "srvtoolu_1",
+                 "content": {"type": "advisor_redacted_result"}}],
+                "usage": {"input_tokens": 1, "output_tokens": 3, "iterations": [
+                    {"type": "message", "input_tokens": 1, "output_tokens": 1},
+                    {"type": "advisor_message", "model": "claude-fable-5-1", "input_tokens": 900,
+                     "output_tokens": 50}]}}}]
+    lines =['{"type": "user", "mess'] * torn + [json.dumps(r) for r in rows]
     (sub / "agent-a1.jsonl").write_text("\n".join(lines), encoding="utf-8")
     meta = {"toolUseId": "toolu_x", "model": "opus", **({"agentType": agent_type} if agent_type else {})}
     (sub / "agent-a1.meta.json").write_text(meta_text or json.dumps(meta), encoding="utf-8")
@@ -76,6 +89,17 @@ if __name__ == "__main__":
         c = cost[0]
         assert (c["api_calls"], c["output_tokens"], c["input_tokens"], c["cache_read_input_tokens"],
                 c["agent_type"]) == (2, 47, 3, 100, "tw-worker-high"), c
+        assert (c["advisor_calls"], c["advisor_model"]) == (0, None), c           # the existing child has no advisor
+    with tempfile.TemporaryDirectory() as home:          # an advisor call is counted once, tokens from iterations
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
+        child(home, "tw-worker-high", False, advisor=True)
+        assert run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
+                         "--tool-use-id", "toolu_x", "--accepted", "yes"])[0] == 0
+        c = [r for r in receipts(home, "claude") if r["kind"] == "cost"][0]
+        assert (c["advisor_calls"], c["advisor_model"], c["advisor_input_tokens"], c["advisor_output_tokens"]) \
+            == (1, "claude-fable-5-1", 900, 50), c
+        assert c["output_tokens"] == 50, c                               # top-level counts unchanged: 40 + 7 + 3
     with tempfile.TemporaryDirectory() as home:          # outcome verifies the last rewrite before labeling it
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",

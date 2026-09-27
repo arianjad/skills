@@ -33,3 +33,4 @@ Plan: `docs/plans/2026-09-26-effort-routing-phase1-plan.md`.
 ## Switch-on (2026-09-27)
 
 - T1 green: `tw.py outcome --cause tier|brief|other` (only with `--accepted no`, closed vocabulary checked in `main` as a Conflict before any row is written); outcome row gains `cause` (null when absent). Red first: argparse `unrecognized arguments: --cause tier` (exit 2). `test_tw_outcome.py` PASS; full suite only SUITE_DONE.
+- T1b green: cost rows gain `advisor_calls` (distinct `server_tool_use` advisor block ids), `advisor_model`, `advisor_input_tokens`, `advisor_output_tokens` (from `usage.iterations[]` `advisor_message`, best effort); `promote()` skips route rows whose cost row has `advisor_calls > 0` in both arms and returns `n_advisor_excluded`. Red first: `KeyError: 'advisor_calls'` (settle), `KeyError: 'n_advisor_excluded'` (promote). `test_tw_settle.py`, `test_tw_promote.py` PASS; full suite only SUITE_DONE.

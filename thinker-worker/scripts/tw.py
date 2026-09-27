@@ -425,31 +425,46 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
     if found is None or not found[1].exists():
         return None
     meta, transcript = found
-    usage = {}
+    usage, advisor_ids = {}, set()
     for obj in read_rows(transcript):
         msg = obj.get("message") or {}
-        if obj.get("type") == "assistant" and msg.get("id") and msg.get("usage"):
+        if obj.get("type") != "assistant":
+            continue
+        for b in msg.get("content") or []:  # an advisor call: a server_tool_use block, counted once per block id
+            if isinstance(b, dict) and b.get("type") == "server_tool_use" and b.get("name") == "advisor":
+                advisor_ids.add(b.get("id"))
+        if msg.get("id") and msg.get("usage"):
             usage[msg["id"]] = msg["usage"]  # last row per message.id carries the final counts
+    # advisor tokens appear only in usage.iterations (never top-level); subagent rows may lack iterations
+    adv = [it for u in usage.values() for it in u.get("iterations") or [] if it.get("type") == "advisor_message"]
     return {"kind": "cost", "at": now(), "harness": harness, "session_id": session, "tool_use_id": tool_use_id,
             "agent_type": meta.get("agentType"), "model": meta.get("model"), "api_calls": len(usage),
-            **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS}}
+            **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS},
+            "advisor_calls": len(advisor_ids), "advisor_model": next((it.get("model") for it in adv), None),
+            "advisor_input_tokens": sum(it.get("input_tokens", 0) for it in adv),
+            "advisor_output_tokens": sum(it.get("output_tokens", 0) for it in adv)}
 
 
 def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.15,
             draws: int = 200_000, seed: int = 7) -> dict:
     """Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
     (backend wanted lower and the row is `eligible`, child ran at the coordinator tier); promote/demote/hold on
-    P(diff >= -margin)."""
+    P(diff >= -margin). A dispatch whose cost row shows advisor calls measured tier + advisor, not the tier: it
+    leaves both arms and is counted in n_advisor_excluded."""
     rows = []
     for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
         rows += read_rows(path)  # skips torn lines
     label = {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"}
     race = {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"}  # outcome runs race_check
-    routes = [r for r in rows if r.get("kind") == "route" and (cls is None or r.get("class") == cls)]
+    advised_by = {r["tool_use_id"] for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")}
+    routes =[r for r in rows if r.get("kind") == "route" and (cls is None or r.get("class") == cls)]
     advised = {r["ticket"]: r["router_tier"] for r in routes if r.get("action") == "advise"
                and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])}
-    router, coord = [], []
+    router, coord, n_adv = [], [], 0
     for r in routes:
+        if r.get("tool_use_id") in advised_by:
+            n_adv += 1
+            continue
         ok = label.get(r.get("tool_use_id"))
         if ok is None or race.get(r.get("tool_use_id")) is True:
             continue  # unlabeled, or lost race: ran at neither arm's tier
@@ -468,7 +483,7 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
               for _ in range(draws))
     p = hit / draws
     return {"class": cls, "k_router": k, "n_router": n, "k_coord": kc, "n_coord": nc, "p": round(p, 3),
-            "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
+            "n_advisor_excluded": n_adv, "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
 
 
 def ticket(brief: str) -> tuple[str, str]:
