@@ -1517,6 +1517,9 @@ Commit: `git commit -m "thinker-worker: docs for routes.json, tier agents, act m
 - `uninstall` should leave activation records (`~/.thinker-worker/state/`) alone, since they are session state and
   not install artifacts, or at least print which sessions it deactivated. Today a reinstall silently
   un-guards every resumed activated session (Fable review, 2026-09-26).
+- A user override file (`~/.thinker-worker/routes.json`, layered over the installed default) so switching
+  `backends` on does not mean editing an installer-owned file or reinstalling mid-run (Fable review of the
+  launch-five handoff, 2026-09-26).
 
 ## Self-review
 
