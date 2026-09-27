@@ -19,7 +19,8 @@ Claude, the actor: it gates (fail closed), writes the receipt (fail closed), the
 rewrites the dispatch to the router's tier agent (`active`, verified possible today). On Codex v2 the brief is
 ciphertext, so there the coordinator calls `tw.py route` first and the ticket rides in `task_name`. Backends
 are small resident local scorers compared as equal arms (SemIf over a 4B GGUF with AnyJev's bias-free
-readout, Kev-0.8B, Eos-0.8B, Laya); none is preset as the first backend; nobody launches the 27B for this. Backends
+readout, Kev-0.8B, Eos-0.8B, Laya, and the production Qwen 27B already serving on port 8080, scored by logits
+with the same readout and never relaunched for this); none is preset as the first backend. Backends
 run in shadow on real receipts first, then exploration one tier below the coordinator generates tier labels, and
 the backend is chosen on those labels (§5); promotion is by a posterior rule with a hold band, and per-class
 promotion is out of reach of the five-session run, only a pooled one.
@@ -411,7 +412,7 @@ from that run are shadow agreement rates; per-class promotion waits.
   (Codex hooks can call MCP tools with event-expanded arguments [D]).
 - AnyJev L2 (hidden-state head). Trigger: the 4B runs in-process rather than behind SemIf's server.
 - Any fine-tune on our labels. Trigger: ≥ 200 labeled real dispatches.
-- Cross-harness calibration table; the 27B as a routing backend; a `max` tier; installer simplification.
+- Cross-harness calibration table; a `max` tier; installer simplification.
 
 Prior art to cite (only the abstracts and, for OTB, the dataset sections have been read):
 - **DART** (arXiv 2606.23181, training-free): two cheap no-think drafts; answer if they agree, else set the
@@ -432,7 +433,9 @@ Prior art to cite (only the abstracts and, for OTB, the dataset sections have be
 Decided 2026-09-26 (Arian):
 
 1. **Backend arms:** no preset `backends[0]`. SemIf-4B + AnyJev L0, Kev-0.8B, Eos-0.8B and Laya are compared
-   as equal arms in Stage 3 (§5), and the winner becomes `backends[0]`.
+   as equal arms in Stage 3 (§5), and the winner becomes `backends[0]`. The production Qwen 27B on port 8080
+   joins as a fifth arm, scored by logits with the AnyJev L0 readout, client calls only (Arian, 2026-09-27).
+   Setup cost per arm and the Kev fix: `docs/plans/2026-09-27-decision-model-survey.md`.
 2. **Codex review/ideation effort:** explicit `reasoning_effort` is required, with a floor of `medium`
    ("medium or better"), matching §4.2 `tiers: ["medium","high","xhigh"]`. Revert `tw.py:262` ("may omit")
    in plan step 1.
