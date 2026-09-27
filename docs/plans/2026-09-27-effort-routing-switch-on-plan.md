@@ -25,7 +25,9 @@ exploration for the five-session run: Arian, 2026-09-27.
 - `routes.json` is installer-owned: it changes only here in the source tree and reaches the real install only
   through Task 6.
 - Exploration applies to Codex sessions too (`router.classes` is not per harness); an activated Codex
-  session gets the same advisory denials with a `reasoning_effort=` hint.
+  session gets the same advisory denials with a `reasoning_effort=` hint (accepted, Arian 2026-09-27).
+- Status (Arian, 2026-09-27): plan written, **not to be executed yet**; the table values (Task 2) are
+  still open.
 
 ## File map
 
@@ -242,8 +244,7 @@ Interfaces: shipped router block becomes
 "classes": {"*": {"mode": "advisory", "explore": 0.2}}
 ```
 
-(`budget_s`, `cutoff`, `risk_floor` unchanged.) Numerical choice for Arian's approval: **ε = 0.2** (design
-§7 defaults line). At 50–150 dispatches that is ~10–30 explored.
+(`budget_s`, `cutoff`, `risk_floor` unchanged.) **ε = 0.2** (Arian, 2026-09-27; design §7 defaults line). At 50–150 dispatches that is ~10–30 explored.
 
 Red test first: add to `test_tw_route.py`'s main block
 
@@ -328,7 +329,7 @@ Commit: the handoff in the home repo by pathspec (the Desktop prompts are not in
   tier rule (Task 4 docs, Task 7), live switch-on (Task 6). Not here, by design: Stage 1 offline scoring of
   other arms, `tw.py serve`, Stage 3 scoring script, cost-row verdicts, the routes override file,
   `uninstall` keeping `state/`, the Codex v2 `task_name` join (phase 2 proper).
-- Numerical choices for Arian: table all `low`; ε = 0.2; floors physics high / destructive medium /
-  external medium (already decided).
+- Numerical choices: table all `low` (open); ε = 0.2 and floors physics high / destructive medium /
+  external medium (decided, Arian 2026-09-27).
 - Names agree: `cause`, `risk_floor`, `tables/opus-5-5-2026-09-26.json`, `load_routes`, `act`, `route`,
   `backend_table`.
