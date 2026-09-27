@@ -69,7 +69,7 @@ def seam2_command_runs_guard():
                 assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny", out
                 assert run_hook_command(cmd, home, envelope("tw-worker-high"), windows_branch) == ""
             receipts = list((home / ".thinker-worker" / "receipts" / "claude").glob("*.jsonl"))
-            assert len(receipts) == 1 and len(receipts[0].read_text().splitlines()) == 4, receipts
+            assert len(receipts) == 1 and len(receipts[0].read_text().splitlines()) == 6, receipts
     print("PASS seam2 portable command runs the guard (deny bad, admit good; both OS branches; fallback)")
 
 

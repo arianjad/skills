@@ -31,7 +31,7 @@ if __name__ == "__main__":
                                        "prompt": "TW-Role: worker\n" + HDR + BODY})
         hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",
                                        "prompt": "TW-Role: worker\n" + BODY})
-        admit, deny = receipts(home, "claude")
+        admit, deny = [x for x in receipts(home, "claude") if x["kind"] == "dispatch"]  # T3 adds a route row
         assert admit["decision"] == "admit" and admit["kind"] == "dispatch", admit
         assert admit["subagent_type"] == "tw-worker-medium" and admit["tier"] == "medium", admit
         assert admit["header"] == ("TW-Class: C-coding\nTW-Deliverable: patch\n"

@@ -315,6 +315,92 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
     print(f"Recorded {'accepted' if accepted else 'rejected'} for {tool_use_id}.")
 
 
+def ticket(brief: str) -> tuple[str, str]:
+    norm = "\n".join(x.rstrip() for x in brief.split("\n") if not x.startswith("TW-Route:")).strip()
+    digest = sha(norm.encode("utf-8"))
+    return digest[:12], digest
+
+
+def clamp(tier: str, tiers: list[str]) -> str:
+    i = TIERS.index(tier)
+    return min(tiers, key=lambda t: (abs(TIERS.index(t) - i), TIERS.index(t)))
+
+
+def backend_table(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
+    cal = json.loads(Path(os.path.expanduser(cfg["path"])).read_text(encoding="utf-8"))
+    tier = clamp(cal["classes"][fields["TW-Class"]]["recommended_tier"], pol["tiers"])
+    return {"tier": tier, "probs": {t: float(t == tier) for t in pol["tiers"]}, "confidence": 0.0,
+            "body_chars_sent": 0, "provenance": f"calibration {cal.get('model')} {cal.get('fitted_date')}"}
+
+
+BACKENDS = {"table": backend_table}  # phase 2 adds the resident HTTP scorers
+
+
+def valid_route(out: object, tiers: list[str]) -> bool:
+    if not isinstance(out, dict) or out.get("tier") not in tiers or not isinstance(out.get("probs"), dict):
+        return False
+    probs = out["probs"]
+    return (set(probs) <= set(tiers) and all(isinstance(v, (int, float)) and v >= 0 for v in probs.values())
+            and abs(sum(probs.values()) - 1) < 1e-6
+            and isinstance(out.get("confidence"), (int, float)) and 0 <= out["confidence"] <= 1)
+
+
+def class_mode(routes: dict, cls: str | None) -> tuple[str, float]:
+    classes = routes["router"]["classes"]
+    c = classes.get(cls) or classes["*"]
+    return c["mode"], float(c.get("explore", 0.0))
+
+
+def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | None:
+    path = receipts_path(home, harness, session)
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line) if line.strip() else {}
+        if row.get("kind") == "route" and row.get("ticket") == tick:
+            return row  # the first decision for this brief
+    return None
+
+
+def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
+          prior: dict | None = None) -> dict:
+    """Fail-open router: the first backend giving a valid answer inside budget_s wins, else the coordinator."""
+    cfg = routes["router"]
+    pol = routes["harnesses"][harness]["roles"][role]
+    tick, digest = ticket(brief)
+    mode, explore = class_mode(routes, fields["TW-Class"])
+    if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
+        return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
+                "provenance": prior.get("provenance"),
+                "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
+                "ticket": tick, "digest": digest, "mode": mode, "explore": 0.0}
+    result: dict = {}
+    start = time.monotonic()
+
+    def work() -> None:
+        for name in cfg["backends"]:
+            fn = BACKENDS.get(name)
+            if fn is None:
+                continue
+            try:
+                out = fn(cfg.get(name, {}), pol, fields, brief)
+            except Exception:
+                continue
+            if valid_route(out, pol["tiers"]):
+                result.update(out, source=name)
+                return
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(cfg["budget_s"])
+    found = dict(result) if result.get("source") else None  # copy: the thread may still be running
+    if found is None:
+        found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator",
+                 "body_chars_sent": 0}
+    return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
+            "mode": mode, "explore": explore}
+
+
 def hook(home: Path, harness: str, owner: str) -> None:
     if owner != OWNER:
         denial("unknown installed hook owner")
@@ -353,10 +439,30 @@ def hook(home: Path, harness: str, owner: str) -> None:
         receipt(home, harness, session, envelope, Decision(False, "resume-key-on-fresh-dispatch"))
         denial("resume fields are outside fresh dispatch; coordinator must verify child identity before native continuation")
         return
-    d = decide(harness, envelope, load_routes())
+    routes = load_routes()
+    d = decide(harness, envelope, routes)
     receipt(home, harness, session, envelope, d)
     if not d.admitted:
         denial(d.reason)
+        return
+    if d.role is None or tool == "collaborationspawn_agent":
+        return  # ponytail: Codex v2 ciphertext; the task_name join is phase 2
+    brief = inp.get("message" if harness == "codex" else "prompt")
+    prior = prior_route(home, harness, session, ticket(brief)[0])
+    r = route(routes, harness, d.role, d.fields, brief, d.tier, prior)
+    row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
+           "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
+           "coordinator_tier": d.tier, "router_tier": r["tier"], "probs": r["probs"],
+           "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "ms": r["ms"],
+           "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
+           "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,
+           "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
+           "action": None, "guard": None}
+    if record.get("store_bodies"):
+        body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
+        body.parent.mkdir(parents=True, exist_ok=True)
+        body.write_text(brief, encoding="utf-8")
+    append_receipt(home, harness, session, row)
 
 
 def source_root() -> Path:
@@ -827,11 +933,15 @@ def uninstall(home: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome"):
+    for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
+                 "route"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
-        if name in {"activate", "deactivate", "status", "hook", "outcome"}:
+        if name in {"activate", "deactivate", "status", "hook", "outcome", "route"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
+        if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
+            p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
+            p.add_argument("--brief-file", type=Path, required=True)
         if name in {"activate", "deactivate", "status", "outcome"}:
             p.add_argument("--session", required=True)
         if name == "outcome":
@@ -873,6 +983,15 @@ def main() -> int:
             status(home, args.harness, session_value(args.session))
         elif args.command == "outcome":
             outcome(home, args.harness, session_value(args.session), args.tool_use_id, args.accepted == "yes")
+        elif args.command == "route":
+            routes = load_routes()
+            brief = args.brief_file.read_text(encoding="utf-8")
+            fields, problem = header_fields(brief)
+            if problem:
+                raise Conflict(problem)
+            default = routes["harnesses"][args.harness]["roles"][args.role]["default"]
+            r = route(routes, args.harness, args.role, fields, brief, default)
+            print(json.dumps({k: r[k] for k in ("tier", "probs", "confidence", "source", "ticket", "mode")}))
         else:
             try:
                 hook(home, args.harness, args.owner)
