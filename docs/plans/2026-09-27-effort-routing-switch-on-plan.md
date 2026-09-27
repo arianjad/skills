@@ -34,12 +34,13 @@ exploration for the five-session run, ε = 0.2, exploration one tier below witho
 - Modify `thinker-worker/scripts/tw.py`:
   - `outcome()` (~L335) and the `outcome` parser (~L1275): optional `--cause tier|brief|other`, only with
     `--accepted no`; recorded as `cause` (null when absent). (Task 1)
+  - `cost_row()` (~L422) and `promote()` (~L437): advisor-call detection and exclusion. (Task 1b)
   - `route()` (L518–557): backend-free exploration one tier below the coordinator. (Task 2)
   - `load_routes()` (L59–78): validate `router.risk_floor`. (Task 3)
   - `act()` (L668–705): per-flag floor replaces "never the role's cheapest tier". (Task 3)
 - Modify `thinker-worker/routes.json`: `risk_floor` (Task 3); `"*"` → advisory, explore 0.2 (Task 4).
-- Modify tests: `test_tw_outcome.py` (1), `test_tw_route.py` (2, 4), `test_tw_act.py` (2, 3),
-  `test_tw_routes.py` (3).
+- Modify tests: `test_tw_outcome.py` (1), `test_tw_settle.py` (1b), `test_tw_promote.py` (1b),
+  `test_tw_route.py` (2, 4), `test_tw_act.py` (2, 3), `test_tw_routes.py` (3).
 - Modify docs: `thinker-worker/SKILL.md`, `references/claude.md`, `references/codex.md`, `README.md`
   thinker-worker section (Task 4).
 - Outside the repo (Task 7, coordinator): `~/.claude/handoffs/2026-09-26-launch-five-project-sessions.md` and
@@ -96,6 +97,92 @@ does; if it does not, return that refusal's exit code.)
 
 Check: `"$PY" test_tw_outcome.py` → `PASS outcome …`; then the full suite → `SUITE_DONE` only.
 Commit: `git add -- thinker-worker/scripts/tw.py thinker-worker/scripts/test_tw_outcome.py && git commit -m "tw: outcome --cause tier|brief|other labels why a rejection happened (switch-on T1)" -- <same paths>`
+
+### Task 1b: detect advisor use per dispatch and keep it out of promotion
+
+Why: the Claude Code advisor tool (a server-side Fable consult, vault
+`03-decisions/2026-09-27-claude-code-advisor-tool-off.md`) reaches every subagent once `advisorModel` is set
+or `/advisor` is used, and cannot be switched off per agent. A `tw-worker-low` that consulted Fable measures
+"low + Fable", not `low`. It is off today (Arian, 2026-09-27); this task makes a silent re-enable visible.
+In a transcript an advisor call is an assistant `content` block `{"type": "server_tool_use", "name":
+"advisor", "id": …}`; its tokens appear only in `usage.iterations[]` entries with `type: "advisor_message"`
+(and `model`), never in top-level `usage`. Subagent rows may lack `iterations` (seen in the 2026-09-27 haiku
+probe), so the call count is the primary signal and the token fields are best effort.
+
+Files: `tw.py` (`cost_row` ~L422, `promote` ~L437), `test_tw_settle.py`, `test_tw_promote.py`.
+Interfaces: the cost row gains `advisor_calls: int` (distinct advisor block ids), `advisor_model: str | None`,
+`advisor_input_tokens: int`, `advisor_output_tokens: int`. `promote()` skips any route row whose
+`tool_use_id` has a cost row with `advisor_calls > 0`, in both arms, and returns `n_advisor_excluded`.
+
+Red tests. In `test_tw_settle.py`, give `child()` an `advisor=False` parameter that, when true, appends
+
+```python
+{"type": "assistant", "message": {"id": "m3", "content": [
+    {"type": "server_tool_use", "id": "srvtoolu_1", "name": "advisor", "input": {}}],
+    "usage": {"input_tokens": 1, "output_tokens": 2}}},
+{"type": "assistant", "message": {"id": "m3", "content": [
+    {"type": "server_tool_use", "id": "srvtoolu_1", "name": "advisor", "input": {}},
+    {"type": "advisor_tool_result", "tool_use_id": "srvtoolu_1", "content": {"type": "advisor_redacted_result"}}],
+    "usage": {"input_tokens": 1, "output_tokens": 3, "iterations": [
+        {"type": "message", "input_tokens": 1, "output_tokens": 1},
+        {"type": "advisor_message", "model": "claude-fable-5-1", "input_tokens": 900, "output_tokens": 50}]}}}
+```
+
+(the same block id twice: one call, streamed over two rows), and add after the existing cost assertion:
+
+```python
+    assert (c["advisor_calls"], c["advisor_model"]) == (0, None), c           # the existing child has no advisor
+    with tempfile.TemporaryDirectory() as home:          # an advisor call is counted once, tokens from iterations
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
+        child(home, "tw-worker-high", False, advisor=True)
+        assert run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
+                         "--tool-use-id", "toolu_x", "--accepted", "yes"])[0] == 0
+        c = [r for r in receipts(home, "claude") if r["kind"] == "cost"][0]
+        assert (c["advisor_calls"], c["advisor_model"], c["advisor_input_tokens"], c["advisor_output_tokens"]) \
+            == (1, "claude-fable-5-1", 900, 50), c
+        assert c["output_tokens"] == 50, c                               # top-level counts unchanged: 40 + 7 + 3
+```
+
+In `test_tw_promote.py`, give `verdict()` an `advised=0` parameter that appends, for the first `advised`
+router-arm rows, `{"kind": "cost", "tool_use_id": f"r{i}", "advisor_calls": 1}`, and assert:
+
+```python
+    v = verdict(9, advised=3)
+    assert (v["n_router"], v["n_advisor_excluded"]) == (7, 3), v     # advisor-assisted rows leave the arm
+```
+
+Code, in `cost_row`, replacing the loop:
+
+```python
+    usage, advisor_ids = {}, set()
+    for obj in read_rows(transcript):
+        msg = obj.get("message") or {}
+        if obj.get("type") != "assistant":
+            continue
+        for b in msg.get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "server_tool_use" and b.get("name") == "advisor":
+                advisor_ids.add(b.get("id"))
+        if msg.get("id") and msg.get("usage"):
+            usage[msg["id"]] = msg["usage"]  # last row per message.id carries the final counts
+    adv = [it for u in usage.values() for it in u.get("iterations") or [] if it.get("type") == "advisor_message"]
+```
+
+and in the returned dict add
+`"advisor_calls": len(advisor_ids), "advisor_model": next((it.get("model") for it in adv), None),
+"advisor_input_tokens": sum(it.get("input_tokens", 0) for it in adv),
+"advisor_output_tokens": sum(it.get("output_tokens", 0) for it in adv)`.
+In `promote`, after `race = …`:
+
+```python
+    advised_by = {r["tool_use_id"] for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")}
+```
+
+at the top of the loop body `if r.get("tool_use_id") in advised_by: n_adv += 1; continue` (initialise
+`n_adv = 0`), and `"n_advisor_excluded": n_adv` in the returned dict. Update `promote`'s docstring.
+
+Check: `"$PY" test_tw_settle.py && "$PY" test_tw_promote.py` → both PASS lines; full suite → `SUITE_DONE` only.
+Commit: `git add -- thinker-worker/scripts/tw.py thinker-worker/scripts/test_tw_settle.py thinker-worker/scripts/test_tw_promote.py && git commit -m "tw: cost rows count advisor calls; promote excludes advisor-assisted dispatches (switch-on T1b)" -- <same paths>`
 
 ### Task 2: exploration one tier below the coordinator, no backend
 
@@ -305,4 +392,7 @@ Commit: the handoff in the home repo by pathspec (the Desktop prompts are not in
   override file, `uninstall` keeping `state/`, the Codex v2 `task_name` join (phase 2 proper).
 - Numerical choices: ε = 0.2 and floors physics high / destructive medium / external medium (decided, Arian
   2026-09-27).
-- Names agree: `cause`, `risk_floor`, `source: "explore"`, `cached:explore`, `load_routes`, `route`, `act`.
+- Advisor contamination (Task 1b): detected per dispatch and excluded from promotion; the advisor itself is
+  off (Arian, 2026-09-27).
+- Names agree: `cause`, `advisor_calls`, `n_advisor_excluded`, `risk_floor`, `source: "explore"`,
+  `cached:explore`, `load_routes`, `cost_row`, `promote`, `route`, `act`.
