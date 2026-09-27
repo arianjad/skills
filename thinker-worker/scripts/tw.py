@@ -434,6 +434,41 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
             **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS}}
 
 
+def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.15,
+            draws: int = 200_000, seed: int = 7) -> dict:
+    """Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
+    (backend wanted lower, child ran at the coordinator tier); promote/demote/hold on P(diff >= -margin)."""
+    rows = []
+    for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
+        rows += read_rows(path)  # skips torn lines
+    label = {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"}
+    race = {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"}  # outcome runs race_check
+    routes = [r for r in rows if r.get("kind") == "route" and (cls is None or r.get("class") == cls)]
+    advised = {r["ticket"]: r["router_tier"] for r in routes if r.get("action") == "advise"
+               and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])}
+    router, coord = [], []
+    for r in routes:
+        ok = label.get(r.get("tool_use_id"))
+        if ok is None or race.get(r.get("tool_use_id")) is True:
+            continue  # unlabeled, or lost race: ran at neither arm's tier
+        rewrite_lower = (r.get("action") == "rewrite" and race.get(r.get("tool_use_id")) is False  # verified only
+                         and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"]))
+        complied = (r.get("action") is None and (r.get("source") or "").startswith("cached:")
+                    and advised.get(r["ticket"]) == r["coordinator_tier"])
+        if rewrite_lower or complied:
+            router.append(ok)
+        elif (r.get("action") is None and not (r.get("source") or "coordinator").endswith("coordinator")
+              and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])):
+            coord.append(ok)  # router wanted lower, child ran at the coordinator tier
+    k, n, kc, nc = sum(router), len(router), sum(coord), len(coord)
+    rng = random.Random(seed)
+    hit = sum(rng.betavariate(1 + k, 1 + n - k) - rng.betavariate(1 + kc, 1 + nc - kc) >= -margin
+              for _ in range(draws))
+    p = hit / draws
+    return {"class": cls, "k_router": k, "n_router": n, "k_coord": kc, "n_coord": nc, "p": round(p, 3),
+            "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
+
+
 def ticket(brief: str) -> tuple[str, str]:
     norm = "\n".join(x.rstrip() for x in brief.split("\n")
                      if not x.startswith(("TW-Route:", "TW-Override:"))).strip()
@@ -602,10 +637,17 @@ def competing_agent_writer(home: Path) -> str | None:
         pre = (read_json(hooks_json, {}).get("hooks") or {}).get("PreToolUse") or []
         for entry in pre:
             matcher = entry.get("matcher") or ""
-            try:
-                hit = matcher in ("", "*") or re.search(matcher, "Agent") is not None  # JS RegExp.test semantics
-            except re.error:
-                hit = matcher == "Agent"
+            # Claude Code: ""/"*" match all; a plain [A-Za-z0-9_|] matcher is split on | and compared exactly
+            # after legacy-name mapping (Task -> Agent); anything else is JS RegExp.test (a search).
+            if matcher in ("", "*"):
+                hit = True
+            elif re.fullmatch(r"[A-Za-z0-9_|]+", matcher):
+                hit = "Agent" in {{"Task": "Agent"}.get(x, x) for x in matcher.split("|")}
+            else:
+                try:
+                    hit = re.search(matcher, "Agent") is not None
+                except re.error:
+                    hit = matcher == "Agent"
             if hit:
                 return "context-mode PreToolUse Agent hook is registered"
         start = claude_process_start()
@@ -1209,14 +1251,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "route"):
+                 "route", "promote"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
-        if name in {"activate", "deactivate", "status", "hook", "outcome", "route"}:
+        if name in {"activate", "deactivate", "status", "hook", "outcome", "route", "promote"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
         if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
             p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
             p.add_argument("--brief-file", type=Path, required=True)
+        if name == "promote":  # read-only over receipts
+            p.add_argument("--class", dest="cls")
         if name in {"activate", "deactivate", "status", "outcome"}:
             p.add_argument("--session", required=True)
         if name == "outcome":
@@ -1258,6 +1302,8 @@ def main() -> int:
             status(home, args.harness, session_value(args.session))
         elif args.command == "outcome":
             outcome(home, args.harness, session_value(args.session), args.tool_use_id, args.accepted == "yes")
+        elif args.command == "promote":
+            print(json.dumps(promote(home, args.harness, args.cls)))
         elif args.command == "route":
             routes = load_routes()
             brief = args.brief_file.read_text(encoding="utf-8")

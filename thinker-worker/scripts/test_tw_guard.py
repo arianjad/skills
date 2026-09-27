@@ -44,6 +44,10 @@ CASES = [
     ("regex .*gent", verdict(matcher=".*gent") is not None, True),
     ("regex ^Agen (partial match)", verdict(matcher="^Agen") is not None, True),
     ("regex Edit.* misses Agent", verdict(matcher="Edit.*"), None),
+    # A plain [A-Za-z0-9_|] matcher is split on | and compared exactly, after legacy names map (Task -> Agent)
+    ("legacy Task", verdict(matcher="Task") is not None, True),
+    ("legacy Bash|Task", verdict(matcher="Bash|Task") is not None, True),
+    ("plain Agen is exact, misses Agent", verdict(matcher="Agen"), None),
     ("patched after start (heal ran this session)", verdict(mtime=START + 1.5) is not None, True),
     ("patched within 1 s before start", verdict(mtime=START - 0.5) is not None, True),
     ("start unknown", verdict(start=None) is not None, True),
