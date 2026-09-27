@@ -154,9 +154,14 @@ The baseline every backend must beat; it is the `coordinator` backend below.
 }
 ```
 
-Notes. (a) Claude roles pin **one** model in the generated agent file (`model:` + `effort:`); a per-call
-`model` that differs from the file is denied (per-invocation overrides frontmatter [D]). Model is a role
-property, effort is the dispatch's. (b) Codex keeps per-call `model` + `reasoning_effort`; a non-empty
+Notes. (a) Claude roles pin their default model (`models[0]`) in the generated agent file (`model:` +
+`effort:`). A per-call `model` is optional and absent by default: outside the role's `models` it is denied,
+inside it is admitted and overrides the file (per-invocation overrides frontmatter [D]; not yet [V]). With no
+per-call model the file's `model:` beats the coordinator's own model [V]: an Opus 5.5 coordinator's
+`tw-ideation-high` (file `model: fable`) ran as `claude-fable-5-1` (transcript `message.model`, agent
+`a5e9aa4b4a746abce`, 2026-09-27). Model is a role property, chosen by policy; effort is the dispatch's,
+chosen by the ladder. Ideation admits Opus per call, Fable default; review stays Fable-only (Arian,
+2026-09-27); phase-2 model routing is in §6. (b) Codex keeps per-call `model` + `reasoning_effort`; a non-empty
 `tiers` list means effort is required. (c) `backends` is an ordered preference list; the first reachable
 server answers; `source` records which. `body_chars` is per backend (§1); the route row records
 `body_chars_sent` because Laya truncates silently. (d) Placeholder values that are Arian's decisions: §7.
@@ -414,6 +419,18 @@ from that run are shadow agreement rates; per-class promotion waits.
 - AnyJev L2 (hidden-state head). Trigger: the 4B runs in-process rather than behind SemIf's server.
 - Any fine-tune on our labels. Trigger: ≥ 200 labeled real dispatches.
 - Cross-harness calibration table; a `max` tier; installer simplification.
+
+**Model routing (phase 2).** Within one (role, model) the tiers are a monotone ladder, and §5's interval
+labels, exploration one tier below and promotion rule hold per model. Across models there is no order: Opus
+`high` and Fable `high` are not two rungs of one ladder, so a single cost-ordered ladder of (model, tier)
+cells is never built. Model choice is an arm comparison: acceptance rate and dollars per dispatch from the
+cost rows (the cost row's `model` is the transcript's, i.e. what ran), with the same Beta posteriors and hold
+band as §5 (Fable review, 2026-09-27). Review and ideation are the multi-model roles: Fable by default, Opus
+when the Fable weekly budget binds; ideation is allowed on Opus now, review later (Arian, 2026-09-27).
+Worker versus Sonnet is role routing (worker vs leaf), not model routing within a role. Naming stays
+`tw-<role>-<tier>` for the role's default model, with a per-call `model` for an alternate; generate
+`tw-<role>-<model>-<tier>` files only if a second model becomes a default. Trigger for the comparison: labeled
+dispatches of one role on both models; how many is open [?].
 
 Prior art to cite (only the abstracts and, for OTB, the dataset sections have been read):
 - **DART** (arXiv 2606.23181, training-free): two cheap no-think drafts; answer if they agree, else set the

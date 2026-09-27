@@ -5,7 +5,7 @@ exploration one tier below the coordinator's tier with no backend and no table, 
 outcome labels that say whether a rejection was the tier's fault, so the run produces tier labels (design §5
 Stage 2).
 
-**Approach:** four TDD tasks in `thinker-worker` (red test first, then the code, then the full suite), a
+**Approach:** six TDD tasks in `thinker-worker` (1, 1b, 1c, 2, 3, 4) (red test first, then the code, then the full suite), a
 Fable review gate, then a reinstall and live check that needs Arian's OK at that moment, then the launch
 prompts. `backends` stays `[]`: when no backend answers, `route()` itself picks the next tier below the
 coordinator's for a fraction ε of tickets (`source: "explore"`), and `act()` advises it.
@@ -37,17 +37,20 @@ exploration for the five-session run, ε = 0.2, exploration one tier below witho
   - `outcome()` (~L335), the `outcome` parser (~L1275) and `main` (~L1311): optional `--cause`, validated in
     `main` against `tier|brief|other`, only with `--accepted no`; recorded as `cause` (null when absent). (Task 1)
   - `cost_row()` (~L422) and `promote()` (~L437): advisor-call detection and exclusion. (Task 1b)
+  - `decide()` per-call model denial text (~L273), `cost_row()` `model` from the child transcript plus
+    `advisor_available`, and the hook's route row (~L764) `agent_model`. (Task 1c)
   - `route()` (L518–557): backend-free exploration one tier below the coordinator; the hook's route row
     (~L762) records `explore`. (Task 2)
   - `load_routes()` (L59–78): validate `router.risk_floor`. (Task 3)
   - `act()` (L668–708): per-flag floor replaces "never the role's cheapest tier" and returns the floored
     target; the hook's route row records `target_tier` and derives `router_agent` from it; `promote()`
     compares the floored target. (Task 3)
-- Modify `thinker-worker/routes.json`: `risk_floor` (Task 3); `"*"` → advisory, explore 0.2 (Task 4).
-- Modify tests: `test_tw_outcome.py` (1), `test_tw_settle.py` (1b), `test_tw_promote.py` (1b, 3),
-  `test_tw_route.py` (2, 4), `test_tw_act.py` (2, 3), `test_tw_routes.py` (3).
+- Modify `thinker-worker/routes.json`: the Opus ids in Claude `ideation.models` (Task 1c); `risk_floor`
+  (Task 3); `"*"` → advisory, explore 0.2 (Task 4).
+- Modify tests: `test_tw_outcome.py` (1), `test_tw_settle.py` (1b, 1c), `test_tw_promote.py` (1b, 3),
+  `test_tw_route.py` (2, 4), `test_tw_act.py` (2, 3), `test_tw_routes.py` (1c, 3), `test_tw_receipt.py` (1c).
 - Modify docs: `thinker-worker/SKILL.md`, `references/claude.md`, `references/codex.md`, `README.md`
-  thinker-worker section (Task 4).
+  thinker-worker section (Task 4; it also lands Task 1c's per-call `model` rule).
 - Outside the repo (Task 7, coordinator): `~/.claude/handoffs/2026-09-26-launch-five-project-sessions.md` and
   the five `C:\Users\Arian\Desktop\handoffs\*-prompt.md` contract blocks.
 
@@ -191,6 +194,142 @@ at the top of the loop body `if r.get("tool_use_id") in advised_by: n_adv += 1; 
 
 Check: `"$PY" test_tw_settle.py && "$PY" test_tw_promote.py` → both PASS lines; full suite → `SUITE_DONE` only.
 Commit: `git add -- thinker-worker/scripts/tw.py thinker-worker/scripts/test_tw_settle.py thinker-worker/scripts/test_tw_promote.py && git commit -m "tw: cost rows count advisor calls; promote excludes advisor-assisted dispatches (switch-on T1b)" -- <same paths>`
+
+### Task 1c: record the model that ran; ideation may run on Opus
+
+Why: ideation may run on Opus as well as Fable, with Fable the default (Arian, 2026-09-27); the mechanism is
+the Fable review's (2026-09-27). Once a role admits two models, the receipts must say which one ran. Today the
+cost row's `model` is meta.json's `model`, which tw-* children do not write (`agent-a9d90924aceef9171.meta.json`
+in session `a14deb8e…` has only `agentType`, `description`, `toolUseId`, `spawnDepth`, `requestShape`,
+`requestNonInteractive`), so it is `null` on every real row. The child transcript's assistant rows carry
+`message.model`, the model that actually answered.
+
+Per-call `model` rules (Fable recommendation, 2026-09-27):
+- `model` on a Claude dispatch stays optional and absent by default; the generated agent file pins the role's
+  default (`models[0]`). A coordinator passes `model` only to pick an allowed non-default model for the role;
+  today that is `model: opus` on `tw-ideation-<tier>`. No new agent files.
+- The gate's behavior is unchanged: a per-call model outside the role's `models` is denied, one inside is
+  admitted. Only the denial text changes, from "per-call model <m> differs from the <role> agent's model" to
+  `model <m> is not allowed for <role>`.
+- Active rewrite: `act()` builds `updatedInput` as `{**inp, "subagent_type": pick}`, so a per-call `model`
+  survives a tier rewrite. Intended: a tier change never changes the model. No code.
+- Ticket, dispatch receipts and `promote` are unaffected: the ticket hashes the brief only, and dispatch rows
+  already carry `requested_model`. `agent_model` on the route row is the request-time record; analyses group
+  by the cost row's `model` (what ran).
+- Review stays Fable-only for now (Arian, 2026-09-27).
+- Verified: with no per-call model, the agent file's `model:` beats the coordinator's model. From an Opus 5.5
+  coordinator, `tw-ideation-high` (agent file `model: fable`, dispatched with no `model` argument) ran as
+  `claude-fable-5-1` per its transcript's `message.model` (agent `a5e9aa4b4a746abce`, session `a14deb8e…`,
+  2026-09-27). Not yet verified live: that a per-call `model: opus` overrides the file's `model: fable`
+  (Task 6 checks it).
+
+Files: `routes.json` (Claude `ideation.models`), `tw.py` (`decide` ~L273, `cost_row` ~L422, the hook's route
+row ~L764), `test_tw_settle.py`, `test_tw_routes.py`, `test_tw_receipt.py`.
+Interfaces: Claude `ideation.models` becomes `["fable", "claude-fable-5", "claude-fable-5-1", "opus",
+"claude-opus-5", "claude-opus-5-5"]` (Fable first, so the generated agent files keep `model: fable`). The cost
+row's `model` is the last assistant row's `message.model` that is not `"<synthetic>"` (Claude Code's error
+stub), falling back to meta.json's `model`; the cost row gains `advisor_available: bool`, true when any
+transcript row has `attachment.type == "advisor_tool"` and `available: true` (the advisor was offered at some
+point in the run; a later `available: false` removal does not clear it, as in `agent-ab847e54493bbfae9.jsonl`,
+which has an add then a remove). Route rows gain `agent_model = d.model or pol["models"][0]`: the per-call
+model when given, else the role's default; on Codex the requested `model` (always present, the gate requires
+it). `d.model` is `tool_input["model"]` when it is a string, which is the only case the gate admits.
+This task sits after 1b and its edits anchor on lines 1b leaves in place (`for obj in read_rows(transcript):`
+and the `"agent_type": …, "model": …` line of the returned dict).
+
+Red tests. In `test_tw_settle.py`, `child()` gains `ran=None, offered=()`; before `lines = …`:
+
+```python
+    if ran:  # the model that ran, on every assistant row; then an error stub, which names no model
+        for r in rows[1:]:
+            r["message"]["model"] = ran
+        rows.append({"type": "assistant", "message": {"id": "m9", "model": "<synthetic>",
+                                                      "usage": {"input_tokens": 0, "output_tokens": 0}}})
+    rows += [{"type": "attachment", "attachment": {"type": "advisor_tool", "available": a,
+                                                   "model": "claude-fable-5-1"}} for a in offered]
+```
+
+The existing cost block's `child(home, "tw-worker-high", False, sibling="{not json")` gains
+`offered=(False,)`, and after its cost assertion (and after 1b's advisor assertion):
+
+```python
+        assert (c["model"], c["advisor_available"]) == ("opus", False), c   # no message.model: meta's; a removal is no offer
+    with tempfile.TemporaryDirectory() as home:          # the model that ran comes from the transcript, not meta.json
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
+        child(home, "tw-ideation-high", False, ran="claude-opus-5-5", offered=(True, False))
+        assert run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
+                         "--tool-use-id", "toolu_x", "--accepted", "yes"])[0] == 0
+        c = [r for r in receipts(home, "claude") if r["kind"] == "cost"][0]
+        assert (c["model"], c["advisor_available"]) == ("claude-opus-5-5", True), c   # offered, later removed: True
+```
+
+In `test_tw_routes.py` `CASES`, replace `("ideation on opus refused", …, False)` with the first line below and
+add the rest:
+
+```python
+    ("ideation on opus per call", claude(IDEA, "tw-ideation-high", "opus").admitted, True),
+    ("ideation on sonnet refused", claude(IDEA, "tw-ideation-xhigh", "sonnet").admitted, False),
+    ("review stays fable-only", claude(REV, "tw-independent-review-high", "opus").admitted, False),
+    ("ideation agent file stays fable", R["harnesses"]["claude"]["roles"]["ideation"]["models"][0], "fable"),
+    ("denial names model and role", claude(W, "tw-worker-high", "sonnet").reason, "model sonnet is not allowed for worker"),
+```
+
+(Red today: "ideation on opus per call" and "denial names model and role". The other three pass today and
+guard what must not move: Sonnet stays out, review stays Fable-only, the agent file keeps Fable.)
+
+In `test_tw_receipt.py`'s main block, before the final `print`:
+
+```python
+    with tempfile.TemporaryDirectory() as home:          # route rows: the model each dispatch asked for
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        idea = "TW-Role: ideation\nTW-Authorization: t\nTW-Scope: t\n" + HDR + BODY
+        hook(home, "claude", "Agent", {"subagent_type": "tw-ideation-high", "model": "opus", "prompt": idea})
+        hook(home, "claude", "Agent", {"subagent_type": "tw-ideation-high", "prompt": idea})
+        rows = receipts(home, "claude")
+        assert [r["decision"] for r in rows if r["kind"] == "dispatch"] == ["admit", "admit"], rows
+        assert [r["agent_model"] for r in rows if r["kind"] == "route"] == ["opus", "fable"], rows
+    with tempfile.TemporaryDirectory() as home:
+        run_main(["activate", "--home", home, "--harness", "codex", "--session", SESSION])
+        hook(home, "codex", "spawn_agent", {"message": "TW-Role: worker\n" + HDR + BODY, "model": "gpt-6-sol",
+                                            "reasoning_effort": "high", "fork_turns": "none"})
+        assert [r["agent_model"] for r in receipts(home, "codex") if r["kind"] == "route"] == ["gpt-6-sol"]
+```
+
+(`tw-ideation-high` is the role's cheapest tier, so Task 4's exploration never denies it; the Codex worker
+dispatch may be explored, but its route row is written before any denial.)
+
+Code. `routes.json`, Claude `ideation`: append `"opus", "claude-opus-5", "claude-opus-5-5"` to `models`.
+`decide()`, the Claude per-call model check:
+
+```python
+            return Decision(False, f"model {model} is not allowed for {role}", role, model, fields=fields)
+```
+
+`cost_row()`: bind the transcript once (`rows = read_rows(transcript)`, then `for obj in rows:`), and after
+the loop:
+
+```python
+    ran = [m for m in ((o.get("message") or {}).get("model") for o in rows if o.get("type") == "assistant")
+           if m and m != "<synthetic>"]  # an error stub names no model
+    att = [o.get("attachment") or {} for o in rows if o.get("type") == "attachment"]
+```
+
+In the returned dict, `"model": ran[-1] if ran else meta.get("model")` and
+`"advisor_available": any(a.get("type") == "advisor_tool" and a.get("available") is True for a in att)`.
+The hook's route-row dict, after `"router_tier": r["tier"],`:
+
+```python
+               "agent_model": d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0],
+```
+
+Demonstrated 2026-09-27 on a scratch copy of `thinker-worker/` at `74a9abf` (Tasks 1–4 not applied): the
+red tests above fail against today's `tw.py` and `routes.json` and pass with only these edits; the full
+suite is then `SUITE_DONE` only. Composition with 1b is by anchor (above), not run.
+
+Check: `"$PY" test_tw_settle.py && "$PY" test_tw_routes.py && "$PY" test_tw_receipt.py && "$PY" test_tw_agents.py`
+→ four PASS lines; full suite → `SUITE_DONE` only.
+Commit: `git add -- thinker-worker/routes.json thinker-worker/scripts/tw.py thinker-worker/scripts/test_tw_settle.py thinker-worker/scripts/test_tw_routes.py thinker-worker/scripts/test_tw_receipt.py && git commit -m "tw: cost rows record the model that ran and advisor availability; route rows record agent_model; ideation may run on Opus per call (switch-on T1c)" -- <same paths>`
 
 ### Task 2: exploration one tier below the coordinator, no backend
 
@@ -413,6 +552,11 @@ Docs (describe what the code does now; delete the old assertion, do not keep it 
 - `SKILL.md`: the coordinator's tier rule from design §7 decision 7: `medium` by default; `low` for
   predictable work with a known outcome; `high` for tricky reasoning, physics or convention judgment; `xhigh`
   only for adversarial hard reasoning; physics or convention judgment never below `high`.
+- `SKILL.md` and `references/claude.md`, the per-call model rule (Task 1c; Fable recommendation, 2026-09-27):
+  "Dispatch `tw-<role>-<tier>` with no `model` argument, except to select an allowed non-default model for
+  the role (today: `model: opus` on `tw-ideation-<tier>`); the agent file pins the default." Fable is the
+  ideation default; Opus is the coordinator's choice when the Fable weekly budget binds (Arian,
+  2026-09-27). Review stays Fable-only.
 - `references/codex.md`: the same exploration protocol with `reasoning_effort=` wording.
 - `README.md` thinker-worker section: shipped mode is advisory with exploration one tier below.
 
@@ -450,7 +594,8 @@ Steps:
    `source: "explore"`, `router_tier: "medium"`, `target_tier: "medium"`, `explore: 0.2`, `mode: "advisory"`;
    the re-dispatch at `tw-worker-medium`
    is admitted with `source: "cached:explore"`; `tw.py outcome … --accepted yes` writes the outcome and cost
-   rows.
+   rows. Then dispatch `tw-ideation-high` with `model: opus` and label it: route row `agent_model: "opus"`,
+   cost row `model` a `claude-opus-*` id (the per-call override of the file's `model: fable`, Task 1c).
 
 Check: the rows above, pasted from the receipts file.
 Record: `ROUTING-PROGRESS.md` switch-on section with the session id and rows; commit by pathspec.
@@ -460,6 +605,8 @@ Record: `ROUTING-PROGRESS.md` switch-on section with the session id and rows; co
 Files: the five `C:\Users\Arian\Desktop\handoffs\*-prompt.md` and
 `~/.claude/handoffs/2026-09-26-launch-five-project-sessions.md`.
 Edits, unique-match replace with read-back (backups first in the session scratchpad):
+- (c): add the per-call model rule from Task 4's docs, verbatim ("Dispatch `tw-<role>-<tier>` with no
+  `model` argument, except …; the agent file pins the default.").
 - (d): add `--cause tier|brief|other` on every rejection.
 - New (e): the four-step exploration protocol from Task 4, verbatim, including step 3's "A changed brief is
   a new ticket, so without `TW-Override` a re-dispatch at t−1 can itself be explored down to t−2".
@@ -469,7 +616,8 @@ Edits, unique-match replace with read-back (backups first in the session scratch
   Arian's call.
 
 Check: `grep -c "cause tier" <each file>` = 1, `grep -c "(exploration)" <each file>` ≥ 1 and
-`grep -c "explored down to" <each file>` = 1 for all six; `grep -c "re-run \`activate\`"` on the handoff ≥ 1.
+`grep -c "explored down to" <each file>` = 1 and `grep -c "agent file pins the default" <each file>` = 1
+for all six; `grep -c "re-run \`activate\`"` on the handoff ≥ 1.
 Commit: the handoff in the home repo by pathspec (the Desktop prompts are not in git).
 
 ## Self-review
@@ -481,12 +629,16 @@ Commit: the handoff in the home repo by pathspec (the Desktop prompts are not in
 - Numerical choices: ε = 0.2 and floors physics high / destructive medium / external medium (decided, Arian
   2026-09-27).
 - Advisor contamination (Task 1b): detected per dispatch and excluded from promotion; the advisor itself is
-  off (Arian, 2026-09-27).
+  off (Arian, 2026-09-27). Task 1c adds `advisor_available` (offered, whether or not called).
+- Model recording (Task 1c): the cost row's `model` is what ran (transcript), the route row's `agent_model`
+  what was asked for; ideation admits Opus per call, review stays Fable-only (Arian, 2026-09-27). Model
+  choice across models is an arm comparison, not a tier ladder (design §6, "Model routing", phase 2).
 - Promote on this run: counts only. Its coordinator arm under advisory + explore holds only `TW-Override`
   rows (selected); the valid control (coordinator-source rows with `explore` > 0 whose coin fell ≥ ε, at the
   explored rows' original tier) is phase 2. Task 2 records `explore` on every route row so that arm can be
   built from this run's receipts.
 - Floor vs. data (Task 3): route rows keep the raw pick in `router_tier` and the floored pick in
   `target_tier`; `promote` and `race_check` (via `router_agent`) read the floored one.
-- Names agree: `cause`, `advisor_calls`, `n_advisor_excluded`, `risk_floor`, `target_tier`, `explore`,
+- Names agree: `cause`, `advisor_calls`, `n_advisor_excluded`, `advisor_available`, `agent_model`,
+  `risk_floor`, `target_tier`, `explore`,
   `source: "explore"`, `cached:explore`, `load_routes`, `cost_row`, `promote`, `route`, `act`.
