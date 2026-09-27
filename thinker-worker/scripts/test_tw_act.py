@@ -1,6 +1,6 @@
 """Act modes: shadow silent; advisory denies with the router's pick; active rewrites subagent_type unless the
-guard or a lost-race flag holds it to advisory; override, risk floor, cutoff, exploration; a failure inside
-act() leaves the dispatch admitted with an error row.
+guard or a lost-race flag holds it to advisory; override (header lines only), risk floor, cutoff, exploration; a
+failure inside act() leaves the dispatch admitted and the route row recorded with guard "act error: <Exc>".
 Run: python test_tw_act.py"""
 import json
 import tempfile
@@ -47,6 +47,8 @@ if __name__ == "__main__":
     assert out["permissionDecision"] == "deny" and "tw-worker-low" in out["permissionDecisionReason"]
     assert row["action"] == "advise"
     assert run("advisory", brief_extra="TW-Override: needs high\n")[0] is None
+    late = "pad\n" * 15 + "TW-Override: in the body\n"                  # brief line 20: not a header line
+    assert run("advisory", brief_extra=late)[0]["permissionDecision"] == "deny"
     assert run("advisory", conf=0.5)[0] is None                          # under cutoff
     assert run("advisory", risk="physics")[0] is None                    # never the cheapest tier
     assert run("advisory", risk="external")[0] is None                   # any risk flag, not just two
@@ -66,7 +68,8 @@ if __name__ == "__main__":
     assert run("advisory", conf=0.1, explore=1.0)[0]["permissionDecisionReason"].count("exploration") == 1
     assert run("advisory", conf=0.1, explore=0.0)[0] is None
     assert run("advisory", pick="xhigh", conf=0.1, explore=1.0)[0] is None   # exploration only goes lower
-    out, row = run("active", guard=boom)                                  # act() raises: fail open
-    assert out is None and row["kind"] == "error" and row["error"] == "RuntimeError"
+    out, row = run("active", guard=boom)          # act() raises: fail open, the route row is kept, no error row
+    assert out is None and row["kind"] == "route" and row["action"] is None, row
+    assert row["guard"] == "act error: RuntimeError" and row["router_tier"] == "low", row
     print("PASS act: shadow, advisory, override, cutoff, risk floor, cached re-dispatch, active rewrite, "
           "guard/flag hold, exploration, fail-open")

@@ -11,13 +11,14 @@ import tw
 START = 1_790_000_000.0
 
 
-def setup(home, enabled=True, agent=False, mtime=START - 100, installed=True):
+def setup(home, enabled=True, agent=False, mtime=START - 100, installed=True, matcher=None):
     (home / ".claude" / "plugins").mkdir(parents=True)
     on = {} if enabled is None else {"context-mode@context-mode": enabled}
     (home / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": on}))
     cm = home / "cm"
     (cm / "hooks").mkdir(parents=True)
     pre = [{"matcher": "Bash", "hooks": []}] + ([{"matcher": "Agent", "hooks": []}] if agent else [])
+    pre += [{"matcher": matcher, "hooks": []}] if matcher else []
     hj = cm / "hooks" / "hooks.json"
     hj.write_text(json.dumps({"hooks": {"PreToolUse": pre}}))
     os.utime(hj, (mtime, mtime))
@@ -38,6 +39,11 @@ CASES = [
     ("not installed", verdict(installed=False), None),
     ("clean and old", verdict(), None),
     ("Agent entry live", verdict(agent=True) is not None, True),
+    # Claude Code tests regex matchers with JS RegExp.test: a match anywhere in the tool name counts
+    ("regex Agent.*", verdict(matcher="Agent.*") is not None, True),
+    ("regex .*gent", verdict(matcher=".*gent") is not None, True),
+    ("regex ^Agen (partial match)", verdict(matcher="^Agen") is not None, True),
+    ("regex Edit.* misses Agent", verdict(matcher="Edit.*"), None),
     ("patched after start (heal ran this session)", verdict(mtime=START + 1.5) is not None, True),
     ("patched within 1 s before start", verdict(mtime=START - 0.5) is not None, True),
     ("start unknown", verdict(start=None) is not None, True),

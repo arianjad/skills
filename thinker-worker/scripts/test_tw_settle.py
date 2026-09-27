@@ -1,7 +1,9 @@
 """Settle: race check at dispatch (meta agentType vs router_agent, or context-mode's block) writes one race
 row per rewrite and flips the session to advisory on a loss; outcome writes one cost row summing the last
-usage row per message.id. A corrupt meta.json yields a race-error row and the dispatch is still decided; a
-torn receipts line is skipped by readers and does not swallow the next appended row.
+usage row per message.id. meta.json's agentType is the sole criterion when present; the block text decides only
+without it. outcome runs the race check first. A torn sibling meta or transcript line is skipped; an unreadable
+transcript yields a race-error row and the dispatch is still decided; a torn receipts line is skipped by readers
+and does not swallow the next appended row.
 Run: python test_tw_settle.py"""
 import json
 import tempfile
@@ -12,7 +14,7 @@ from test_tw_hook import run_main
 from test_tw_receipt import SESSION, receipts
 
 
-def child(home, agent_type, block, meta_text=None):
+def child(home, agent_type, block, meta_text=None, torn=False, sibling=None):
     sub = Path(home) / ".claude" / "projects" / "p" / SESSION / "subagents"
     sub.mkdir(parents=True)
     prompt = "TW-Role: worker\n..." + ("\n<context_window_protection>x</context_window_protection>" if block else "")
@@ -21,18 +23,21 @@ def child(home, agent_type, block, meta_text=None):
             {"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 1, "output_tokens": 40}}},
             {"type": "assistant", "message": {"id": "m2", "usage": {"input_tokens": 2, "cache_read_input_tokens": 100,
                                                                     "output_tokens": 7}}}]
-    (sub / "agent-a1.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
-    (sub / "agent-a1.meta.json").write_text(meta_text or json.dumps({"toolUseId": "toolu_x", "agentType": agent_type,
-                                                                     "model": "opus"}), encoding="utf-8")
+    lines = ['{"type": "user", "mess'] * torn + [json.dumps(r) for r in rows]
+    (sub / "agent-a1.jsonl").write_text("\n".join(lines), encoding="utf-8")
+    meta = {"toolUseId": "toolu_x", "model": "opus", **({"agentType": agent_type} if agent_type else {})}
+    (sub / "agent-a1.meta.json").write_text(meta_text or json.dumps(meta), encoding="utf-8")
+    if sibling is not None:  # another child's meta, sorted first by glob
+        (sub / "agent-a0.meta.json").write_text(sibling, encoding="utf-8")
     return str(Path(home) / ".claude" / "projects" / "p" / f"{SESSION}.jsonl")
 
 
-def race(agent_type, block, action="rewrite"):
+def race(agent_type, block, action="rewrite", **kw):
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
                                                           "action": action, "router_agent": "tw-worker-low"})
-        tp = child(home, agent_type, block)
+        tp = child(home, agent_type, block, **kw)
         tw.race_check(Path(home), "claude", SESSION, tp)
         tw.race_check(Path(home), "claude", SESSION, tp)          # idempotent: one race row per rewrite
         rows = [r for r in receipts(home, "claude") if r["kind"] == "race"]
@@ -52,12 +57,16 @@ def dispatch(home, tp):
 if __name__ == "__main__":
     assert race("tw-worker-low", False) == (1, False, False)
     assert race("tw-worker-high", False) == (1, True, True)     # context-mode's full replacement won
-    assert race("tw-worker-low", True) == (1, True, True)       # block text alone also counts
+    assert race("tw-worker-low", True) == (1, False, False)     # agentType is the sole criterion when present
+    assert race(None, True) == (1, True, True)                  # meta without agentType: the block text decides
+    assert race(None, False) == (1, False, False)
+    assert race(None, True, torn=True) == (1, True, True)       # a torn transcript line is skipped, not an error
+    assert race("tw-worker-low", False, sibling="{not json") == (1, False, False)   # torn sibling meta skipped
     assert race("tw-worker-high", False, action=None) == (0, None, False)
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
-        child(home, "tw-worker-high", False)
+        child(home, "tw-worker-high", False, sibling="{not json")
         for verdict in ("yes", "no"):
             code, _ = run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
                                 "--tool-use-id", "toolu_x", "--accepted", verdict])
@@ -67,11 +76,24 @@ if __name__ == "__main__":
         c = cost[0]
         assert (c["api_calls"], c["output_tokens"], c["input_tokens"], c["cache_read_input_tokens"],
                 c["agent_type"]) == (2, 47, 3, 100, "tw-worker-high"), c
-    with tempfile.TemporaryDirectory() as home:          # corrupt meta.json: race-error row, dispatch still decided
+    with tempfile.TemporaryDirectory() as home:          # outcome verifies the last rewrite before labeling it
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
                                                           "action": "rewrite", "router_agent": "tw-worker-low"})
-        tp = child(home, "tw-worker-low", False, meta_text="{not json")
+        child(home, "tw-worker-high", False)
+        code, _ = run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
+                            "--tool-use-id", "toolu_x", "--accepted", "yes"])
+        rows = receipts(home, "claude")
+        assert code == 0 and [r["lost"] for r in rows if r["kind"] == "race"] == [True], rows
+        assert tw.advisory_flag(Path(home), "claude", SESSION).exists()
+    with tempfile.TemporaryDirectory() as home:          # unreadable child transcript: race-error row, dispatch decided
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
+                                                          "action": "rewrite", "router_agent": "tw-worker-low"})
+        tp = child(home, None, False)
+        transcript = Path(tp).with_suffix("") / "subagents" / "agent-a1.jsonl"
+        transcript.unlink()
+        transcript.mkdir()
         code, out = dispatch(home, tp)
         rows = receipts(home, "claude")
         assert code == 0 and out == "", (code, out)
@@ -90,5 +112,6 @@ if __name__ == "__main__":
         rows = tw.read_rows(path)
         assert [r["kind"] for r in rows] == ["dispatch", "outcome"], rows    # the row after the torn line parses
         assert tw.prior_route(Path(home), "claude", SESSION, "abc") is None
-    print("PASS settle: race row per rewrite (agentType or block), advisory flag on loss, one cost row at outcome, "
-          "corrupt meta -> race-error + admit, torn line skipped")
+    print("PASS settle: race row per rewrite (agentType, else block), advisory flag on loss, torn sibling meta and "
+          "transcript line skipped, race check at outcome, one cost row at outcome, unreadable transcript -> "
+          "race-error + admit, torn receipts line skipped")

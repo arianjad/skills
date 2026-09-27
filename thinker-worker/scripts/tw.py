@@ -332,6 +332,8 @@ def read_rows(path: Path) -> list[dict]:
 
 def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: bool) -> None:
     """Label a guarded dispatch; the last outcome for a tool_use_id wins. Claude: one cost row, written once."""
+    if harness == "claude":
+        race_check(home, harness, session, None)  # verify the session's last rewrite before it is labeled; never raises
     rows = read_rows(receipts_path(home, harness, session))
     if not any(r.get("tool_use_id") == tool_use_id for r in rows):
         raise Conflict(f"no receipt for tool_use_id {tool_use_id} in {harness} session {session}")
@@ -361,7 +363,10 @@ def subagents_dirs(home: Path, session: str, transcript_path: str | None = None)
 def child_files(dirs: list[Path], tool_use_id: str) -> tuple[dict, Path] | None:
     for folder in dirs:
         for meta_path in folder.glob("agent-*.meta.json"):
-            meta = read_json(meta_path, {})
+            try:  # one torn sibling meta must not hide this child
+                meta = read_json(meta_path, {})
+            except Conflict:
+                continue
             if isinstance(meta, dict) and meta.get("toolUseId") == tool_use_id:
                 return meta, meta_path.with_name(meta_path.name[: -len(".meta.json")] + ".jsonl")
     return None
@@ -369,7 +374,8 @@ def child_files(dirs: list[Path], tool_use_id: str) -> tuple[dict, Path] | None:
 
 def race_check(home: Path, harness: str, session: str, transcript_path: str | None) -> None:
     """For earlier rewrites not yet checked: the child's actual agent (meta.json, written at spawn) must be the
-    router's pick, and its prompt must not carry context-mode's block. Otherwise the race was lost.
+    router's pick; only when meta.json lacks agentType, its prompt must not carry context-mode's block instead.
+    Otherwise the race was lost. Runs at each dispatch and at outcome.
     Never raises: a failure becomes a race-error row, and the dispatch is decided normally."""
     try:
         path = receipts_path(home, harness, session)
@@ -385,14 +391,20 @@ def race_check(home: Path, harness: str, session: str, transcript_path: str | No
             if found is None or not found[1].exists():
                 continue  # not spawned yet; next dispatch checks again
             meta, transcript = found
-            first = ""
-            with transcript.open(encoding="utf-8") as stream:
-                for line in stream:
-                    obj = json.loads(line)
-                    if obj.get("type") == "user":
-                        first = json.dumps((obj.get("message") or {}).get("content"), ensure_ascii=False)
-                        break
-            lost = meta.get("agentType") != r.get("router_agent") or "<context_window_protection>" in first
+            if meta.get("agentType"):  # sole criterion: briefs may legitimately quote context-mode's block
+                lost = meta["agentType"] != r.get("router_agent")
+            else:
+                lost = False
+                with transcript.open(encoding="utf-8", errors="replace") as stream:
+                    for line in stream:  # streamed to the first user row; torn lines skipped as in read_rows
+                        try:
+                            obj = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(obj, dict) and obj.get("type") == "user":
+                            content = json.dumps((obj.get("message") or {}).get("content"), ensure_ascii=False)
+                            lost = "<context_window_protection>" in content
+                            break
             append_receipt(home, harness, session, {"kind": "race", "at": now(), "harness": harness,
                                                     "session_id": session, "tool_use_id": r["tool_use_id"],
                                                     "lost": lost, "agent_type": meta.get("agentType")})
@@ -591,7 +603,7 @@ def competing_agent_writer(home: Path) -> str | None:
         for entry in pre:
             matcher = entry.get("matcher") or ""
             try:
-                hit = matcher in ("", "*") or re.fullmatch(matcher, "Agent") is not None
+                hit = matcher in ("", "*") or re.search(matcher, "Agent") is not None  # JS RegExp.test semantics
             except re.error:
                 hit = matcher == "Agent"
             if hit:
@@ -618,7 +630,7 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     brief = inp.get("message" if harness == "codex" else "prompt")
     # Checked before the cached decision is used: the ticket ignores TW-Override, so an override
     # re-dispatch of an advised brief reuses the decision that advised it.
-    if any(x.startswith("TW-Override: ") and x[13:].strip() for x in brief.split("\n")[1:]):
+    if any(x.startswith("TW-Override: ") and x[13:].strip() for x in brief.split("\n")[1:12]):  # header lines only
         return None, None, None
     pol = routes["harnesses"][harness]["roles"][d.role]
     target = r["tier"]
@@ -708,7 +720,10 @@ def hook(home: Path, harness: str, owner: str) -> None:
                "action": None, "guard": None}
         if r.get("errors"):
             row["errors"] = r["errors"]
-        out, row["action"], row["guard"] = act(home, harness, session, envelope, d, r, routes)
+        try:  # an act() bug still records the router's decision
+            out, row["action"], row["guard"] = act(home, harness, session, envelope, d, r, routes)
+        except Exception as exc:
+            out, row["action"], row["guard"] = None, None, f"act error: {type(exc).__name__}"
         if record.get("store_bodies"):
             body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
             body.parent.mkdir(parents=True, exist_ok=True)
