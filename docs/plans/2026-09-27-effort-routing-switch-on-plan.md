@@ -29,8 +29,10 @@ exploration for the five-session run, ε = 0.2, exploration one tier below witho
   through Task 6. `router.table` stays in the file, inert while `backends` is `[]`.
 - Exploration applies to Codex sessions too (`router.classes` is not per harness); an activated Codex
   session gets the same advisory denials with a `reasoning_effort=` hint (accepted, Arian 2026-09-27).
-- Status: executing (Arian, 2026-09-27: "1 and 2"). One Opus worker per task, sequential; progress in
-  `thinker-worker/ROUTING-PROGRESS.md` "Switch-on". Task 6 still needs Arian's OK at that moment.
+- Status: COMPLETE 2026-09-27. Tasks 1, 1b, 1c, 2, 3, 4, 4c, the review-brief rule, the Task 5 gate fixes, Task 6
+  (reinstall + live check, Arian's OK; one live-check finding fixed in f6835ae and reinstalled) and Task 7 (home
+  954a88b) done; per-task record in `thinker-worker/ROUTING-PROGRESS.md` "Switch-on". Lifting the five-session HOLD
+  is Arian's call.
 
 ## File map
 
