@@ -7,7 +7,8 @@ deterministically with context-mode.
 **Approach:** Replace tw.py's hard-coded role tables with `routes.json`, and generate `tw-<role>-<tier>`
 agents from it. Add `route()` with the `coordinator` and `table` backends inside a 2 s budget, then the
 `advisory` and `active` act modes. The context-mode guard compares mtime against process start. Add a
-SubagentStop cost and tripwire hook, and a promotion script over receipts. On the home side:
+lost-race check at the next dispatch, cost rows at `outcome`, and a promotion script over receipts. On the
+home side:
 - context-mode's Agent hook is removed by the heal;
 - a SubagentStart hook carries the ctx nudge.
 
@@ -60,8 +61,8 @@ Repo `C:\Users\Arian\Code\skills` (all under `thinker-worker/` unless stated):
     agents (T2);
   - `route`, `BACKENDS`, `ticket`, `route` CLI (T3); `competing_agent_writer`, `claude_process_start` (T4);
     `act` (T5);
-  - `subagent_stop`, `hook_entry`/`owned_entries`/`add_entry`/`remove_entry`/`install`/`check`/`uninstall`
-    for the SubagentStop entry (T6); `promote` plus CLI (T7).
+  - `subagents_dirs`, `child_files`, `race_check`, `cost_row`, plus the `hook`/`outcome` wiring (T6);
+    `promote` plus CLI (T7). The installer is not changed after T2.
 - Delete: `claude-agents/` (3 files) (T2); `scripts/test_tw_miner.py` and `scripts/test_tw_ideation.py`
   (T1; their live cases move to `test_tw_routes.py`).
 - Create tests:
@@ -70,7 +71,7 @@ Repo `C:\Users\Arian\Code\skills` (all under `thinker-worker/` unless stated):
   - `scripts/test_tw_route.py` (T3)
   - `scripts/test_tw_guard.py` (T4)
   - `scripts/test_tw_act.py` (T5)
-  - `scripts/test_tw_stop.py` (T6)
+  - `scripts/test_tw_settle.py` (T6)
   - `scripts/test_tw_promote.py` (T7)
 - Modify tests:
   - `test_tw_header.py`, `test_tw_hook.py`, `test_tw_receipt.py`, `test_tw_outcome.py` and
@@ -504,10 +505,18 @@ Files: `scripts/tw.py`, `scripts/test_tw_route.py` (new), `scripts/test_tw_porta
 
 Interfaces consumed: `Decision`, `load_routes`, `header_text`. Produced:
 - `ticket(brief) -> (str12, digest)`
-- `route(routes, harness, role, fields, brief, coord_tier) -> dict` with keys `tier`, `probs`, `confidence`,
-  `source`, `ms`, `body_chars_sent`, `ticket`, `digest`, `mode`, `explore`
+- `route(routes, harness, role, fields, brief, coord_tier, prior=None) -> dict` with keys `tier`, `probs`,
+  `confidence`, `source`, `ms`, `body_chars_sent`, `ticket`, `digest`, `mode`, `explore`
+- `prior_route(home, harness, session, tick) -> dict | None`
 - `BACKENDS: dict[str, callable]`
-- route rows `{"kind": "route", …, "action": None}` (T5 fills `action` and `guard`)
+- route rows `{"kind": "route", …, "router_agent", "action": None}` (T5 fills `action` and `guard`)
+
+**One decision per ticket** (Fable review, finding 3). The first route row for a ticket in a session is
+reused for every re-dispatch of the same brief:
+- the reused row gets `source: "cached:<original>"`, and exploration is off for it;
+- this prevents advise/re-advise ping-pong once phase 2 adds stochastic backends;
+- an explored brief retried unchanged is not re-explored;
+- it makes T7's "complied" test exact.
 
 `tw.py` additions:
 
@@ -548,9 +557,27 @@ def class_mode(routes: dict, cls: str | None) -> tuple[str, float]:
     return c["mode"], float(c.get("explore", 0.0))
 
 
-def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str) -> dict:
+def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | None:
+    path = receipts_path(home, harness, session)
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line) if line.strip() else {}
+        if row.get("kind") == "route" and row.get("ticket") == tick:
+            return row  # the first decision for this brief
+    return None
+
+
+def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
+          prior: dict | None = None) -> dict:
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
+    tick, digest = ticket(brief)
+    mode, explore = class_mode(routes, fields["TW-Class"])
+    if prior is not None:
+        return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
+                "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
+                "ticket": tick, "digest": digest, "mode": mode, "explore": 0.0}
     result: dict = {}
     start = time.monotonic()
 
@@ -574,23 +601,24 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     if found is None:
         found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator",
                  "body_chars_sent": 0}
-    tick, digest = ticket(brief)
-    mode, explore = class_mode(routes, fields["TW-Class"])
     return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
             "mode": mode, "explore": explore}
 ```
 
-In `hook`, after an admitted Claude or plaintext-Codex decision (skip Codex v2: `d.role is None` or
-`tool_name == "collaborationspawn_agent"`; its join is phase 2):
+In `hook`, load `routes = load_routes()` once, and use it for `decide` too. After an admitted Claude or
+plaintext-Codex decision, do the following. Skip Codex v2 (`d.role is None` or
+`tool_name == "collaborationspawn_agent"`); its join is phase 2.
 
 ```python
     brief = inp.get("message" if harness == "codex" else "prompt")
-    r = route(load_routes(), harness, d.role, d.fields, brief, d.tier)
+    prior = prior_route(home, harness, session, ticket(brief)[0])
+    r = route(routes, harness, d.role, d.fields, brief, d.tier, prior)
     row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
            "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
            "coordinator_tier": d.tier, "router_tier": r["tier"], "probs": r["probs"],
            "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "ms": r["ms"],
            "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
+           "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,
            "action": None, "guard": None}
     if record.get("store_bodies"):
         body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
@@ -668,6 +696,11 @@ if __name__ == "__main__":
             rows = receipts(home, "claude")
             assert [x["kind"] for x in rows] == ["dispatch", "route", "dispatch"], rows   # no route row on deny
             assert rows[1]["coordinator_tier"] == "high" and rows[1]["action"] is None, rows[1]
+            assert rows[1]["router_agent"] == tw.agent_name("worker", rows[1]["router_tier"]), rows[1]
+            hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF})  # same ticket
+            again = receipts(home, "claude")[-1]
+            assert again["source"] == "cached:" + rows[1]["source"].split(":")[-1], again
+            assert again["router_tier"] == rows[1]["router_tier"] and again["coordinator_tier"] == "low", again
             raw = next(Path(home).rglob("receipts/claude/*.jsonl")).read_text(encoding="utf-8")
             assert "SECRET-BODY" not in raw
             bodies = list(Path(home).rglob("bodies/*/*.md"))
@@ -766,8 +799,12 @@ def claude_process_start() -> float | None:
 def competing_agent_writer(home: Path) -> str | None:
     """A reason the router must not return updatedInput on Agent this session, or None (design §4.6)."""
     try:
-        settings = read_json(home / ".claude" / "settings.json", {})
-        if not (settings.get("enabledPlugins") or {}).get("context-mode@context-mode"):
+        enabled = None  # fail safe: only an explicit false skips the guard (Fable review, finding 5)
+        for name in ("settings.json", "settings.local.json"):  # local overrides user
+            plugins_on = read_json(home / ".claude" / name, {}).get("enabledPlugins") or {}
+            if "context-mode@context-mode" in plugins_on:
+                enabled = plugins_on["context-mode@context-mode"]
+        if enabled is False:
             return None
         plugins = read_json(home / ".claude" / "plugins" / "installed_plugins.json", {}).get("plugins") or {}
         entries = plugins.get("context-mode@context-mode") or []
@@ -811,7 +848,8 @@ START = 1_790_000_000.0
 
 def setup(home, enabled=True, agent=False, mtime=START - 100, installed=True):
     (home / ".claude" / "plugins").mkdir(parents=True)
-    (home / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": {"context-mode@context-mode": enabled}}))
+    on = {} if enabled is None else {"context-mode@context-mode": enabled}
+    (home / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": on}))
     cm = home / "cm"
     (cm / "hooks").mkdir(parents=True)
     pre = [{"matcher": "Bash", "hooks": []}] + ([{"matcher": "Agent", "hooks": []}] if agent else [])
@@ -830,7 +868,8 @@ def verdict(start=START, **kw):
 
 
 CASES = [
-    ("plugin disabled", verdict(enabled=False, agent=True), None),
+    ("plugin explicitly disabled", verdict(enabled=False, agent=True), None),
+    ("key absent is not 'disabled'", verdict(enabled=None, agent=True) is not None, True),
     ("not installed", verdict(installed=False), None),
     ("clean and old", verdict(), None),
     ("Agent entry live", verdict(agent=True) is not None, True),
@@ -857,7 +896,7 @@ Live check (Windows, from a Bash tool call in any Claude session, so a `claude.e
 It prints a timestamp earlier than the session transcript's first record. The 2026-09-26 probe got
 `23:40:18Z` against the first record at `23:40:25Z`, in 11 ms.
 
-Check: `$PY test_tw_guard.py` → `PASS 8 guard cases`, and the live check prints a timestamp (not `None`).
+Check: `$PY test_tw_guard.py` → `PASS 9 guard cases`, and the live check prints a timestamp (not `None`).
 
 Commit: `git commit -m "thinker-worker: context-mode guard (Agent entry or hooks.json mtime >= claude process start - 1 s -> advisory) (Windows)" -- thinker-worker/scripts thinker-worker/ROUTING-PROGRESS.md`
 
@@ -884,7 +923,7 @@ def act(home, harness, session, envelope, d: Decision, r: dict, routes: dict):
         return None, None, None
     pol = routes["harnesses"][harness]["roles"][d.role]
     target = r["tier"]
-    risky = {x.strip() for x in d.fields["TW-Risk"].split(",")} & {"destructive", "physics"}
+    risky = d.fields["TW-Risk"] != "none"  # design §5: any risk-flagged brief (Fable review, finding 6)
     if risky and target == pol["tiers"][0]:
         return None, None, None  # risk-flagged briefs never route to the role's cheapest tier
     lower = TIERS.index(target) < TIERS.index(d.tier)
@@ -957,6 +996,7 @@ if __name__ == "__main__":
     assert run("advisory", brief_extra="TW-Override: needs high\n")[0] is None
     assert run("advisory", conf=0.5)[0] is None                          # under cutoff
     assert run("advisory", risk="physics")[0] is None                    # never the cheapest tier
+    assert run("advisory", risk="external")[0] is None                   # any risk flag, not just two
     assert run("advisory", pick="medium", risk="physics")[0]["permissionDecision"] == "deny"
     out, row = run("active")
     assert out["permissionDecision"] == "allow" and out["updatedInput"]["subagent_type"] == "tw-worker-low"
@@ -978,81 +1018,121 @@ Check: `$PY test_tw_act.py` → `PASS act: …`. Then the full suite passes.
 
 Commit: `git commit -m "thinker-worker: act modes (advisory deny with pick, active rewrite behind guard, override, risk floor, exploration) (Windows)" -- thinker-worker/scripts thinker-worker/ROUTING-PROGRESS.md`
 
-### Task 6: SubagentStop — cost rows, lost-race tripwire, installer entry
+### Task 6: settle — race check at the next dispatch, cost rows at `outcome`
 
-Files: `scripts/tw.py`, `scripts/test_tw_stop.py` (new), `scripts/test_tw_install.py`.
+Replaces the SubagentStop hook (Fable review 2026-09-26, finding 4, with one correction). There is no
+second hook event, so the installer is not touched and there is no flush question.
+- **Race check:** runs at each dispatch. It reads each rewritten child's `meta.json`, which is written at
+  spawn and carries `agentType`.
+- **Cost rows:** written at `outcome`, when the coordinator has judged the child, so the child is finished
+  and its transcript is final. Settling costs lazily at the next dispatch instead would cost a background
+  child that is still running.
+- **Trade-off:** unlabeled children get no cost row. They carry no outcome either, so `promote` never uses
+  them.
 
-Interfaces consumed: `advisory_flag`, route rows with `action`. Produced:
-- `subagent_stop(home, harness, envelope)`
-- rows `{"kind": "cost", "tool_use_id", "agent_type", "api_calls", "input_tokens",
-  "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"}` and
-  `{"kind": "lost-race", "tool_use_id"}`
-- manifest key `"stop_hooks": {"claude": entry}`
+Files: `scripts/tw.py`, `scripts/test_tw_settle.py` (new).
+
+Interfaces consumed: `advisory_flag`, route rows with `action` and `router_agent` (T3/T5). Produced:
+- `subagents_dirs(home, session, transcript_path=None) -> list[Path]`
+- `child_files(dirs, tool_use_id) -> (meta, transcript_path) | None`
+- `race_check(home, harness, session, transcript_path)`
+- `cost_row(home, harness, session, tool_use_id) -> dict | None`
+- rows `{"kind": "race", "tool_use_id", "lost": bool, "agent_type"}`, `{"kind": "race-error", "error"}`, and
+  `{"kind": "cost", "tool_use_id", "agent_type", "model", "api_calls", "input_tokens",
+  "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"}`
+
+Verified on 2026-09-26 against this machine's transcripts:
+- the session transcript `<dir>/<session>.jsonl` has its children at `<dir>/<session>/subagents/agent-<id>.jsonl`
+  with a sibling `agent-<id>.meta.json` holding `{"agentType", "toolUseId", "model", …}`;
+- the child's first `type == "user"` row is its prompt;
+- assistant rows repeat `message.id`, and the last row per id carries the final usage.
 
 ```python
 COST_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
 
-def subagent_stop(home: Path, harness: str, envelope: dict) -> None:
-    """Never prints: SubagentStop output could block the child's stop."""
-    try:
-        session = session_value(envelope.get("session_id"))
-        if activation(home, harness, session) is None:
-            return
-        path = Path(envelope["agent_transcript_path"])
-        tool_use_id = read_json(path.with_suffix(".meta.json"), {}).get("toolUseId")
-        usage, first_user = {}, None
-        for line in path.read_text(encoding="utf-8").splitlines():
-            obj = json.loads(line)
-            msg = obj.get("message") or {}
-            if first_user is None and obj.get("type") == "user":
-                first_user = json.dumps(msg.get("content"), ensure_ascii=False)
-            if obj.get("type") == "assistant" and msg.get("id") and msg.get("usage"):
-                usage[msg["id"]] = msg["usage"]  # last row per message.id carries the final counts
-        append_receipt(home, harness, session, {
-            "kind": "cost", "at": now(), "harness": harness, "session_id": session, "tool_use_id": tool_use_id,
-            "agent_type": envelope.get("agent_type"), "api_calls": len(usage),
-            **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS}})
-        rows = receipts_path(home, harness, session).read_text(encoding="utf-8").splitlines()
-        rewritten = any(json.loads(x).get("kind") == "route" and json.loads(x).get("tool_use_id") == tool_use_id
-                        and json.loads(x).get("action") == "rewrite" for x in rows if x.strip())
-        if rewritten and first_user and "<context_window_protection>" in first_user:
-            append_receipt(home, harness, session, {"kind": "lost-race", "at": now(), "harness": harness,
-                                                    "session_id": session, "tool_use_id": tool_use_id})
-            advisory_flag(home, harness, session).write_text(now(), encoding="utf-8")
-    except Exception:
+def subagents_dirs(home: Path, session: str, transcript_path: str | None = None) -> list[Path]:
+    if transcript_path:
+        return [Path(transcript_path).with_suffix("") / "subagents"]
+    return list((home / ".claude" / "projects").glob(f"*/{session}/subagents"))
+
+
+def child_files(dirs: list[Path], tool_use_id: str) -> tuple[dict, Path] | None:
+    for folder in dirs:
+        for meta_path in folder.glob("agent-*.meta.json"):
+            meta = read_json(meta_path, {})
+            if meta.get("toolUseId") == tool_use_id:
+                return meta, meta_path.with_name(meta_path.name[: -len(".meta.json")] + ".jsonl")
+    return None
+
+
+def race_check(home: Path, harness: str, session: str, transcript_path: str | None) -> None:
+    """For earlier rewrites not yet checked: the child's actual agent (meta.json, written at spawn) must be the
+    router's pick, and its prompt must not carry context-mode's block. Otherwise the race was lost."""
+    path = receipts_path(home, harness, session)
+    if harness != "claude" or not path.exists():
         return
+    try:
+        rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        checked = {r.get("tool_use_id") for r in rows if r.get("kind") == "race"}
+        dirs = subagents_dirs(home, session, transcript_path)
+        for r in rows:
+            if r.get("kind") != "route" or r.get("action") != "rewrite" or r.get("tool_use_id") in checked:
+                continue
+            found = child_files(dirs, r["tool_use_id"])
+            if found is None or not found[1].exists():
+                continue  # not spawned yet; next dispatch checks again
+            meta, transcript = found
+            first = ""
+            with transcript.open(encoding="utf-8") as stream:
+                for line in stream:
+                    obj = json.loads(line)
+                    if obj.get("type") == "user":
+                        first = json.dumps((obj.get("message") or {}).get("content"), ensure_ascii=False)
+                        break
+            lost = meta.get("agentType") != r.get("router_agent") or "<context_window_protection>" in first
+            append_receipt(home, harness, session, {"kind": "race", "at": now(), "harness": harness,
+                                                    "session_id": session, "tool_use_id": r["tool_use_id"],
+                                                    "lost": lost, "agent_type": meta.get("agentType")})
+            if lost:
+                advisory_flag(home, harness, session).write_text(now(), encoding="utf-8")
+    except Exception as exc:  # a tripwire failure is recorded, never silent, and never blocks a dispatch
+        append_receipt(home, harness, session, {"kind": "race-error", "at": now(), "harness": harness,
+                                                "session_id": session, "error": f"{type(exc).__name__}: {exc}"[:200]})
+
+
+def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict | None:
+    found = child_files(subagents_dirs(home, session), tool_use_id)
+    if found is None or not found[1].exists():
+        return None
+    meta, transcript = found
+    usage = {}
+    for line in transcript.read_text(encoding="utf-8").splitlines():
+        obj = json.loads(line) if line.strip() else {}
+        msg = obj.get("message") or {}
+        if obj.get("type") == "assistant" and msg.get("id") and msg.get("usage"):
+            usage[msg["id"]] = msg["usage"]  # last row per message.id carries the final counts
+    return {"kind": "cost", "at": now(), "harness": harness, "session_id": session, "tool_use_id": tool_use_id,
+            "agent_type": meta.get("agentType"), "model": meta.get("model"), "api_calls": len(usage),
+            **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS}}
 ```
 
-In `hook`, before the tool-name filter:
-`if envelope.get("hook_event_name") == "SubagentStop": subagent_stop(home, harness, envelope); return`.
+Wiring:
+- **`hook`:** right after `record` is known to be non-None and the event checks pass (before `decide`),
+  call `race_check(home, harness, session, envelope.get("transcript_path"))`. `transcript_path` is a common
+  hook input field.
+- **`outcome`:** after appending the outcome row, when `harness == "claude"` and no `cost` row exists yet
+  for this `tool_use_id`, compute `row = cost_row(home, harness, session, tool_use_id)` and append it if it
+  is not `None`. It is written once, so a relabel does not duplicate it.
 
-Installer, with the same command for both events. `tw.py hook` reads the event from stdin:
-- `hook_entry(…, event="PreToolUse")`: for `event == "SubagentStop"`, return `{"hooks": [handler]}` (no
-  matcher). Otherwise return as today.
-- `owned_entries(doc, event="PreToolUse")`, `add_entry(doc, entry, event="PreToolUse")` and
-  `remove_entry(doc, entry, event="PreToolUse")` replace the literal `"PreToolUse"` with `event`.
-  `remove_entry` deletes an emptied event list, and `hooks` when it is empty.
-- `install`: when `"claude" in harnesses`, `stop = hook_entry("claude", home, python, portable, python_cmd, "SubagentStop")`.
-  - If `owned_entries(doc, "SubagentStop") == [stop]`: nothing to add (adopted).
-  - Elif it is non-empty: raise the same Conflict text as for PreToolUse.
-  - Else: apply `add_entry(…, stop, "SubagentStop")` on top of the claude revision. If the PreToolUse
-    entry was adopted but the stop entry is missing, create a revision.
-  - Record `"stop_hooks": {"claude": stop}` in the manifest.
-- `check`: when the manifest has `stop_hooks`, require `owned_entries(doc, "SubagentStop") == [manifest["stop_hooks"]["claude"]]`.
-  Old manifests lack the key and are skipped.
-- `uninstall`: wherever the claude PreToolUse entry is removed, also remove the stop entry if present.
-  Where the PreToolUse entry is kept for another machine's ledger, keep the stop entry too.
-
-`scripts/test_tw_stop.py`:
+`scripts/test_tw_settle.py`:
 
 ```python
-"""SubagentStop: cost row = sum of the last usage row per message.id; lost-race row + advisory flag when a
-rewritten child's prompt carries context-mode's block; never prints; installed alongside PreToolUse.
-Run: python test_tw_stop.py"""
+"""Settle: race check at dispatch (meta agentType vs router_agent, or context-mode's block) writes one race
+row per rewrite and flips the session to advisory on a loss; outcome writes one cost row summing the last
+usage row per message.id.
+Run: python test_tw_settle.py"""
 import json
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -1060,60 +1140,60 @@ import tw
 from test_tw_hook import run_main
 from test_tw_receipt import SESSION, receipts
 
-TW = str(Path(__file__).with_name("tw.py"))
 
-
-def transcript(folder, block):
-    t = Path(folder) / "agent-a1.jsonl"
+def child(home, agent_type, block):
+    sub = Path(home) / ".claude" / "projects" / "p" / SESSION / "subagents"
+    sub.mkdir(parents=True)
     prompt = "TW-Role: worker\n..." + ("\n<context_window_protection>x</context_window_protection>" if block else "")
     rows = [{"type": "user", "message": {"content": prompt}},
             {"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 1, "output_tokens": 5}}},
             {"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 1, "output_tokens": 40}}},
             {"type": "assistant", "message": {"id": "m2", "usage": {"input_tokens": 2, "cache_read_input_tokens": 100,
                                                                     "output_tokens": 7}}}]
-    t.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
-    (Path(folder) / "agent-a1.meta.json").write_text(json.dumps({"toolUseId": "toolu_x"}), encoding="utf-8")
-    return str(t)
+    (sub / "agent-a1.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    (sub / "agent-a1.meta.json").write_text(json.dumps({"toolUseId": "toolu_x", "agentType": agent_type,
+                                                        "model": "opus"}), encoding="utf-8")
+    return str(Path(home) / ".claude" / "projects" / "p" / f"{SESSION}.jsonl")
 
 
-def stop(home, path):
-    env = {"hook_event_name": "SubagentStop", "session_id": SESSION, "agent_type": "tw-worker-low",
-           "agent_transcript_path": path}
-    return run_main(["hook", "--home", home, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))
+def race(agent_type, block, action="rewrite"):
+    with tempfile.TemporaryDirectory() as home:
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
+                                                          "action": action, "router_agent": "tw-worker-low"})
+        tp = child(home, agent_type, block)
+        tw.race_check(Path(home), "claude", SESSION, tp)
+        tw.race_check(Path(home), "claude", SESSION, tp)          # idempotent: one race row per rewrite
+        rows = [r for r in receipts(home, "claude") if r["kind"] == "race"]
+        flag = tw.advisory_flag(Path(home), "claude", SESSION).exists()
+        return (len(rows), rows[0]["lost"] if rows else None, flag)
 
 
 if __name__ == "__main__":
-    for block, rewrite in ((False, True), (True, True), (True, False)):
-        with tempfile.TemporaryDirectory() as home:
-            run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-            tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
-                                                              "action": "rewrite" if rewrite else None})
-            code, out = stop(home, transcript(home, block))
-            assert code == 0 and out == "", out
-            rows = receipts(home, "claude")
-            cost = [r for r in rows if r["kind"] == "cost"][0]
-            assert (cost["api_calls"], cost["output_tokens"], cost["input_tokens"], cost["cache_read_input_tokens"]) == (2, 47, 3, 100), cost
-            lost = [r for r in rows if r["kind"] == "lost-race"]
-            flag = tw.advisory_flag(Path(home), "claude", SESSION).exists()
-            assert (bool(lost), flag) == ((True, True) if block and rewrite else (False, False)), (block, rewrite)
-    with tempfile.TemporaryDirectory() as tmp:            # installer writes and removes the SubagentStop entry
-        home = Path(tmp)
-        assert subprocess.run([sys.executable, TW, "install", "--home", tmp, "--python", sys.executable,
-                               "--harness", "claude"], capture_output=True).returncode == 0
-        hooks = tw.read_json(home / ".claude" / "settings.json", {})["hooks"]
-        assert len(tw.owned_entries({"hooks": hooks}, "SubagentStop")) == 1
-        assert subprocess.run([sys.executable, TW, "check", "--home", tmp], capture_output=True).returncode == 0
-        assert subprocess.run([sys.executable, TW, "uninstall", "--home", tmp], capture_output=True).returncode == 0
-        assert "hooks" not in tw.read_json(home / ".claude" / "settings.json", {})
-    print("PASS stop: cost sums last row per message.id, tripwire only on rewrite+block, silent, installer round trip")
+    assert race("tw-worker-low", False) == (1, False, False)
+    assert race("tw-worker-high", False) == (1, True, True)     # context-mode's full replacement won
+    assert race("tw-worker-low", True) == (1, True, True)       # block text alone also counts
+    assert race("tw-worker-high", False, action=None) == (0, None, False)
+    with tempfile.TemporaryDirectory() as home:
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
+        child(home, "tw-worker-high", False)
+        for verdict in ("yes", "no"):
+            code, _ = run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
+                                "--tool-use-id", "toolu_x", "--accepted", verdict])
+            assert code == 0
+        cost = [r for r in receipts(home, "claude") if r["kind"] == "cost"]
+        assert len(cost) == 1, cost
+        c = cost[0]
+        assert (c["api_calls"], c["output_tokens"], c["input_tokens"], c["cache_read_input_tokens"],
+                c["agent_type"]) == (2, 47, 3, 100, "tw-worker-high"), c
+    print("PASS settle: race row per rewrite (agentType or block), advisory flag on loss, one cost row at outcome")
 ```
 
-Check: `$PY test_tw_stop.py` → `PASS stop: …`. Then the full suite passes. `test_tw_install.py`,
-`test_tw_portable.py` and `test_tw_ledger.py` must still pass unchanged apart from the earlier edits. If a
-ledger test compares whole manifests or entries, update it to include `stop_hooks` and record that in the
-progress file.
+Check: `$PY test_tw_settle.py` → `PASS settle: …`. Then the full suite passes. The installer tests are
+unchanged by this task.
 
-Commit: `git commit -m "thinker-worker: SubagentStop cost rows + lost-race tripwire; installer adds/removes the SubagentStop entry (Windows)" -- thinker-worker/scripts thinker-worker/ROUTING-PROGRESS.md`
+Commit: `git commit -m "thinker-worker: settle — lost-race check at dispatch (meta agentType), cost rows at outcome (Windows)" -- thinker-worker/scripts thinker-worker/ROUTING-PROGRESS.md`
 
 ### Task 7: promotion script
 
@@ -1137,17 +1217,19 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
     for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
         rows += [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
     label = {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"}
+    lost = {r["tool_use_id"] for r in rows if r.get("kind") == "race" and r.get("lost")}  # ran at neither arm's tier
     routes = [r for r in rows if r.get("kind") == "route" and (cls is None or r.get("class") == cls)]
     advised = {r["ticket"]: r["router_tier"] for r in routes if r.get("action") == "advise"
                and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])}
     router, coord = [], []
     for r in routes:
         ok = label.get(r.get("tool_use_id"))
-        if ok is None:
+        if ok is None or r.get("tool_use_id") in lost:
             continue
         rewrite_lower = (r.get("action") == "rewrite"
                          and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"]))
-        complied = r.get("action") is None and advised.get(r["ticket"]) == r["coordinator_tier"]
+        complied = (r.get("action") is None and r.get("source", "").startswith("cached:")
+                    and advised.get(r["ticket"]) == r["coordinator_tier"])
         if rewrite_lower or complied:
             router.append(ok)
         elif r.get("action") is None and r["ticket"] not in advised:
@@ -1177,9 +1259,15 @@ import tw
 S = "55555555-6666-7777-8888-999999999999"
 
 
-def verdict(k, n=10):
+def verdict(k, n=10, lost=0):
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
+        for i in range(lost):  # rewrites that lost the race: rejected, but excluded from both arms
+            tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"x{i}", "ticket": f"v{i}",
+                                                  "class": "C-coding", "action": "rewrite",
+                                                  "router_tier": "low", "coordinator_tier": "high"})
+            tw.append_receipt(home, "claude", S, {"kind": "race", "tool_use_id": f"x{i}", "lost": True})
+            tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"x{i}", "accepted": False})
         for i in range(n):  # router arm: active rewrites to a lower tier
             tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"r{i}", "ticket": f"t{i}",
                                                   "class": "C-coding", "action": "rewrite",
@@ -1196,7 +1284,9 @@ def verdict(k, n=10):
 if __name__ == "__main__":
     got = {k: verdict(k)["verdict"] for k in (9, 8, 6, 5)}
     assert got == {9: "promote", 8: "hold", 6: "hold", 5: "demote"}, got
-    print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5)")
+    v = verdict(9, lost=5)
+    assert (v["n_router"], v["verdict"]) == (10, "promote"), v   # lost races count for neither arm
+    print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5); lost races excluded")
 ```
 
 The expected values were checked on 2026-09-26 with the same sampler, seed 7 and 200k draws:
@@ -1340,15 +1430,13 @@ Steps:
 3. **Live check** in a new Claude session:
    - activate the session;
    - dispatch a `tw-worker-low` child with a valid header and a trivial task;
-   - the receipts must show `dispatch` → `route` (source `table`, mode `shadow`) → `cost`.
-4. **Flush check** (design §4.4 step 4). After the child finishes, recount its transcript's last-row-per-id
-   `output_tokens` and compare with the `cost` row. If they differ, SubagentStop fires before the final flush:
-   record that in `ROUTING-PROGRESS.md` and stop for Arian's decision. Two options exist then:
-   - recompute the cost at the next dispatch;
-   - accept the drift.
-5. The five-session HOLD stays in place. Lifting it waits for phase 2 backends and is Arian's call.
+   - after the child returns, run `tw.py outcome … --accepted yes`;
+   - the receipts must show `dispatch` → `route` (source `table`, mode `shadow`) → `outcome` → `cost`;
+   - the `cost` row's `output_tokens` must equal an independent recount of the child transcript (last row
+     per `message.id`).
+4. The five-session HOLD stays in place. Lifting it waits for phase 2 backends and is Arian's call.
 
-Check: step 3 shows the three row kinds, and step 4 matches or has been escalated.
+Check: step 3 shows the four row kinds, and the recount matches.
 
 Commit: `git commit -m "thinker-worker: docs for routes.json, tier agents, act modes, route/promote CLIs (Windows)" -- thinker-worker/SKILL.md thinker-worker/references README.md thinker-worker/ROUTING-PROGRESS.md`
 
@@ -1398,8 +1486,25 @@ Commit: `git commit -m "thinker-worker: docs for routes.json, tier agents, act m
 2. **Placeholder scan:** none. `…` inside `test_tw_header.py` edit descriptions stands for the existing
    surrounding expression, which is quoted in full in the file.
 3. **Name and signature consistency:**
-   - `Decision`, `route`, `act`, `advisory_flag`, `competing_agent_writer`, `claude_process_start`,
-     `subagent_stop`, `promote`, `agent_name` and `AGENT_NAME` are used identically in every task that
-     consumes them.
-   - Route row keys (`coordinator_tier`, `router_tier`, `action`, `guard`, `ticket`, `class`) are written in
-     T3/T5 and read in T6/T7.
+   - `Decision`, `route`, `prior_route`, `act`, `advisory_flag`, `competing_agent_writer`,
+     `claude_process_start`, `race_check`, `cost_row`, `promote`, `agent_name` and `AGENT_NAME` are used
+     identically in every task that consumes them.
+   - Route row keys (`coordinator_tier`, `router_tier`, `router_agent`, `source`, `action`, `guard`,
+     `ticket`, `class`) are written in T3/T5 and read in T6/T7.
+   - Race rows (`kind: race`, `lost`) are written in T6 and read in T7.
+
+## Review log
+
+Fable review of c063da7, 2026-09-26. All applied; the six deviations were accepted.
+1. **(High, T7)** Lost races are excluded from both arms.
+2. **(High, T6)** The tripwire keys on `meta.json` `agentType != router_agent`, OR context-mode's block
+   text.
+3. **(Medium-high, T3)** One decision per ticket: cached, with no re-exploration. "complied" is exact.
+4. **(Medium, T6)** No SubagentStop hook. The race check runs at the next dispatch and cost rows are written
+   at `outcome`. This corrects the review's "cost at next dispatch", which would have costed a background
+   child still running. The installer surgery and the flush question go away.
+5. **(Low, T4)** Only an explicit `false` disables the guard, and `settings.local.json` is honoured.
+6. **(Low, T5)** Any risk flag, `external` included, keeps a brief off the cheapest tier, matching design §5.
+
+Note on deviation 3: with the table's confidence at 0, exploration is the only thing that can cause an
+advisory in phase 1. A 0 % advise rate at `explore: 0` is expected, not a bug.

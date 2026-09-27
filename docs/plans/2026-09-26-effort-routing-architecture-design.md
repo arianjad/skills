@@ -205,10 +205,11 @@ Claude:
    `subagent_type` swapped to the router's tier agent (same override escape) and the prompt untouched;
    if another `updatedInput` writer on `Agent` is registered (§4.6 guard), act as `advisory` for that
    dispatch instead.
-4. SubagentStop hook (new): parse `agent_transcript_path`, group assistant rows by `message.id`, keep the
-   last row per id, sum input / cache-create / cache-read / output → `kind: cost`, joined by `tool_use_id`
-   from `meta.json`. Not the parent's `totalTokens`. Whether the final row is flushed before SubagentStop
-   fires is checked once in the plan.
+4. Cost rows at `outcome` (no SubagentStop hook; Fable review of the phase-1 plan, 2026-09-26). When the
+   coordinator labels a child, find its transcript through `meta.json` (`toolUseId`). Group the assistant
+   rows by `message.id`, keep the last row per id, and sum input / cache-create / cache-read / output into
+   `kind: cost`. Not the parent's `totalTokens`. A labeled child has finished, so its transcript is final.
+   Unlabeled children get no cost row.
 5. Coordinator labels: `tw.py outcome --tool-use-id … --accepted yes|no` (exists).
 
 Codex: step 1 identical; step 2 is `tw.py route` then `spawn_agent(model, reasoning_effort=<tier>,
@@ -273,8 +274,10 @@ block 2.7 % of main.
      measurement. Compute it once per `session_id` and cache it in tw.py's existing per-session state,
      because a PowerShell/wmic query costs ~300 ms and psutil is not in the hook's Python [3P].
    - The current `hooks.json` mtime is 2026-07-06 [V], so ordinary sessions do not false-positive.
-   - **Tripwire:** at SubagentStop, if the router emitted `updatedInput` for that child and the child's
-     first user message contains `<context_window_protection>`, write a `lost-race` receipt and set the
+   - **Tripwire:** at the next dispatch, for each earlier rewrite not yet checked, compare the child's
+     `meta.json` `agentType`, which is written at spawn. If it differs from the router's pick, or the
+     child's first user message contains `<context_window_protection>`, write a `race` receipt with
+     `lost: true` and set the
      session to `advisory`. A lost race is then never silent.
 5. **Measure:** the parent-silent subagent ctx rate was 24/511 (4.7 %) with the old block. Re-run the split
    after a week with the one-line nudge. If it falls well below that, lengthen the nudge; do not restore the
@@ -361,7 +364,7 @@ Decided 2026-09-26 (Arian):
    2026-09-26). A reviewer can run tests itself to falsify a claim, and a Bash-capable role is never really
    read-only anyway. "Report findings; do not edit the files under review" is a line in the brief, not a
    tool restriction.
-5. **§4.6 guard: the mtime variant, anchored at process start, plus the SubagentStop tripwire.** Fable's
+5. **§4.6 guard: the mtime variant, anchored at process start, plus the next-dispatch tripwire.** Fable's
    review, 2026-09-26: plugin hooks are fixed at session start, so a guard that only reads disk misses the
    first session after an update. Confirmed by this session's cache-edit test, whose file was restored.
 6. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
@@ -375,7 +378,7 @@ per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
 (1) `routes.json` + loader + generated agents + gate rewrite + Codex effort-required revert, behind the
 existing tests; (2) hook order gate → receipt → route with the `coordinator` and `table` backends, route
 rows, ticket digest; (3) `tw.py serve` + the four backend arms (`semif4b`, `kev`, `eos`, `laya`) + stub-server tests;
-Stage-1 offline bench script over an effortmining grid, which picks `backends[0]`; (4) SubagentStop cost rows and the flush check; (5) `advisory`, exploration,
+Stage-1 offline bench script over an effortmining grid, which picks `backends[0]`; (4) cost rows at `outcome` and the next-dispatch race check; (5) `advisory`, exploration,
 promotion script over receipts; (6) the §4.6 patch, heal, nudge and guard, the O4b re-probe, then `active`; (7) Codex: `task_name` join
 probe, then the CLI path; (8) re-baseline the real install and lift the five-session HOLD. The Opus 5.5
 calibration run proceeds in parallel and feeds (2) and (3).
