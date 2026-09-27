@@ -1514,6 +1514,9 @@ Commit: `git commit -m "thinker-worker: docs for routes.json, tier agents, act m
 - `eligible` excludes risk-floored rows: a risk-flagged brief whose router pick is the role's cheapest tier
   (the router arm can never hold its counterpart). A risk-flagged brief where the router wanted lower but
   not lowest stays eligible, and overrides stay eligible (agreed with Fable, 2026-09-26).
+- `uninstall` should leave activation records (`~/.thinker-worker/state/`) alone, since they are session state and
+  not install artifacts, or at least print which sessions it deactivated. Today a reinstall silently
+  un-guards every resumed activated session (Fable review, 2026-09-26).
 
 ## Self-review
 
