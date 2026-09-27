@@ -58,5 +58,15 @@ if __name__ == "__main__":
                                                     # coordinator-fallback and ineligible rows count for neither arm
     v = verdict(9, advised=3)
     assert (v["n_router"], v["n_advisor_excluded"]) == (7, 3), v     # advisor-assisted rows leave the arm
+    with tempfile.TemporaryDirectory() as tmp:           # floored advise, then compliance at the floored tier
+        home = Path(tmp)
+        base = {"kind": "route", "ticket": "fl", "class": "C-coding", "router_tier": "low", "target_tier": "medium"}
+        tw.append_receipt(home, "claude", S, {**base, "tool_use_id": "f0", "action": "advise", "source": "table",
+                                              "coordinator_tier": "high", "eligible": True})
+        tw.append_receipt(home, "claude", S, {**base, "tool_use_id": "f1", "action": None, "source": "cached:table",
+                                              "coordinator_tier": "medium", "eligible": False})
+        tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": "f1", "accepted": True})
+        v = tw.promote(home, "claude")
+        assert (v["n_router"], v["n_coord"]) == (1, 0), v    # complied at the floored tier: router arm
     print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5); lost races, "
           "ineligible and advisor-assisted rows excluded")

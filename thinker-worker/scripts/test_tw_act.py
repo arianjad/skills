@@ -1,6 +1,8 @@
 """Act modes: shadow silent; advisory denies with the router's pick; active rewrites subagent_type unless the
-guard or a lost-race flag holds it to advisory; override (header lines only), risk floor, cutoff, exploration; a
-failure inside act() leaves the dispatch admitted and the route row recorded with guard "act error: <Exc>".
+guard or a lost-race flag holds it to advisory; override (header lines only), per-flag risk floor (the pick is
+raised to the highest flag's floor, recorded as target_tier; no action at or above the coordinator's tier), cutoff,
+exploration; a failure inside act() leaves the dispatch admitted and the route row recorded with guard
+"act error: <Exc>" and target_tier the raw pick.
 Run: python test_tw_act.py"""
 import json
 import tempfile
@@ -57,9 +59,14 @@ if __name__ == "__main__":
     late = "pad\n" * 15 + "TW-Override: in the body\n"                  # brief line 20: not a header line
     assert run("advisory", brief_extra=late)[0]["permissionDecision"] == "deny"
     assert run("advisory", conf=0.5)[0] is None                          # under cutoff
-    assert run("advisory", risk="physics")[0] is None                    # never the cheapest tier
-    assert run("advisory", risk="external")[0] is None                   # any risk flag, not just two
-    assert run("advisory", pick="medium", risk="physics")[0]["permissionDecision"] == "deny"
+    assert run("advisory", risk="physics")[0] is None                    # floor high = coordinator's high
+    out, row = run("advisory", risk="external")                          # floor medium: advised to medium
+    assert "tw-worker-medium" in out["permissionDecisionReason"] and row["router_tier"] == "low", (out, row)
+    assert (row["target_tier"], row["router_agent"]) == ("medium", "tw-worker-medium"), row   # floored target
+    assert run("advisory", risk="destructive,physics")[0] is None        # the highest flag wins
+    assert run("advisory", pick="medium", risk="physics")[0] is None     # a pick below the floor is raised
+    assert run("advisory", risk="physics")[1]["eligible"] is False       # floored rows stay out of promote
+    assert run("advisory", explore=1.0, backends=(), st="tw-worker-xhigh", risk="physics")[0]["permissionDecisionReason"].count("tw-worker-high") == 1
     # re-dispatch of an advised brief hits the cached decision: override or taking the pick both admit
     out, row = run("advisory", then=("tw-worker-high", "TW-Override: needs high\n"))
     assert out is None and row["source"] == "cached:stub" and row["action"] is None
@@ -80,7 +87,7 @@ if __name__ == "__main__":
     assert run("advisory", pick="xhigh", conf=0.1, explore=1.0)[0] is None   # exploration only goes lower
     out, row = run("active", guard=boom)          # act() raises: fail open, the route row is kept, no error row
     assert out is None and row["kind"] == "route" and row["action"] is None, row
-    assert row["guard"] == "act error: RuntimeError" and row["router_tier"] == "low", row
+    assert row["guard"] == "act error: RuntimeError" and row["router_tier"] == "low" and row["target_tier"] == "low", row
     out, row = run("advisory", explore=1.0, backends=())            # no backend: explore one tier below
     assert "tw-worker-medium" in out["permissionDecisionReason"] and "exploration" in out["permissionDecisionReason"]
     assert row["source"] == "explore" and row["router_tier"] == "medium" and row["eligible"] is True, row

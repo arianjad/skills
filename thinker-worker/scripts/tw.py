@@ -70,10 +70,12 @@ def load_routes(path: Path | None = None) -> dict:
     budget = rt.get("budget_s") if isinstance(rt, dict) else None
     cutoff = rt.get("cutoff") if isinstance(rt, dict) else None
     star = rt.get("classes", {}).get("*") if isinstance(rt, dict) and isinstance(rt.get("classes"), dict) else None
+    floors = rt.get("risk_floor") if isinstance(rt, dict) else None
     if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list)
             or isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0
             or isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)) or not 0 <= cutoff <= 1
-            or not isinstance(star, dict) or "mode" not in star):
+            or not isinstance(star, dict) or "mode" not in star
+            or not isinstance(floors, dict) or set(floors) != RISKS or any(v not in TIERS for v in floors.values())):
         raise Conflict("routes.json: bad router block")
     return doc
 
@@ -456,7 +458,8 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
             draws: int = 200_000, seed: int = 7) -> dict:
     """Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
     (backend wanted lower and the row is `eligible`, child ran at the coordinator tier); promote/demote/hold on
-    P(diff >= -margin). A dispatch whose cost row shows advisor calls measured tier + advisor, not the tier: it
+    P(diff >= -margin). "Lower" and "complied" compare the floored `target_tier` (`router_tier` on rows written
+    before it existed). A dispatch whose cost row shows advisor calls measured tier + advisor, not the tier: it
     leaves both arms and is counted in n_advisor_excluded."""
     rows = []
     for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
@@ -465,8 +468,9 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
     race = {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"}  # outcome runs race_check
     advised_by = {r["tool_use_id"] for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")}
     routes =[r for r in rows if r.get("kind") == "route" and (cls is None or r.get("class") == cls)]
-    advised = {r["ticket"]: r["router_tier"] for r in routes if r.get("action") == "advise"
-               and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])}
+    tgt = lambda r: r.get("target_tier") or r["router_tier"]  # floored pick; rows before switch-on T3 lack it
+    advised = {r["ticket"]: tgt(r) for r in routes if r.get("action") == "advise"
+               and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])}
     router, coord, n_adv = [], [], 0
     for r in routes:
         if r.get("tool_use_id") in advised_by:
@@ -476,13 +480,13 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
         if ok is None or race.get(r.get("tool_use_id")) is True:
             continue  # unlabeled, or lost race: ran at neither arm's tier
         rewrite_lower = (r.get("action") == "rewrite" and race.get(r.get("tool_use_id")) is False  # verified only
-                         and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"]))
+                         and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]))
         complied = (r.get("action") is None and (r.get("source") or "").startswith("cached:")
                     and advised.get(r["ticket"]) == r["coordinator_tier"])
         if rewrite_lower or complied:
             router.append(ok)
         elif (r.get("action") is None and not (r.get("source") or "coordinator").endswith("coordinator")
-              and r.get("eligible") and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])):
+              and r.get("eligible") and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])):
             coord.append(ok)  # router wanted lower and would have acted; child ran at the coordinator tier
     k, n, kc, nc = sum(router), len(router), sum(coord), len(coord)
     rng = random.Random(seed)
@@ -694,28 +698,34 @@ def advisory_flag(home: Path, harness: str, session: str) -> Path:
 
 
 def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: dict, routes: dict):
-    """(hook output | None, action None/"advise"/"rewrite", guard | None, eligible) for an admitted, routed dispatch.
-    eligible: a backend disagrees at the cutoff or explores lower, whatever the mode; promote's coordinator arm
-    keeps only such rows so it matches the dispatches the router would have acted on."""
-    target = r["tier"]
+    """(hook output | None, action None/"advise"/"rewrite", guard | None, eligible, target) for an admitted,
+    routed dispatch. target: the router's pick raised to the highest routes.json risk_floor among the brief's
+    TW-Risk flags (the coordinator's tier on a coordinator-source row). eligible: a backend disagrees at the
+    cutoff or explores lower, whatever the mode, and the floor did not lift the pick to the coordinator's tier or
+    above; promote's coordinator arm keeps only such rows so it matches the dispatches the router would have
+    acted on."""
+    raw = r["tier"]
+    flags = [] if d.fields["TW-Risk"] == "none" else [x.strip() for x in d.fields["TW-Risk"].split(",")]
+    floor = 0 if r["source"] == "coordinator" else max(   # the floor lifts the router's pick only
+        (TIERS.index(routes["router"]["risk_floor"][f]) for f in flags), default=0)
+    target = TIERS[max(TIERS.index(raw), floor)]
+    floored = target != raw
     lower = TIERS.index(target) < TIERS.index(d.tier)
     disagree = target != d.tier and r["confidence"] >= routes["router"]["cutoff"]
     explored = lower and r["explore"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["explore"]
-    eligible = r["source"] != "coordinator" and (disagree or explored)
+    eligible = r["source"] != "coordinator" and (disagree or explored) and not (floored and not lower)
+    if floored and not lower:
+        return None, None, None, eligible, target
     if r["mode"] == "shadow" or r["source"] == "coordinator":
-        return None, None, None, eligible
+        return None, None, None, eligible, target
     inp = envelope["tool_input"]
     brief = inp.get("message" if harness == "codex" else "prompt")
     # Checked before the cached decision is used: the ticket ignores TW-Override, so an override
     # re-dispatch of an advised brief reuses the decision that advised it.
     if any(x.startswith("TW-Override: ") and x[13:].strip() for x in brief.split("\n")[1:12]):  # header lines only
-        return None, None, None, eligible
-    pol = routes["harnesses"][harness]["roles"][d.role]
-    risky = d.fields["TW-Risk"] != "none"  # design §5: any risk-flagged brief (Fable review, finding 6)
-    if risky and target == pol["tiers"][0]:
-        return None, None, None, eligible  # risk-flagged briefs never route to the role's cheapest tier
+        return None, None, None, eligible, target
     if not eligible:
-        return None, None, None, eligible
+        return None, None, None, eligible, target
     guard = None
     if r["mode"] == "active" and harness == "claude":
         guard = competing_agent_writer(home)
@@ -727,13 +737,15 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
             note = (f"thinker-worker: dispatched as {pick} instead of {inp['subagent_type']} "
                     f"(router p={r['confidence']:.2f}); judge the result at that tier")
             return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
-                                            "updatedInput": new, "additionalContext": note}}, "rewrite", None, eligible)
+                                            "updatedInput": new, "additionalContext": note}}, "rewrite", None, eligible,
+                    target)
     why = "exploration" if explored and not disagree else f"p={r['confidence']:.2f}"
     pick = agent_name(d.role, target) if harness == "claude" else "reasoning_effort=" + target
     reason = (f"router picks {target} ({why}); dispatch {pick} or add `TW-Override: <reason>` to keep {d.tier}"
               + (f" [active held: {guard}]" if guard else ""))
     return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                    "permissionDecisionReason": f"{OWNER}: {reason}"}}, "advise", guard, eligible)
+                                    "permissionDecisionReason": f"{OWNER}: {reason}"}}, "advise", guard, eligible,
+            target)
 
 
 def hook(home: Path, harness: str, owner: str) -> None:
@@ -794,15 +806,18 @@ def hook(home: Path, harness: str, owner: str) -> None:
                "probs": r["probs"],
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
-               "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None}  # eligible stays None if act() fails
         if r.get("errors"):
             row["errors"] = r["errors"]
         try:  # an act() bug still records the router's decision
-            out, row["action"], row["guard"], row["eligible"] = act(home, harness, session, envelope, d, r, routes)
+            out, row["action"], row["guard"], row["eligible"], target = act(home, harness, session, envelope, d, r,
+                                                                            routes)
         except Exception as exc:
             out, row["action"], row["guard"] = None, None, f"act error: {type(exc).__name__}"
+            target = r["tier"]
+        row["target_tier"] = target  # floored pick; router_tier stays the raw backend/explore pick
+        row["router_agent"] = agent_name(d.role, target) if harness == "claude" else None  # race_check compares it
         if record.get("store_bodies"):
             body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
             body.parent.mkdir(parents=True, exist_ok=True)
