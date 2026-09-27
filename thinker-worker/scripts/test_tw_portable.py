@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 import tw
+from test_tw_hook import pinned_routes
 
 TW = str(Path(__file__).with_name("tw.py"))
 
@@ -144,6 +145,8 @@ def seam6_no_interpreter_blocks_only_when_activated():
 
 
 if __name__ == "__main__":
+    pin = pinned_routes()  # TW_ROUTES in os.environ reaches every child hook process through its env
+    pin.__enter__()
     seam1_no_absolute_home_paths()
     seam2_command_runs_guard()
     seam4_claude_only_leaves_no_codex()

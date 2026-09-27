@@ -5,7 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from test_tw_hook import run_main
+from test_tw_hook import pinned_routes, run_main
 from test_tw_receipt import HDR, SESSION, hook, receipts
 
 
@@ -16,6 +16,8 @@ def outcome(home, tool_use_id, accepted, cause=None):
 
 
 if __name__ == "__main__":
+    pin = pinned_routes()  # shipped routing mode pinned out for the whole run
+    pin.__enter__()
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",

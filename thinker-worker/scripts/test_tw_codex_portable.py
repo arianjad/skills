@@ -9,6 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from test_tw_hook import pinned_routes
+
 TW = str(Path(__file__).with_name("tw.py"))
 SESSION = "44444444-5555-6666-7777-888888888888"
 
@@ -49,6 +51,8 @@ def powershell_argv(command_windows, powershell):
 
 
 if __name__ == "__main__":
+    pin = pinned_routes()  # TW_ROUTES in os.environ reaches every child hook process through its env
+    pin.__enter__()
     bash = shutil.which("bash")
     powershell = shutil.which("powershell")
     prior = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo keep"}]}]}}

@@ -93,4 +93,16 @@ if __name__ == "__main__":
                 got = False
                 assert "bad router block" in str(exc), exc
             assert got == ok, router
+    import os
+    with tempfile.TemporaryDirectory() as tmp:           # TW_ROUTES (tests pin shadow); an explicit path wins
+        env_file, arg_file = Path(tmp) / "env.json", Path(tmp) / "arg.json"
+        for p, mode in ((env_file, "shadow"), (arg_file, "active")):
+            p.write_text(json.dumps({**R, "router": {**R["router"], "classes": {"*": {"mode": mode}}}}), encoding="utf-8")
+        old = os.environ.get("TW_ROUTES")
+        os.environ["TW_ROUTES"] = str(env_file)
+        try:
+            assert tw.load_routes()["router"]["classes"]["*"]["mode"] == "shadow"
+            assert tw.load_routes(arg_file)["router"]["classes"]["*"]["mode"] == "active"
+        finally:
+            os.environ.pop("TW_ROUTES") if old is None else os.environ.__setitem__("TW_ROUTES", old)
     print(f"PASS {len(CASES)} route-policy cases; router block validated")

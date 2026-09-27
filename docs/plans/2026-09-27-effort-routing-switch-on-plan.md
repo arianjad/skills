@@ -572,6 +572,10 @@ Send `git log --oneline <T1 parent>..HEAD` and the diff range to the Fable sessi
 architecture" for adversarial review (what is wrong, ranked). Apply fixes with an Opus worker under the same
 TDD rule, one commit per fix batch. Check: Fable reports no must-fix outstanding.
 
+Gate fixes applied 2026-09-27 (ROUTING-PROGRESS.md "T5 gate fixes"): `TW_ROUTES` pins test routing to a shadow
+copy of the shipped file (one deliberate shipped-file test left in `test_tw_route.py`), `<synthetic>` rows are
+not API calls in `cost_row`, worker `default` medium in both harnesses.
+
 ### Task 6: reinstall and live check (Arian's OK at this step)
 
 Destructive boundary: rewrites the real `~/.claude/settings.json` hook entry, `~/.codex/hooks.json` and the

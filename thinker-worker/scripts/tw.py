@@ -57,7 +57,8 @@ def agent_name(role: str, tier: str) -> str:
 
 
 def load_routes(path: Path | None = None) -> dict:
-    path = path or source_root() / "routes.json"
+    # an explicit path wins, then TW_ROUTES (tests pin their routing with it), then the skill's own file
+    path = path or Path(os.environ.get("TW_ROUTES") or source_root() / "routes.json")
     doc = read_json(path, None)
     if not isinstance(doc, dict) or doc.get("schema") != 1:
         raise Conflict(f"routes.json missing or not schema 1: {path}")
@@ -436,7 +437,7 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
         for b in msg.get("content") or []:  # an advisor call: a server_tool_use block, counted once per block id
             if isinstance(b, dict) and b.get("type") == "server_tool_use" and b.get("name") == "advisor":
                 advisor_ids.add(b.get("id"))
-        if msg.get("id") and msg.get("usage"):
+        if msg.get("id") and msg.get("usage") and msg.get("model") != "<synthetic>":  # an error stub is no API call
             usage[msg["id"]] = msg["usage"]  # last row per message.id carries the final counts
     # advisor tokens appear only in usage.iterations (never top-level); subagent rows may lack iterations
     adv = [it for u in usage.values() for it in u.get("iterations") or [] if it.get("type") == "advisor_message"]

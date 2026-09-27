@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 import tw
-from test_tw_hook import run_main
+from test_tw_hook import pinned_routes, run_main
 from test_tw_receipt import SESSION, receipts
 
 
@@ -75,6 +75,8 @@ def dispatch(home, tp):
 
 
 if __name__ == "__main__":
+    pin = pinned_routes()  # shipped routing mode pinned out for the whole run
+    pin.__enter__()
     assert race("tw-worker-low", False) == (1, False, False)
     assert race("tw-worker-high", False) == (1, True, True)     # context-mode's full replacement won
     assert race("tw-worker-low", True) == (1, False, False)     # agentType is the sole criterion when present
@@ -106,6 +108,17 @@ if __name__ == "__main__":
                          "--tool-use-id", "toolu_x", "--accepted", "yes"])[0] == 0
         c = [r for r in receipts(home, "claude") if r["kind"] == "cost"][0]
         assert (c["model"], c["advisor_available"]) == ("claude-opus-5-5", True), c   # offered, later removed: True
+    with tempfile.TemporaryDirectory() as home:          # a <synthetic> error stub is not an API call
+        sub = Path(home) / ".claude" / "projects" / "p" / SESSION / "subagents"
+        sub.mkdir(parents=True)
+        stub = [{"type": "assistant", "message": {"id": "m1", "model": "claude-opus-5-5",
+                                                  "usage": {"input_tokens": 3, "output_tokens": 9}}},
+                {"type": "assistant", "message": {"id": "m9", "model": "<synthetic>",
+                                                  "usage": {"input_tokens": 0, "output_tokens": 0}}}]
+        (sub / "agent-a1.jsonl").write_text("\n".join(map(json.dumps, stub)), encoding="utf-8")
+        (sub / "agent-a1.meta.json").write_text(json.dumps({"toolUseId": "toolu_x"}), encoding="utf-8")
+        c = tw.cost_row(Path(home), "claude", SESSION, "toolu_x")
+        assert (c["api_calls"], c["input_tokens"], c["output_tokens"]) == (1, 3, 9), c
     with tempfile.TemporaryDirectory() as home:          # an advisor call is counted once, tokens from iterations
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})

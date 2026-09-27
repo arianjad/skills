@@ -3,12 +3,13 @@ the hook appends a route row (no body) after an admitted dispatch; opt-in body s
 with no backend, a ticket under the class's explore goes one tier below the coordinator on the role's ladder.
 Run: python test_tw_route.py"""
 import json
+import os
 import tempfile
 import time
 from pathlib import Path
 
 import tw
-from test_tw_hook import run_main
+from test_tw_hook import pinned_routes, run_main
 from test_tw_receipt import HDR, SESSION, hook, receipts
 
 BRIEF = "TW-Role: worker\n" + HDR + "SECRET-BODY do it"
@@ -25,6 +26,8 @@ def routes_with(cal_path, backends=("table",), budget=2.0):
 
 
 if __name__ == "__main__":
+    pin = pinned_routes()  # every block but the last runs on a shadow copy of the shipped file
+    pin.__enter__()
     fields, _ = tw.header_fields(BRIEF)
     with tempfile.TemporaryDirectory() as tmp:
         cal = Path(tmp) / "calibration.json"
@@ -54,14 +57,14 @@ if __name__ == "__main__":
                 with tempfile.TemporaryDirectory() as home:
                     run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION]
                              + (["--store-bodies"] if store else []))
-                    hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
+                    assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")
                     hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": "TW-Role: worker\nno header"})
                     rows = receipts(home, "claude")
                     assert [x["kind"] for x in rows] == ["dispatch", "route", "dispatch"], rows   # no route row on deny
                     assert rows[1]["coordinator_tier"] == "high" and rows[1]["action"] is None, rows[1]
                     assert rows[1]["router_agent"] == tw.agent_name("worker", rows[1]["router_tier"]), rows[1]
                     assert rows[1]["source"] == "table" and "errors" not in rows[1], rows[1]
-                    hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF})  # same ticket
+                    assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF}) == (0, "")  # same ticket
                     again = receipts(home, "claude")[-1]
                     assert again["source"] == "cached:table", again
                     assert again["router_tier"] == "xhigh" and again["coordinator_tier"] == "low", again
@@ -74,7 +77,7 @@ if __name__ == "__main__":
             cal.write_text(json.dumps({"classes": {"C-coding": {"recommended_tier": "max"}}}), encoding="utf-8")
             with tempfile.TemporaryDirectory() as home:
                 run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-                hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
+                assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")
                 row = receipts(home, "claude")[-1]
                 assert row["kind"] == "route" and row["source"] == "coordinator", row
                 assert row.get("errors") and row["errors"][0].startswith("table: "), row
@@ -86,8 +89,8 @@ if __name__ == "__main__":
     try:
         with tempfile.TemporaryDirectory() as home:
             run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-            hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
-            hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF})
+            assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")
+            assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF}) == (0, "")
             a, b = [x for x in receipts(home, "claude") if x["kind"] == "route"]
             assert a["source"] == b["source"] == "coordinator" and b["router_tier"] == "low", (a, b)
     finally:
@@ -95,7 +98,7 @@ if __name__ == "__main__":
 
     with tempfile.TemporaryDirectory() as home:  # torn last line from a concurrent hook is skipped
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
+        assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")
         path = next(Path(home).rglob("receipts/claude/*.jsonl"))
         with path.open("ab") as s:
             s.write(b'{"kind": "route", "tick')
@@ -117,7 +120,7 @@ if __name__ == "__main__":
     long = "TW-Role: worker\n" + HDR.replace("TW-Deliverable: patch", "TW-Deliverable: " + "p" * 300) + "x"
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": long})
+        assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": long}) == (0, "")
         assert "…[+44]" in receipts(home, "claude")[0]["header"]
         f = Path(home) / "b.md"
         f.write_text(BRIEF, encoding="utf-8")
@@ -134,7 +137,19 @@ if __name__ == "__main__":
     assert tw.route(r0, "claude", "leaf", f, "x", "medium")["tier"] == "low"
     r0["router"]["classes"]["*"]["explore"] = 0.0
     assert tw.route(r0, "claude", "worker", f, "x", "high")["source"] == "coordinator"
+
+    pin.__exit__(None, None, None)  # the one deliberate test of the SHIPPED routes.json: no TW_ROUTES from here
+    assert "TW_ROUTES" not in os.environ
     shipped = tw.load_routes()  # switch-on: no backend, every class advisory with exploration 0.2
     assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": 0.2}
+    coin = lambda b: int(tw.ticket(b)[0], 16) / 16 ** 12      # the draw route() and act() use
+    briefs = ["TW-Role: worker\n" + HDR.replace("destructive", "none") + f"shipped {i}" for i in range(200)]
+    under, over = next(b for b in briefs if coin(b) < 0.2), next(b for b in briefs if coin(b) >= 0.2)
+    with tempfile.TemporaryDirectory() as home:
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": under})
+        why = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+        assert code == 0 and "(exploration)" in why and "dispatch tw-worker-medium " in why, out   # next tier down
+        assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": over}) == (0, "")
     print("PASS route: table clamp, coordinator fallback (missing/invalid/overrun), route rows, no body, body store, "
           "header truncation, CLI, backend-only cache, TW-Override ticket, backend errors, torn line, fail-open error row")

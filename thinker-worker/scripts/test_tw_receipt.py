@@ -5,7 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from test_tw_hook import run_main
+from test_tw_hook import pinned_routes, run_main
 
 SESSION = "44444444-5555-6666-7777-888888888888"
 HDR = "TW-Class: C-coding\nTW-Deliverable: patch\nTW-Accept: tests pass\nTW-Risk: destructive\n"
@@ -25,6 +25,8 @@ def hook(home, harness, tool, inp):
 
 
 if __name__ == "__main__":
+    pin = pinned_routes()  # shipped routing mode pinned out for the whole run
+    pin.__enter__()
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         hook(home, "claude", "Agent", {"subagent_type": "tw-worker-medium",
