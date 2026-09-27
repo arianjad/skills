@@ -270,7 +270,7 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
         if tier not in pol["tiers"]:
             return Decision(False, f"tier {tier} is outside {role}'s tiers {pol['tiers']}", role, model, fields=fields)
         if model is not None and model not in pol["models"]:
-            return Decision(False, f"per-call model {model} differs from the {role} agent's model", role, model, fields=fields)
+            return Decision(False, f"model {model} is not allowed for {role}", role, model, fields=fields)
         if inp.get("fork_context") or inp.get("fork"):
             return Decision(False, "Claude inherited-model fork is outside fresh dispatch", role, model, fields=fields)
     return Decision(True, "admitted-request-only", role, model, tier, fields)
@@ -426,7 +426,8 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
         return None
     meta, transcript = found
     usage, advisor_ids = {}, set()
-    for obj in read_rows(transcript):
+    rows = read_rows(transcript)
+    for obj in rows:
         msg = obj.get("message") or {}
         if obj.get("type") != "assistant":
             continue
@@ -437,8 +438,14 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
             usage[msg["id"]] = msg["usage"]  # last row per message.id carries the final counts
     # advisor tokens appear only in usage.iterations (never top-level); subagent rows may lack iterations
     adv = [it for u in usage.values() for it in u.get("iterations") or [] if it.get("type") == "advisor_message"]
+    ran = [m for m in ((o.get("message") or {}).get("model") for o in rows if o.get("type") == "assistant")
+           if m and m != "<synthetic>"]  # an error stub names no model; tw-* meta.json carries no model
+    att = [o.get("attachment") or {} for o in rows if o.get("type") == "attachment"]
     return {"kind": "cost", "at": now(), "harness": harness, "session_id": session, "tool_use_id": tool_use_id,
-            "agent_type": meta.get("agentType"), "model": meta.get("model"), "api_calls": len(usage),
+            "agent_type": meta.get("agentType"), "model": ran[-1] if ran else meta.get("model"),
+            # offered at any point in the run; a later available:false removal does not clear it
+            "advisor_available": any(a.get("type") == "advisor_tool" and a.get("available") is True for a in att),
+            "api_calls": len(usage),
             **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS},
             "advisor_calls": len(advisor_ids), "advisor_model": next((it.get("model") for it in adv), None),
             "advisor_input_tokens": sum(it.get("input_tokens", 0) for it in adv),
@@ -777,7 +784,9 @@ def hook(home: Path, harness: str, owner: str) -> None:
         r = route(routes, harness, d.role, d.fields, brief, d.tier, prior)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
-               "coordinator_tier": d.tier, "router_tier": r["tier"], "probs": r["probs"],
+               "coordinator_tier": d.tier, "router_tier": r["tier"],
+               "agent_model": d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0],  # requested
+               "probs": r["probs"],
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,

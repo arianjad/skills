@@ -5,7 +5,7 @@
       "worker":             {"models": ["opus", "claude-opus-5", "claude-opus-5-5"], "tiers": ["low", "medium", "high", "xhigh"], "default": "high", "tools": null},
       "leaf":               {"models": ["sonnet", "claude-sonnet-5"],               "tiers": ["low", "medium"],                 "default": "low",  "tools": null},
       "independent-review": {"models": ["fable", "claude-fable-5", "claude-fable-5-1"], "tiers": ["high", "xhigh"],             "default": "high", "tools": null},
-      "ideation":           {"models": ["fable", "claude-fable-5", "claude-fable-5-1"], "tiers": ["high", "xhigh"],             "default": "high", "tools": null}
+      "ideation":           {"models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5"], "tiers": ["high", "xhigh"], "default": "high", "tools": null}
     }},
     "codex": {"roles": {
       "worker":             {"models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"], "tiers": ["low", "medium", "high", "xhigh"], "default": "high"},

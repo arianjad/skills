@@ -40,7 +40,11 @@ CASES = [
     ("review tier agent", claude(REV, "tw-independent-review-high").admitted, True),
     ("review below its floor", claude(REV, "tw-independent-review-medium").admitted, False),
     ("ideation needs auth/scope", claude(IDEA.replace(AUTH, ""), "tw-ideation-high").admitted, False),
-    ("ideation on opus refused", claude(IDEA, "tw-ideation-high", "opus").admitted, False),
+    ("ideation on opus per call", claude(IDEA, "tw-ideation-high", "opus").admitted, True),
+    ("ideation on sonnet refused", claude(IDEA, "tw-ideation-xhigh", "sonnet").admitted, False),
+    ("review stays fable-only", claude(REV, "tw-independent-review-high", "opus").admitted, False),
+    ("ideation agent file stays fable", R["harnesses"]["claude"]["roles"]["ideation"]["models"][0], "fable"),
+    ("denial names model and role", claude(W, "tw-worker-high", "sonnet").reason, "model sonnet is not allowed for worker"),
     ("fork refused", claude(W, "tw-worker-high", fork=True).admitted, False),
     ("role line split on \\n only", claude("TW-Role: worker " + HDR + "x", "tw-worker-high").admitted, False),
     ("codex worker sol high", codex(W, "gpt-6-sol", "high").admitted, True),

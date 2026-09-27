@@ -14,7 +14,7 @@ from test_tw_hook import run_main
 from test_tw_receipt import SESSION, receipts
 
 
-def child(home, agent_type, block, meta_text=None, torn=False, sibling=None, advisor=False):
+def child(home, agent_type, block, meta_text=None, torn=False, sibling=None, advisor=False, ran=None, offered=()):
     sub = Path(home) / ".claude" / "projects" / "p" / SESSION / "subagents"
     sub.mkdir(parents=True)
     prompt = "TW-Role: worker\n..." + ("\n<context_window_protection>x</context_window_protection>" if block else "")
@@ -36,6 +36,13 @@ def child(home, agent_type, block, meta_text=None, torn=False, sibling=None, adv
                     {"type": "message", "input_tokens": 1, "output_tokens": 1},
                     {"type": "advisor_message", "model": "claude-fable-5-1", "input_tokens": 900,
                      "output_tokens": 50}]}}}]
+    if ran:  # the model that ran, on every assistant row; then an error stub, which names no model
+        for r in rows[1:]:
+            r["message"]["model"] = ran
+        rows.append({"type": "assistant", "message": {"id": "m9", "model": "<synthetic>",
+                                                      "usage": {"input_tokens": 0, "output_tokens": 0}}})
+    rows += [{"type": "attachment", "attachment": {"type": "advisor_tool", "available": a,
+                                                   "model": "claude-fable-5-1"}} for a in offered]
     lines =['{"type": "user", "mess'] * torn + [json.dumps(r) for r in rows]
     (sub / "agent-a1.jsonl").write_text("\n".join(lines), encoding="utf-8")
     meta = {"toolUseId": "toolu_x", "model": "opus", **({"agentType": agent_type} if agent_type else {})}
@@ -79,7 +86,7 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
-        child(home, "tw-worker-high", False, sibling="{not json")
+        child(home, "tw-worker-high", False, sibling="{not json", offered=(False,))
         for verdict in ("yes", "no"):
             code, _ = run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
                                 "--tool-use-id", "toolu_x", "--accepted", verdict])
@@ -90,6 +97,15 @@ if __name__ == "__main__":
         assert (c["api_calls"], c["output_tokens"], c["input_tokens"], c["cache_read_input_tokens"],
                 c["agent_type"]) == (2, 47, 3, 100, "tw-worker-high"), c
         assert (c["advisor_calls"], c["advisor_model"]) == (0, None), c           # the existing child has no advisor
+        assert (c["model"], c["advisor_available"]) == ("opus", False), c   # no message.model: meta's; a removal is no offer
+    with tempfile.TemporaryDirectory() as home:          # the model that ran comes from the transcript, not meta.json
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
+        child(home, "tw-ideation-high", False, ran="claude-opus-5-5", offered=(True, False))
+        assert run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
+                         "--tool-use-id", "toolu_x", "--accepted", "yes"])[0] == 0
+        c = [r for r in receipts(home, "claude") if r["kind"] == "cost"][0]
+        assert (c["model"], c["advisor_available"]) == ("claude-opus-5-5", True), c   # offered, later removed: True
     with tempfile.TemporaryDirectory() as home:          # an advisor call is counted once, tokens from iterations
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
