@@ -416,6 +416,103 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
             "mode": mode, "explore": explore}
 
 
+def _win_claude_start() -> float | None:
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class Entry(ctypes.Structure):  # PROCESSENTRY32W
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("pid", wintypes.DWORD),
+                    ("heap", ctypes.c_size_t), ("module", wintypes.DWORD), ("threads", wintypes.DWORD),
+                    ("ppid", wintypes.DWORD), ("prio", ctypes.c_long), ("flags", wintypes.DWORD),
+                    ("exe", ctypes.c_wchar * 260)]
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.OpenProcess.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    e = Entry()
+    e.dwSize = ctypes.sizeof(Entry)
+    procs = {}
+    ok = k32.Process32FirstW(snap, ctypes.byref(e))
+    while ok:
+        procs[e.pid] = (e.ppid, e.exe.lower())
+        ok = k32.Process32NextW(snap, ctypes.byref(e))
+    k32.CloseHandle(snap)
+    pid = os.getpid()
+    for _ in range(12):
+        ppid, exe = procs.get(pid, (0, ""))
+        if exe == "claude.exe":
+            handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            times = [wintypes.FILETIME() for _ in range(4)]
+            k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times))
+            k32.CloseHandle(handle)
+            ft = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+            return (ft - 116444736000000000) / 1e7 if ft else None  # FILETIME (1601, 100 ns) -> epoch s
+        if not ppid:
+            return None
+        pid = ppid
+    return None
+
+
+def _posix_claude_start() -> float | None:
+    # ponytail: Mac CLI shows as "claude" or "node"; unverified on the Mac until the T9 live check there.
+    import subprocess
+    pid = os.getpid()
+    for _ in range(12):
+        parts = subprocess.run(["ps", "-o", "ppid=,etime=,comm=", "-p", str(pid)],
+                               capture_output=True, text=True, timeout=2).stdout.split(None, 2)
+        if len(parts) < 3:
+            return None
+        ppid, etime, comm = parts
+        if os.path.basename(comm.strip()) in ("claude", "node"):
+            d, _, hms = etime.rpartition("-")
+            secs = sum(int(x) * m for x, m in zip(reversed(hms.split(":")), (1, 60, 3600)))
+            return time.time() - secs - int(d or 0) * 86400
+        pid = int(ppid)
+    return None
+
+
+def claude_process_start() -> float | None:
+    """Epoch seconds at which the nearest claude(.exe) ancestor started, or None."""
+    try:
+        return _win_claude_start() if os.name == "nt" else _posix_claude_start()
+    except Exception:
+        return None
+
+
+def competing_agent_writer(home: Path) -> str | None:
+    """A reason the router must not return updatedInput on Agent this session, or None (design §4.6)."""
+    try:
+        enabled = None  # fail safe: only an explicit false skips the guard (Fable review, finding 5)
+        for name in ("settings.json", "settings.local.json"):  # local overrides user
+            plugins_on = read_json(home / ".claude" / name, {}).get("enabledPlugins") or {}
+            if "context-mode@context-mode" in plugins_on:
+                enabled = plugins_on["context-mode@context-mode"]
+        if enabled is False:
+            return None
+        plugins = read_json(home / ".claude" / "plugins" / "installed_plugins.json", {}).get("plugins") or {}
+        entries = plugins.get("context-mode@context-mode") or []
+        if not entries:
+            return None
+        hooks_json = Path(entries[0]["installPath"]) / "hooks" / "hooks.json"
+        pre = (read_json(hooks_json, {}).get("hooks") or {}).get("PreToolUse") or []
+        for entry in pre:
+            matcher = entry.get("matcher") or ""
+            try:
+                hit = matcher in ("", "*") or re.fullmatch(matcher, "Agent") is not None
+            except re.error:
+                hit = matcher == "Agent"
+            if hit:
+                return "context-mode PreToolUse Agent hook is registered"
+        start = claude_process_start()
+        if start is None:
+            return "Claude Code process start unknown"
+        if hooks_json.stat().st_mtime >= start - 1:
+            return "context-mode hooks.json changed after this session loaded its hooks"
+        return None
+    except Exception as exc:  # unreadable state: stay advisory, never race
+        return f"guard could not read context-mode state: {type(exc).__name__}"
+
+
 def hook(home: Path, harness: str, owner: str) -> None:
     if owner != OWNER:
         denial("unknown installed hook owner")
