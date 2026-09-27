@@ -19,9 +19,10 @@ Claude, the actor: it gates (fail closed), writes the receipt (fail closed), the
 rewrites the dispatch to the router's tier agent (`active`, verified possible today). On Codex v2 the brief is
 ciphertext, so there the coordinator calls `tw.py route` first and the ticket rides in `task_name`. Backends
 are small resident local scorers compared as equal arms (SemIf over a 4B GGUF with AnyJev's bias-free
-readout, Kev-0.8B, Eos-0.8B, Laya); none is preset as the first backend; nobody launches the 27B for this. Backends are first compared offline on
-effortmining's calibration grids, then validated in shadow on real receipts; promotion is by a posterior rule
-with a hold band, and per-class promotion is out of reach of the five-session run, only a pooled one.
+readout, Kev-0.8B, Eos-0.8B, Laya); none is preset as the first backend; nobody launches the 27B for this. Backends
+run in shadow on real receipts first, then `table`-driven exploration generates two-sided tier labels, and
+the backend is chosen on those labels (§5); promotion is by a posterior rule with a hold band, and per-class
+promotion is out of reach of the five-session run, only a pooled one.
 
 ## 1. Mechanism facts the design rests on
 
@@ -138,7 +139,7 @@ The baseline every backend must beat; it is the `coordinator` backend below.
     }
   },
   "router": {
-    "backends": ["<Stage-1 winner>", "table"],   // phase 1 ships []: coordinator only until the Opus 5.5 table lands
+    "backends": ["<Stage-3 winner>", "table"],   // phase 1 ships []: coordinator only until the Opus 5.5 table lands
     "fallback": "coordinator",
     "budget_s": 2.0,
     "semif4b": {"url": "http://127.0.0.1:8765", "readout": "anyjev-L0", "body_chars": 4000},
@@ -158,6 +159,7 @@ property, effort is the dispatch's. (b) Codex keeps per-call `model` + `reasonin
 `tiers` list means effort is required. (c) `backends` is an ordered preference list; the first reachable
 server answers; `source` records which. `body_chars` is per backend (§1); the route row records
 `body_chars_sent` because Laya truncates silently. (d) Placeholder values that are Arian's decisions: §7.
+The worker `"default": "high"` on both harnesses is the phase-1 value (see §7 decision 7).
 (e) `semif4b` port numbers and the 4B GGUF choice (`Qwen3.5-4B-Q4_K_M` is SemIf's documented example) are
 implementation details for the plan.
 
@@ -183,7 +185,7 @@ route(harness, role, header: dict, body: str, cfg) -> {
   brief to a <model> worker on <harness>. Choose the lowest reasoning-effort tier at which the worker still
   meets the TW-Accept line." Option descriptions come from effortmining's class vocabulary.
 - `kev`, `eos`, `laya`: the same state and options through each model's typed `choice` API. All four
-  backends are equal arms in Stage 1; the winner becomes `backends[0]` (Arian, 2026-09-26).
+  backends are equal arms in Stage 3 (§5); the winner becomes `backends[0]` (Arian, 2026-09-26).
 
 All backends run as **resident servers** started by `tw.py serve`, never loaded in the hook (§1). The
 router is deterministic for a single request on CPU; a batching server can move a first-time score with
@@ -317,33 +319,57 @@ returns `updatedInput` whose `subagent_type` is the router's tier agent; (7) `in
 generates `tw-worker-{low,medium,high,xhigh}.md` with matching `effort:` and no `max`. Each has a reachable
 FAIL.
 
-## 5. Evaluation: offline testbed, then real dispatches
+## 5. Evaluation: shadow, exploration, backend selection, then advisory
 
-**Stage 1, offline on real receipts [A].** The bench set is the stored brief bodies (`--store-bodies`) plus
-their accepted/rejected outcomes from the five-session run. Every backend scores every stored brief;
-metrics per backend: exact-tier accuracy against the tier the coordinator used where the outcome was
-accepted, mean signed tier error (over-routing costs tokens, under-routing costs a failed dispatch),
-calibration (ECE), latency. This is the bench that picks the first `backends[0]`. The effortmining grids are
-not the selection set: on Opus 5.5 the synthetic tasks saturate at `low` (the X1.3 gradient was a harness
-artifact, `PROGRESS.md` above), so every backend that says `low` would score perfectly. The grids remain a
-smoke test that each backend answers and a source of the `table` prior. An optional over/under-thinking
-check is a subsample of OptimalThinkingBench (§6), about 50 OverthinkingBench + 55 UnderthinkingBench items
-× 4 tiers sent straight to the API (≈420 calls; through `claude -p` the per-call cache-creation overhead
-would dominate).
+**What a receipt row can say.** Let c be the cheapest sufficient tier for a brief. An accepted dispatch at
+tier t says only c ≤ t; a rejection at t that the coordinator attributes to the tier (not to the brief) says
+c > t. Until something below the coordinator's tier is tried, every row is an upper bound, and on
+upper-bound rows "always `low`" is consistent with every row and cheapest: the grids' saturation failure
+again, on real data. Lower bounds come only from exploration, or from offline replay of a stored body at a
+lower tier (expensive for agentic briefs, impossible for destructive ones). Hence the order below: labels
+first, backend choice after. The outcome label needs a tier-attribution field for this; `tw.py outcome`
+records only accepted yes/no today (phase 2).
 
-**Stage 2, shadow on receipts.** Router logs; coordinator blind. Output: per-class agreement with the
-coordinator and the confidence distribution. shadow → advisory at ≥ 30 labeled dispatches with agreement
-≥ 0.7 (advisory costs nothing when they agree).
+**Stage 1, shadow on receipts (elimination round).** Router logs; coordinator blind. Every arm scores every
+dispatch: the configured backend live on the route row, the others offline over the stored bodies
+(`--store-bodies`). Outputs per arm: per-class agreement with the coordinator, latency, and the confidence
+distribution with its calibration against the outcomes so far. An arm that is broken, too slow for the 2 s
+budget, or badly calibrated is dropped here. The effortmining grids are not a selection set: on Opus 5.5 the
+synthetic tasks saturate at `low` (the X1.3 gradient was a harness artifact, `PROGRESS.md` above), so every
+backend that says `low` would score perfectly. The grids remain a smoke test that each backend answers and
+the source of the `table` prior.
 
-**Stage 3, advisory / enforce with exploration.** Exploration = a fraction ε of the dispatches where the
-router's tier is *below* the coordinator's are run at the router's tier (denial reason says "exploration");
-`TW-Risk: destructive|physics` briefs and any risk-flagged brief never route to the cheapest tier (the same
-deterministic prior hermes-jev-skills uses). "One tier below the router" is a later experiment, labeled
-separately, for classes already in `enforce`.
+**Stage 2, exploration driven by `table` (label generation).** Exploration needs no chosen backend. `table`
+says `low` for nearly every class (§4.3), so a class in `advisory` with `backends: ["table"]` and
+`explore: ε` runs a fraction ε of the dispatches the coordinator sent above `low` at `low` (the denial says
+"exploration"; `table`'s confidence is 0, so no other denial fires). The risk floor applies (below). An
+explored dispatch accepted at `low` fixes c = `low`; one rejected at `low` for tier reasons and then accepted
+at the coordinator's tier t gives `low` < c ≤ t. These are the two-sided rows.
+
+**Stage 3, backend selection on interval labels [A].** Every Stage-1 survivor scores every labeled stored
+brief. Metrics per arm, chosen to be robust to the censoring above:
+(i) definite over-routing rate: the pick is strictly above a tier that was accepted;
+(ii) definite under-routing rate: the pick is at or below a tier that was tried and rejected for tier reasons;
+(iii) the fraction of rows with a two-sided interval, always reported next to (i), since a low (i) means
+something only when enough rows could have exposed under-routing.
+Latency and calibration carry over from Stage 1. The winner becomes `backends[0]`. An optional
+over/under-thinking check, not a selection set, is a subsample of OptimalThinkingBench (§6), about 50
+OverthinkingBench + 55 UnderthinkingBench items × 4 tiers sent straight to the API (≈420 calls; through
+`claude -p` the per-call cache-creation overhead would dominate).
+
+**Stage 4, advisory / active with the winner.** shadow → advisory at ≥ 30 labeled dispatches with agreement
+≥ 0.7 (advisory costs nothing when they agree). Exploration continues: a fraction ε of the dispatches where
+the router's tier is *below* the coordinator's are run at the router's tier (denial reason says
+"exploration"). "One tier below the router" is a later experiment, labeled separately, for classes already
+in `active`.
+
+**Risk floor** (Stages 2 and 4). Phase-1 code (`tw.py` `act()`): a brief with any `TW-Risk` other than
+`none` never routes to the role's cheapest tier (the same deterministic prior hermes-jev-skills uses). Phase 2
+replaces this with per-flag floors in `routes.json` (§7 decision 7).
 
 **Promotion rule** (posterior, hold band = hysteresis): with k accepted of n explored/advised-lower
 dispatches, p_router ~ Beta(1+k, 1+n−k), p_coord likewise from the coordinator-tier arm; promote advisory →
-enforce when P(p_router − p_coord ≥ −0.15) > 0.8, demote when < 0.2, hold between. Count table for a known
+active when P(p_router − p_coord ≥ −0.15) > 0.8, demote when < 0.2, hold between. Count table for a known
 coordinator rate of 0.85 (review resolutions §1):
 
 | n | promote if k ≥ | demote if k ≤ |
@@ -353,14 +379,26 @@ coordinator rate of 0.85 (review resolutions §1):
 | 30 | 24 | 19 |
 | 50 | 38 | 32 |
 
-**Cost side of a verdict.** A promotion verdict reports expected output-token savings with the paired Opus 5.5
-multipliers vs `low`: medium 1.11, high 1.33, xhigh 2.16 (`PROGRESS.md` above, audited against run data).
-So a router that moves high → low saves about 25 % of that dispatch's output tokens, xhigh → low about 54 %,
-medium → low about 10 %.
+**Cost side of a verdict.** A verdict computes savings from `kind: cost` rows: median dollars per dispatch
+per class × tier, each token kind priced with the per-M coefficients audited in `PROGRESS.md` §7 (cache write
+$8.49/M and output $19.83/M from the regression; cache read $0.20/M from the clean full-cache probe, since
+the regression's read coefficient is confounded; uncached input has no audited coefficient there and is
+read from the published price sheet when the script is written). It does so once a class × tier cell holds
+~20 cost rows. Before that the only number is a labeled prior: the paired Opus 5.5 output multipliers vs
+`low`, medium 1.11, high 1.33, xhigh 2.16 (same file). Those are single-shot, tools-off bench outputs, and
+the same run's tools-on control passed the map's `low` failures at `low` 4/4 (`PROGRESS.md` §10), so the
+separation behind them disappears with tools on. Real dispatches are multi-turn and tool-heavy, and their
+cost is all token kinds, not output alone.
 
-What the five-session run buys: 50–150 labeled dispatches, ~10–30 explored at ε = 0.2. That resolves a
-0.2–0.3 acceptance drop **pooled across classes**, not 0.1, and not per class (a 0.1 drop needs 68–144
-per arm). Per-class outputs from that run are shadow agreement rates; per-class promotion waits.
+**What the five-session run buys.** 50–150 labeled dispatches, ~10–30 explored at ε = 0.2. That is an
+elimination round (Stage 1) plus latency and calibration, not a backend selection. Arms separate only on rows
+where they disagree; with a prior saturated at `low` and two correlated Qwen-based arms, expect roughly a
+fifth to a third of rows to be informative, i.e. ~10–50 rows (Fable's estimate, 2026-09-27, not measured).
+A 0.1 difference in a definite rate needs 68–144 rows per arm, so picking `backends[0]` on quality needs
+≳ 300 rows with two-sided intervals; short of that, Stage 3 picks on the secondary criteria (latency,
+calibration, reliability) among the survivors and labels the pick provisional. For promotion the run
+resolves a 0.2–0.3 acceptance drop **pooled across classes**, not 0.1, and not per class. Per-class outputs
+from that run are shadow agreement rates; per-class promotion waits.
 
 ## 6. Deliberately left out (with the trigger)
 
@@ -379,7 +417,7 @@ Prior art to cite (only the abstracts and, for OTB, the dataset sections have be
 - **OptimalThinkingBench** (arXiv 2508.13141, Meta): OverthinkingBench (1,327 simple general questions +
   133 MATH L1–2, graded by an LLM judge) and UnderthinkingBench (550 Reasoning Gym puzzles, 11 types × 50,
   programmatic verifiers, plus harder math). Candidate over/under-thinking check once a backend is on
-  (§5 Stage 1). Its hard half is synthetic, like the grids, so it cannot pick tiers for real briefs.
+  (§5 Stage 3), not a selection set. Its hard half is synthetic, like the grids, so it cannot pick tiers for real briefs.
 - **Learning When to Think** (arXiv 2608.20256): GRPO teaches a 1.5B model to pick NoThink/Short/Long as its
   first token; −41 % tokens on MATH500 at 0.782 vs 0.796 accuracy. A training method, not an eval; the
   learned-allocation reference, and relevant only if local Qwen models are routed. Trigger for a fine-tune
@@ -390,7 +428,7 @@ Prior art to cite (only the abstracts and, for OTB, the dataset sections have be
 Decided 2026-09-26 (Arian):
 
 1. **Backend arms:** no preset `backends[0]`. SemIf-4B + AnyJev L0, Kev-0.8B, Eos-0.8B and Laya are compared
-   as equal arms in Stage 1 (§5), and the winner becomes `backends[0]`.
+   as equal arms in Stage 3 (§5), and the winner becomes `backends[0]`.
 2. **Codex review/ideation effort:** explicit `reasoning_effort` is required, with a floor of `medium`
    ("medium or better"), matching §4.2 `tiers: ["medium","high","xhigh"]`. Revert `tw.py:262` ("may omit")
    in plan step 1.
@@ -406,14 +444,25 @@ Decided 2026-09-26 (Arian):
    first session after an update. Confirmed by this session's cache-edit test, whose file was restored.
 6. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
 7. **Default tiers once backends exist (Arian, 2026-09-27):** `low` for predictable work with a known outcome,
-   `medium` as the worker default, `high` for tricky work; the physics/destructive risk floor stays `high`.
-   This replaces the `"default": "high"` for the worker role in §4.2 and the shipped `routes.json`; the
-   change lands with the phase-2 routes rework (the file is installer-owned). Against it: the synthetic
-   calibration saturates at `low`. For it: those tasks are not Arian's work. `promote` settles it per class
-   from receipts.
+   `medium` as the worker default, `high` for tricky work. This replaces the `"default": "high"` for the
+   worker role in §4.2 and the shipped `routes.json`, with the phase-2 routes rework (the file is
+   installer-owned). Against it: the synthetic calibration saturates at `low`. For it: those tasks are not
+   Arian's work. `promote` settles it per class from receipts.
+   - **Where it lands.** `routes.json` `default` is nearly inert in code: the only runtime read is the
+     `route` CLI (`tw.py:1320`); the hook routes against the tier the coordinator dispatched. So the lever
+     is the coordinator's prompt rule and `SKILL.md`, where this decision has to land. Launch contract (c)
+     (`~/.claude/handoffs/2026-09-26-launch-five-project-sessions.md` and the five Desktop prompts) said
+     "medium for coding with a check; high for reasoning or physics"; aligned with this decision on
+     2026-09-27 (Arian approved; edited by the coordinator session).
+   - **Risk floor (Arian, 2026-09-27).** Phase-1 code (`tw.py` `act()`) implements only "a risk-flagged
+     brief never routes to the role's cheapest tier", for any flag. The phase-2 routes rework replaces it
+     with per-flag absolute floors in the router block:
+     `"risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"}`.
+     Contract (c)'s physics-or-convention floor is a coordinator rule, not this flag: a convention
+     judgment carries no `TW-Risk` flag.
 
 Defaults taken unless objected to: everything in §4.7; `TW-Class` stays required as the coordinator's label;
-per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
+per-dispatch cutoff 0.85; exploration ε = 0.2 in §5 Stage 2 (`table`-driven) and Stage 4.
 
 ## 8. After the yes
 
@@ -421,7 +470,9 @@ per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
 (1) `routes.json` + loader + generated agents + gate rewrite + Codex effort-required revert, behind the
 existing tests; (2) hook order gate → receipt → route with the `coordinator` and `table` backends, route
 rows, ticket digest; (3) `tw.py serve` + the four backend arms (`semif4b`, `kev`, `eos`, `laya`) + stub-server tests;
-Stage-1 offline bench script over stored receipts from the five-session run, which picks `backends[0]`; (4) cost rows at `outcome` and the next-dispatch race check; (5) `advisory`, exploration,
+then, in §5 order, Stage 1 shadow (elimination, latency, calibration), Stage 2 `table`-driven exploration
+for interval labels, and the Stage-3 selection script over the stored bodies and those labels, which picks
+`backends[0]` (provisional below ~300 two-sided rows); (4) cost rows at `outcome` and the next-dispatch race check; (5) `advisory`, exploration,
 promotion script over receipts; (6) the §4.6 patch, heal, nudge and guard, the O4b re-probe, then `active`; (7) Codex: `task_name` join
 probe, then the CLI path; (8) re-baseline the real install and lift the five-session HOLD. The Opus 5.5
 calibration run proceeds in parallel and feeds (2) and (3).
