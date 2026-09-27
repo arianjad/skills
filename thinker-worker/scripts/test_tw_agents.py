@@ -28,6 +28,9 @@ if __name__ == "__main__":
             assert f"\nmodel: {routes['harnesses']['claude']['roles'][role]['models'][0]}\n" in text, name
             assert "tools:" not in text, name               # tools: null = full access (Arian 2026-09-26)
             assert not re.search(r"effort: (max|ultra)", text), name
+        rev = (home / ".claude" / "agents" / "tw-independent-review-high.md").read_text(encoding="utf-8")
+        assert ("Do your own pass against the acceptance criteria before reading any coordinator hypotheses; if the "
+                "brief lists claims to test, answer them after your findings, in their own section.") in rev, rev
         assert subprocess.run([sys.executable, TW, "uninstall", "--home", tmp], capture_output=True).returncode == 0
         assert not list((home / ".claude" / "agents").glob("tw-*.md"))
     print("PASS 10 generated tier agents; effort/model match routes.json; uninstall removes them")

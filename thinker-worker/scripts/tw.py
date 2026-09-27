@@ -864,7 +864,9 @@ AGENT_TEXT = {  # role -> (description, body); bodies carried over from the reti
                            "Review the assigned artifact adversarially. Identify unsupported, incorrect, fragile, or "
                            "overbuilt parts with exact source references; run a check yourself when it settles a claim. "
                            "Report findings; do not edit the files under review. Stay within the bounded assignment. Do "
-                           "not treat the request's model name as evidence of the effective runtime model."),
+                           "not treat the request's model name as evidence of the effective runtime model. Do your own "
+                           "pass against the acceptance criteria before reading any coordinator hypotheses; if the brief "
+                           "lists claims to test, answer them after your findings, in their own section."),
     "ideation": ("Bounded ideation (divergent) when the coordinator cites authorization.",
                  "Propose at most the requested number of ranked directions. Label each speculative and state what "
                  "would confirm or kill it; cite prior art you find. Do not edit project files. Stay within the bounded "
