@@ -286,7 +286,9 @@ def report():
                 s["entropy_bits_med_IQR"] = [round(q(en, .5), 3), round(q(en, .25), 3), round(q(en, .75), 3)]
                 s["argmax_hist"] = {k: sum(amax(r[key]) == k for r in br) for k in TIERS}
                 kn = [r for r in br if r["dispatched_tier"]]
-                s["spearman_vs_dispatched_upper_bound"] = (round(spearman([etier(r[key]) for r in kn], [TIER_IDX[r["dispatched_tier"]] for r in kn]), 3), len(kn)) if len(kn) > 2 else None
+                s["mean_Etier_by_dispatched"] = {str(t): round(statistics.mean(etier(r[key]) for r in br if r["dispatched_tier"] == t), 3)
+                                                 for t in [*TIERS, None] if any(r["dispatched_tier"] == t for r in br)}
+                s["spearman_vs_dispatched_upper_bound"] =(round(spearman([etier(r[key]) for r in kn], [TIER_IDX[r["dispatched_tier"]] for r in kn]), 3), len(kn)) if len(kn) > 2 else None
             a[key] = s
         # option-order bias: mean prob at each displayed position over rotations x briefs (0.25 each = no bias),
         # plus mean total-variation distance between rotations in tier space and argmax flip rate across rotations
@@ -295,8 +297,10 @@ def report():
         a["order_bias"] = {"mean_P_pos_ABCD": [round(v, 3) for v in pos], "P_posA_spread_max_minus_min": round(max(pos) - min(pos), 3) if pos else None,
                            "mean_TV_rotation_vs_avg": round(statistics.mean(tv), 3) if tv else None,
                            "argmax_flip_rate": round(statistics.mean(len({amax(x["probs"]) for x in r["rotations"]}) > 1 for r in br), 3) if br else None}
-        ms = [r["ms_total"] for r in rows]; mc = [m for r in rows for m in r["ms_calls"]]
+        # first call = rotation 0 = the unrotated readout's cost; later rotations reuse the 27B's prompt cache
+        ms = [r["ms_total"] for r in rows]; mc = [m for r in rows for m in r["ms_calls"]]; m0 = [r["ms_calls"][0] for r in rows]
         a["latency_ms"] = {"per_brief_4rot_p50": round(q(ms, .5)), "per_brief_4rot_p95": round(q(ms, .95)),
+                           "first_call_p50": round(q(m0, .5)), "first_call_p95": round(q(m0, .95)),
                            "per_call_p50": round(q(mc, .5)), "per_call_p95": round(q(mc, .95))}
         out["arms"][arm] = a
         by_arm[arm] = {r["id"]: r for r in br}
