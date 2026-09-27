@@ -893,7 +893,9 @@ def hook(home: Path, harness: str, owner: str) -> None:
         append_receipt(home, harness, session, row)
         if out:  # printed only after the route row is recorded; any earlier failure leaves the admit standing
             print(json.dumps(out))
-        elif harness == "claude" and d.tier != row["prior_tier"]:  # no router action: point-of-use prior reminder
+        elif (harness == "claude" and d.tier != row["prior_tier"]  # no router action: point-of-use prior reminder,
+              and not (row["source"].startswith("cached:") and d.tier == row["target_tier"])):  # unless it obeys an
+            # earlier advise/exploration of this same brief (live check 2026-09-27: the reminder contradicted it)
             # ponytail: Claude only; Codex's handling of additionalContext without a decision is unverified.
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
                               f"thinker-worker: prior for {row['class']} is {row['prior_tier']}; "

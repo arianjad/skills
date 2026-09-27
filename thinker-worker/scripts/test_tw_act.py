@@ -100,6 +100,8 @@ if __name__ == "__main__":
     assert out is None and row["source"] == "coordinator" and row["explore"] == 1e-9, row
     out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-medium", ""))   # take the pick
     assert out is None and row["source"] == "cached:explore" and row["explore"] == 0.0, row
+    out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-medium", ""), prior="high")
+    assert out is None, out     # complying with the router's pick below the prior draws no prior reminder (live check)
     out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-high", ""))     # rejected, back to high
     assert out is None and row["source"] == "cached:explore", row
     assert run("advisory", explore=1.0, backends=(), st="tw-worker-low")[0] is None       # nothing below low
