@@ -130,7 +130,7 @@ Interfaces produced:
     }}
   },
   "router": {
-    "backends": ["table"],
+    "backends": [],
     "budget_s": 2.0,
     "cutoff": 0.85,
     "table": {"path": "~/Code/effortmining/bench/state/calibration.json"},
@@ -536,7 +536,7 @@ def backend_table(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
     cal = json.loads(Path(os.path.expanduser(cfg["path"])).read_text(encoding="utf-8"))
     tier = clamp(cal["classes"][fields["TW-Class"]]["recommended_tier"], pol["tiers"])
     return {"tier": tier, "probs": {t: float(t == tier) for t in pol["tiers"]}, "confidence": 0.0,
-            "body_chars_sent": 0}
+            "body_chars_sent": 0, "provenance": f"calibration {cal.get('model')} {cal.get('fitted_date')}"}
 
 
 BACKENDS = {"table": backend_table}  # phase 2 adds the resident HTTP scorers
@@ -576,6 +576,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     mode, explore = class_mode(routes, fields["TW-Class"])
     if prior is not None:
         return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
+                "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
                 "ticket": tick, "digest": digest, "mode": mode, "explore": 0.0}
     result: dict = {}
@@ -619,6 +620,7 @@ plaintext-Codex decision, do the following. Skip Codex v2 (`d.role is None` or
            "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "ms": r["ms"],
            "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
            "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,
+           "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
            "action": None, "guard": None}
     if record.get("store_bodies"):
         body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
@@ -675,6 +677,7 @@ if __name__ == "__main__":
         cal.write_text(json.dumps({"classes": {"C-coding": {"recommended_tier": "xhigh"}}}), encoding="utf-8")
         r = tw.route(routes_with(cal), "claude", "worker", fields, BRIEF, "high")
         assert (r["source"], r["tier"], r["confidence"], r["mode"]) == ("table", "xhigh", 0.0, "shadow"), r
+        assert r["provenance"].startswith("calibration "), r
         r = tw.route(routes_with(cal), "claude", "leaf", fields, BRIEF, "low")
         assert r["tier"] == "medium", r                                   # clamped into leaf tiers
         r = tw.route(routes_with(Path(tmp) / "missing.json"), "claude", "worker", fields, BRIEF, "high")
@@ -1431,10 +1434,16 @@ Steps:
    - activate the session;
    - dispatch a `tw-worker-low` child with a valid header and a trivial task;
    - after the child returns, run `tw.py outcome … --accepted yes`;
-   - the receipts must show `dispatch` → `route` (source `table`, mode `shadow`) → `outcome` → `cost`;
+   - the receipts must show `dispatch` → `route` (source `coordinator`, mode `shadow`) → `outcome` → `cost`;
    - the `cost` row's `output_tokens` must equal an independent recount of the child transcript (last row
      per `message.id`).
 4. The five-session HOLD stays in place. Lifting it waits for phase 2 backends and is Arian's call.
+
+**Switch-on note (after the Opus 5.5 calibration run lands; config only, no code):**
+1. In `routes.json`, set `router.backends: ["table"]` and point `router.table.path` at the new
+   `calibration.json`.
+2. Re-run the step-3 live check and expect `source: table` with a `provenance` naming the new calibration.
+   Until this is done, T3's test is the only coverage of the backend thread inside the real hook.
 
 Check: step 3 shows the four row kinds, and the recount matches.
 
@@ -1505,6 +1514,11 @@ Fable review of c063da7, 2026-09-26. All applied; the six deviations were accept
    child still running. The installer surgery and the flush question go away.
 5. **(Low, T4)** Only an explicit `false` disables the guard, and `settings.local.json` is honoured.
 6. **(Low, T5)** Any risk flag, `external` included, keeps a brief off the cheapest tier, matching design §5.
+
+Second Fable review (2026-09-26): no objection to shipping phase 1 with `router.backends: []`.
+- The Opus 4.8 table would otherwise log picks nobody should act on.
+- Backend results carry an optional `provenance`, which is copied onto route rows (T3).
+- A switch-on note re-runs the T9 live check once the Opus 5.5 table lands.
 
 Note on deviation 3: with the table's confidence at 0, exploration is the only thing that can cause an
 advisory in phase 1. A 0 % advise rate at `explore: 0` is expected, not a bug.

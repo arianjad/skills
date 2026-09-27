@@ -138,7 +138,7 @@ The baseline every backend must beat; it is the `coordinator` backend below.
     }
   },
   "router": {
-    "backends": ["<Stage-1 winner>", "table"],
+    "backends": ["<Stage-1 winner>", "table"],   // phase 1 ships []: coordinator only until the Opus 5.5 table lands
     "fallback": "coordinator",
     "budget_s": 2.0,
     "semif4b": {"url": "http://127.0.0.1:8765", "readout": "anyjev-L0", "body_chars": 4000},
