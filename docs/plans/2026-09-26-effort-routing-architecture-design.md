@@ -18,8 +18,8 @@ Claude, the actor: it gates (fail closed), writes the receipt (fail closed), the
 (fail open) and, per class mode, logs (`shadow`), denies a disagreement with the suggestion (`advisory`), or
 rewrites the dispatch to the router's tier agent (`active`, verified possible today). On Codex v2 the brief is
 ciphertext, so there the coordinator calls `tw.py route` first and the ticket rides in `task_name`. Backends
-are small resident local scorers (SemIf over a 4B GGUF with AnyJev's bias-free readout; Kev-0.8B, Eos-0.8B,
-Laya as comparison arms); nobody launches the 27B for this. Backends are first compared offline on
+are small resident local scorers compared as equal arms (SemIf over a 4B GGUF with AnyJev's bias-free
+readout, Kev-0.8B, Eos-0.8B, Laya); none is preset as the first backend; nobody launches the 27B for this. Backends are first compared offline on
 effortmining's calibration grids, then validated in shadow on real receipts; promotion is by a posterior rule
 with a hold band, and per-class promotion is out of reach of the five-session run, only a pooled one.
 
@@ -130,7 +130,7 @@ The baseline every backend must beat; it is the `coordinator` backend below.
     "codex": {
       "apply": "reasoning_effort",
       "roles": {
-        "worker":   {"models": ["gpt-6-sol","gpt-5.6-sol"], "tiers": ["low","medium","high","xhigh"], "default": "high"},
+        "worker":   {"models": ["gpt-6-sol","gpt-5.6-sol","gpt-5.6-terra"], "tiers": ["low","medium","high","xhigh"], "default": "high"},
         "leaf":     {"models": ["gpt-6-luna"],              "tiers": ["low","medium"],                "default": "low"},
         "review":   {"models": ["gpt-6-astra"],             "tiers": ["medium","high","xhigh"],      "default": "high"},
         "ideation": {"models": ["gpt-6-astra"],             "tiers": ["medium","high","xhigh"],      "default": "high"}
@@ -138,7 +138,7 @@ The baseline every backend must beat; it is the `coordinator` backend below.
     }
   },
   "router": {
-    "backends": ["semif4b", "kev", "table"],
+    "backends": ["<Stage-1 winner>", "table"],
     "fallback": "coordinator",
     "budget_s": 2.0,
     "semif4b": {"url": "http://127.0.0.1:8765", "readout": "anyjev-L0", "body_chars": 4000},
@@ -178,7 +178,8 @@ route(harness, role, header: dict, body: str, cfg) -> {
   labels; `L1` adds a temperature once ~100 labels exist. Question text: "A coordinator is delegating this
   brief to a <model> worker on <harness>. Choose the lowest reasoning-effort tier at which the worker still
   meets the TW-Accept line." Option descriptions come from effortmining's class vocabulary.
-- `kev`, `eos`, `laya`: the same state and options through each model's typed `choice` API. Comparison arms.
+- `kev`, `eos`, `laya`: the same state and options through each model's typed `choice` API. All four
+  backends are equal arms in Stage 1; the winner becomes `backends[0]` (Arian, 2026-09-26).
 
 All backends run as **resident servers** started by `tw.py serve`, never loaded in the hook (§1). The
 router is deterministic for a single request on CPU; a batching server can move a first-time score with
@@ -329,16 +330,18 @@ per arm). Per-class outputs from that run are shadow agreement rates; per-class 
 
 ## 7. Decisions for Arian
 
-1. **Backend arms:** SemIf-4B + AnyJev L0 as `backends[0]`; Kev-0.8B, Eos-0.8B, Laya as Stage-1 comparison
-   arms. Yes/no.
-2. **Codex review/ideation effort:** the setup-plan handoff (2026-09-26 evening) records your ruling that
-   Astra review/ideation must carry an explicit `reasoning_effort`; `tw.py:262` still implements the earlier
-   "may omit" and says so in its comment. Draft assumes the handoff ruling and lists the revert as plan step 1.
-   Confirm.
-3. **Terra:** rollouts show `gpt-5.6-terra` dispatched as a worker on 2026-09-24. Add it to the Codex
-   `worker.models`, or keep it out?
-4. **Ideation/review tiers and tools** (§4.2): `["high","xhigh"]` on Claude, `["medium","high","xhigh"]` on
-   Codex, ideation with web tools, review read-only. Placeholders; change any.
+Decided 2026-09-26 (Arian):
+
+1. **Backend arms:** no preset `backends[0]`. SemIf-4B + AnyJev L0, Kev-0.8B, Eos-0.8B and Laya are compared
+   as equal arms in Stage 1 (§5), and the winner becomes `backends[0]`.
+2. **Codex review/ideation effort:** explicit `reasoning_effort` is required, with a floor of `medium`
+   ("medium or better"), matching §4.2 `tiers: ["medium","high","xhigh"]`. Revert `tw.py:262` ("may omit")
+   in plan step 1.
+3. **Terra:** allowed as a Codex worker (`gpt-5.6-terra` in `worker.models`), but GPT-6 models are phasing it
+   out. Nothing is built around it, and it is dropped when it stops being dispatched.
+4. **Ideation/review tiers:** default `high` on both harnesses (tentative: "idk...high?"). Ranges stay as in
+   §4.2 (Claude high–xhigh, Codex medium–xhigh). The tool lists (review read-only, ideation with web tools)
+   are placeholders Arian has not yet confirmed.
 5. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
    The §4.6 guard (item 4) is approved.
 
@@ -350,8 +353,8 @@ per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
 `writing-plans` in `~/Code/skills`, TDD per seam, one commit per green seam:
 (1) `routes.json` + loader + generated agents + gate rewrite + Codex effort-required revert, behind the
 existing tests; (2) hook order gate → receipt → route with the `coordinator` and `table` backends, route
-rows, ticket digest; (3) `tw.py serve` + `semif4b` backend + stub-server tests; Stage-1 offline bench script
-over an effortmining grid; (4) SubagentStop cost rows and the flush check; (5) `advisory`, exploration,
+rows, ticket digest; (3) `tw.py serve` + the four backend arms (`semif4b`, `kev`, `eos`, `laya`) + stub-server tests;
+Stage-1 offline bench script over an effortmining grid, which picks `backends[0]`; (4) SubagentStop cost rows and the flush check; (5) `advisory`, exploration,
 promotion script over receipts; (6) the §4.6 patch, heal, nudge and guard, the O4b re-probe, then `active`; (7) Codex: `task_name` join
 probe, then the CLI path; (8) re-baseline the real install and lift the five-session HOLD. The Opus 5.5
 calibration run proceeds in parallel and feeds (2) and (3).
