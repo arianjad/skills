@@ -171,7 +171,11 @@ route(harness, role, header: dict, body: str, cfg) -> {
 ```
 
 - `coordinator`: the role default, confidence 0. Baseline.
-- `table`: effortmining `calibration.json` class → tier (Opus 5.5 after the parallel calibration run).
+- `table`: effortmining `calibration.json` class → tier (Opus 5.5 after the parallel calibration run). It is
+  a **prior on the class, not a per-dispatch signal**: the Opus 5.5 synthetic tasks saturate at `low` for
+  nearly every class (`~/Code/effortmining-runs/2026-09-26-opus55/PROGRESS.md`), so in shadow `table` marks
+  almost every dispatch "router wanted lower". That fills the coordinator arm fast but carries no information
+  about the individual brief.
 - `semif4b`: one closed-set question over the state (four header keys + body prefix), letters → tiers,
   temperature 0, scored from a 4B GGUF's logits by SemIf (llama.cpp on CPU, MLX on the Mac). The
   `anyjev-L0` readout averages option-order bias over rotations and divides out the label prior with zero
@@ -315,11 +319,17 @@ FAIL.
 
 ## 5. Evaluation: offline testbed, then real dispatches
 
-**Stage 1, offline on effortmining grids [A].** Each calibration task has a measured cheapest-passing tier on
-Opus 5.5 (the parallel calibration run). Every backend scores every task's prompt as if it were a brief;
-metrics per backend: exact-tier accuracy, mean signed tier error (over-routing costs tokens, under-routing
-costs a failed dispatch), calibration (ECE), latency. In-distribution for *comparing backends*, even though
-the absolute tiers may not transfer to real briefs. This is the bench that picks the first `backends[0]`.
+**Stage 1, offline on real receipts [A].** The bench set is the stored brief bodies (`--store-bodies`) plus
+their accepted/rejected outcomes from the five-session run. Every backend scores every stored brief;
+metrics per backend: exact-tier accuracy against the tier the coordinator used where the outcome was
+accepted, mean signed tier error (over-routing costs tokens, under-routing costs a failed dispatch),
+calibration (ECE), latency. This is the bench that picks the first `backends[0]`. The effortmining grids are
+not the selection set: on Opus 5.5 the synthetic tasks saturate at `low` (the X1.3 gradient was a harness
+artifact, `PROGRESS.md` above), so every backend that says `low` would score perfectly. The grids remain a
+smoke test that each backend answers and a source of the `table` prior. An optional over/under-thinking
+check is a subsample of OptimalThinkingBench (§6), about 50 OverthinkingBench + 55 UnderthinkingBench items
+× 4 tiers sent straight to the API (≈420 calls; through `claude -p` the per-call cache-creation overhead
+would dominate).
 
 **Stage 2, shadow on receipts.** Router logs; coordinator blind. Output: per-class agreement with the
 coordinator and the confidence distribution. shadow → advisory at ≥ 30 labeled dispatches with agreement
@@ -343,6 +353,11 @@ coordinator rate of 0.85 (review resolutions §1):
 | 30 | 24 | 19 |
 | 50 | 38 | 32 |
 
+**Cost side of a verdict.** A promotion verdict reports expected output-token savings with the paired Opus 5.5
+multipliers vs `low`: medium 1.11, high 1.33, xhigh 2.16 (`PROGRESS.md` above, audited against run data).
+So a router that moves high → low saves about 25 % of that dispatch's output tokens, xhigh → low about 54 %,
+medium → low about 10 %.
+
 What the five-session run buys: 50–150 labeled dispatches, ~10–30 explored at ε = 0.2. That resolves a
 0.2–0.3 acceptance drop **pooled across classes**, not 0.1, and not per class (a 0.1 drop needs 68–144
 per arm). Per-class outputs from that run are shadow agreement rates; per-class promotion waits.
@@ -355,6 +370,20 @@ per arm). Per-class outputs from that run are shadow agreement rates; per-class 
 - AnyJev L2 (hidden-state head). Trigger: the 4B runs in-process rather than behind SemIf's server.
 - Any fine-tune on our labels. Trigger: ≥ 200 labeled real dispatches.
 - Cross-harness calibration table; the 27B as a routing backend; a `max` tier; installer simplification.
+
+Prior art to cite (only the abstracts and, for OTB, the dataset sections have been read):
+- **DART** (arXiv 2606.23181, training-free): two cheap no-think drafts; answer if they agree, else set the
+  budget from draft entropy. Its entropy signal matches our confidence (entropy of the backend's tier
+  distribution, already in `probs`, §4.3). Not adopted as a dispatch scheme: two worker runs per brief is
+  the cost we are trying to cut. Not read by anyone here yet.
+- **OptimalThinkingBench** (arXiv 2508.13141, Meta): OverthinkingBench (1,327 simple general questions +
+  133 MATH L1–2, graded by an LLM judge) and UnderthinkingBench (550 Reasoning Gym puzzles, 11 types × 50,
+  programmatic verifiers, plus harder math). Candidate over/under-thinking check once a backend is on
+  (§5 Stage 1). Its hard half is synthetic, like the grids, so it cannot pick tiers for real briefs.
+- **Learning When to Think** (arXiv 2608.20256): GRPO teaches a 1.5B model to pick NoThink/Short/Long as its
+  first token; −41 % tokens on MATH500 at 0.782 vs 0.796 accuracy. A training method, not an eval; the
+  learned-allocation reference, and relevant only if local Qwen models are routed. Trigger for a fine-tune
+  of our own: the ≥ 200-label line above.
 
 ## 7. Decisions for Arian
 
@@ -376,6 +405,12 @@ Decided 2026-09-26 (Arian):
    review, 2026-09-26: plugin hooks are fixed at session start, so a guard that only reads disk misses the
    first session after an update. Confirmed by this session's cache-edit test, whose file was restored.
 6. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
+7. **Default tiers once backends exist (Arian, 2026-09-27):** `low` for predictable work with a known outcome,
+   `medium` as the worker default, `high` for tricky work; the physics/destructive risk floor stays `high`.
+   This replaces the `"default": "high"` for the worker role in §4.2 and the shipped `routes.json`; the
+   change lands with the phase-2 routes rework (the file is installer-owned). Against it: the synthetic
+   calibration saturates at `low`. For it: those tasks are not Arian's work. `promote` settles it per class
+   from receipts.
 
 Defaults taken unless objected to: everything in §4.7; `TW-Class` stays required as the coordinator's label;
 per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
@@ -386,7 +421,7 @@ per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
 (1) `routes.json` + loader + generated agents + gate rewrite + Codex effort-required revert, behind the
 existing tests; (2) hook order gate → receipt → route with the `coordinator` and `table` backends, route
 rows, ticket digest; (3) `tw.py serve` + the four backend arms (`semif4b`, `kev`, `eos`, `laya`) + stub-server tests;
-Stage-1 offline bench script over an effortmining grid, which picks `backends[0]`; (4) cost rows at `outcome` and the next-dispatch race check; (5) `advisory`, exploration,
+Stage-1 offline bench script over stored receipts from the five-session run, which picks `backends[0]`; (4) cost rows at `outcome` and the next-dispatch race check; (5) `advisory`, exploration,
 promotion script over receipts; (6) the §4.6 patch, heal, nudge and guard, the O4b re-probe, then `active`; (7) Codex: `task_name` join
 probe, then the CLI path; (8) re-baseline the real install and lift the five-session HOLD. The Opus 5.5
 calibration run proceeds in parallel and feeds (2) and (3).

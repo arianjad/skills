@@ -1503,7 +1503,8 @@ Commit: `git commit -m "thinker-worker: docs for routes.json, tier agents, act m
 ## Not in this plan (phase 2, separate plan after an API survey)
 
 - `tw.py serve` and the resident scorers `semif4b` (with AnyJev L0), `kev`, `eos` and `laya` as `BACKENDS`
-  entries, plus the Stage-1 offline bench over effortmining grids that picks `backends[0]`. This needs each
+  entries, plus the Stage-1 offline bench over stored receipts from the five-session run that picks
+  `backends[0]` (design §5; the synthetic grids saturate at `low` on Opus 5.5). This needs each
   project's `choice`/logit API read first; this plan has not read them. Each HTTP backend passes a socket
   timeout ≤ `budget_s` so its thread ends on its own; `route()`'s daemon thread only bounds the wait, and
   a long-lived `serve` would otherwise accumulate stuck threads (gate-1 review, 2026-09-26).
