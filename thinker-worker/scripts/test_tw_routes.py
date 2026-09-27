@@ -64,12 +64,15 @@ if __name__ == "__main__":
     assert not bad
     import json, tempfile
     from pathlib import Path
-    good = {"backends": [], "budget_s": 2.0, "classes": {"*": {"mode": "shadow"}}}
+    good = {"backends": [], "budget_s": 2.0, "cutoff": 0.85, "classes": {"*": {"mode": "shadow"}}}
+    no_cutoff = {k: v for k, v in good.items() if k != "cutoff"}
     with tempfile.TemporaryDirectory() as tmp:
         for router, ok in [(good, True), (None, False), ([], False), ({**good, "backends": "table"}, False),
                            ({**good, "budget_s": 0}, False), ({**good, "budget_s": "2"}, False),
                            ({**good, "budget_s": True}, False), ({**good, "classes": {}}, False),
-                           ({**good, "classes": {"*": {}}}, False)]:
+                           ({**good, "classes": {"*": {}}}, False), (no_cutoff, False),
+                           ({**good, "cutoff": 1.5}, False), ({**good, "cutoff": True}, False),
+                           ({**good, "cutoff": 0}, True)]:
             doc = {**R, "router": router}
             if router is None:
                 del doc["router"]

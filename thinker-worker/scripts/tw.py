@@ -68,9 +68,11 @@ def load_routes(path: Path | None = None) -> dict:
                 raise Conflict(f"routes.json: bad policy for {harness}/{role}")
     rt = doc.get("router")
     budget = rt.get("budget_s") if isinstance(rt, dict) else None
+    cutoff = rt.get("cutoff") if isinstance(rt, dict) else None
     star = rt.get("classes", {}).get("*") if isinstance(rt, dict) and isinstance(rt.get("classes"), dict) else None
     if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list)
             or isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0
+            or isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)) or not 0 <= cutoff <= 1
             or not isinstance(star, dict) or "mode" not in star):
         raise Conflict("routes.json: bad router block")
     return doc
@@ -306,20 +308,118 @@ def receipts_path(home: Path, harness: str, session: str) -> Path:
 def append_receipt(home: Path, harness: str, session: str, entry: dict) -> None:
     path = receipts_path(home, harness, session)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("ab") as stream:
-        stream.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+    with path.open("ab+") as stream:  # append mode: writes land at EOF whatever the read position
+        lead = b""
+        if stream.seek(0, 2):
+            stream.seek(-1, 2)
+            lead = b"" if stream.read(1) == b"\n" else b"\n"  # don't glue this row onto a torn last line
+        stream.write(lead + (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+
+
+def read_rows(path: Path) -> list[dict]:
+    """JSONL rows as dicts; blank lines and lines torn by a concurrent writer are skipped."""
+    rows = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
 
 
 def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: bool) -> None:
-    """Label a guarded dispatch; the last outcome for a tool_use_id wins."""
-    path = receipts_path(home, harness, session)
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    if not any(json.loads(x).get("tool_use_id") == tool_use_id for x in lines if x.strip()):
+    """Label a guarded dispatch; the last outcome for a tool_use_id wins. Claude: one cost row, written once."""
+    rows = read_rows(receipts_path(home, harness, session))
+    if not any(r.get("tool_use_id") == tool_use_id for r in rows):
         raise Conflict(f"no receipt for tool_use_id {tool_use_id} in {harness} session {session}")
     append_receipt(home, harness, session, {"kind": "outcome", "at": now(), "harness": harness,
                                             "session_id": session, "tool_use_id": tool_use_id,
                                             "accepted": accepted})
+    if harness == "claude" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id for r in rows):
+        try:  # the label above stands even if the child's files are unreadable
+            row = cost_row(home, harness, session, tool_use_id)
+        except Exception as exc:
+            row = {"kind": "cost-error", "at": now(), "harness": harness, "session_id": session,
+                   "tool_use_id": tool_use_id, "error": f"{type(exc).__name__}: {exc}"[:200]}
+        if row is not None:
+            append_receipt(home, harness, session, row)
     print(f"Recorded {'accepted' if accepted else 'rejected'} for {tool_use_id}.")
+
+
+COST_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def subagents_dirs(home: Path, session: str, transcript_path: str | None = None) -> list[Path]:
+    if transcript_path:
+        return [Path(transcript_path).with_suffix("") / "subagents"]
+    return list((home / ".claude" / "projects").glob(f"*/{session}/subagents"))
+
+
+def child_files(dirs: list[Path], tool_use_id: str) -> tuple[dict, Path] | None:
+    for folder in dirs:
+        for meta_path in folder.glob("agent-*.meta.json"):
+            meta = read_json(meta_path, {})
+            if isinstance(meta, dict) and meta.get("toolUseId") == tool_use_id:
+                return meta, meta_path.with_name(meta_path.name[: -len(".meta.json")] + ".jsonl")
+    return None
+
+
+def race_check(home: Path, harness: str, session: str, transcript_path: str | None) -> None:
+    """For earlier rewrites not yet checked: the child's actual agent (meta.json, written at spawn) must be the
+    router's pick, and its prompt must not carry context-mode's block. Otherwise the race was lost.
+    Never raises: a failure becomes a race-error row, and the dispatch is decided normally."""
+    try:
+        path = receipts_path(home, harness, session)
+        if harness != "claude" or not path.exists():
+            return
+        rows = read_rows(path)
+        checked = {r.get("tool_use_id") for r in rows if r.get("kind") == "race"}
+        dirs = subagents_dirs(home, session, transcript_path)
+        for r in rows:
+            if r.get("kind") != "route" or r.get("action") != "rewrite" or r.get("tool_use_id") in checked:
+                continue
+            found = child_files(dirs, r["tool_use_id"])
+            if found is None or not found[1].exists():
+                continue  # not spawned yet; next dispatch checks again
+            meta, transcript = found
+            first = ""
+            with transcript.open(encoding="utf-8") as stream:
+                for line in stream:
+                    obj = json.loads(line)
+                    if obj.get("type") == "user":
+                        first = json.dumps((obj.get("message") or {}).get("content"), ensure_ascii=False)
+                        break
+            lost = meta.get("agentType") != r.get("router_agent") or "<context_window_protection>" in first
+            append_receipt(home, harness, session, {"kind": "race", "at": now(), "harness": harness,
+                                                    "session_id": session, "tool_use_id": r["tool_use_id"],
+                                                    "lost": lost, "agent_type": meta.get("agentType")})
+            if lost:
+                advisory_flag(home, harness, session).write_text(now(), encoding="utf-8")
+    except Exception as exc:  # a tripwire failure is recorded, never silent, and never blocks a dispatch
+        try:
+            append_receipt(home, harness, session, {"kind": "race-error", "at": now(), "harness": harness,
+                                                    "session_id": session,
+                                                    "error": f"{type(exc).__name__}: {exc}"[:200]})
+        except Exception:
+            pass  # ponytail: unwritable receipts dir; the dispatch receipt fails right after anyway
+
+
+def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict | None:
+    found = child_files(subagents_dirs(home, session), tool_use_id)
+    if found is None or not found[1].exists():
+        return None
+    meta, transcript = found
+    usage = {}
+    for obj in read_rows(transcript):
+        msg = obj.get("message") or {}
+        if obj.get("type") == "assistant" and msg.get("id") and msg.get("usage"):
+            usage[msg["id"]] = msg["usage"]  # last row per message.id carries the final counts
+    return {"kind": "cost", "at": now(), "harness": harness, "session_id": session, "tool_use_id": tool_use_id,
+            "agent_type": meta.get("agentType"), "model": meta.get("model"), "api_calls": len(usage),
+            **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS}}
 
 
 def ticket(brief: str) -> tuple[str, str]:
@@ -360,15 +460,8 @@ def class_mode(routes: dict, cls: str | None) -> tuple[str, float]:
 
 
 def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | None:
-    path = receipts_path(home, harness, session)
-    if not path.exists():
-        return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue  # blank, or torn by a concurrent hook
-        if (isinstance(row, dict) and row.get("kind") == "route" and row.get("ticket") == tick
+    for row in read_rows(receipts_path(home, harness, session)):
+        if (row.get("kind") == "route" and row.get("ticket") == tick
                 and row.get("source") not in ("coordinator", "cached:coordinator")):
             return row  # the first backend decision for this brief; coordinator picks are recomputed
     return None
@@ -592,6 +685,7 @@ def hook(home: Path, harness: str, owner: str) -> None:
         receipt(home, harness, session, envelope, Decision(False, "resume-key-on-fresh-dispatch"))
         denial("resume fields are outside fresh dispatch; coordinator must verify child identity before native continuation")
         return
+    race_check(home, harness, session, envelope.get("transcript_path"))  # never raises; see its docstring
     routes = load_routes()
     d = decide(harness, envelope, routes)
     receipt(home, harness, session, envelope, d)
