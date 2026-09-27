@@ -43,6 +43,13 @@ def boom(home):
 if __name__ == "__main__":
     out, row = run("shadow")
     assert out is None and row["action"] is None and row["router_tier"] == "low"
+    # eligible (would the router act?) is recorded in shadow too: the promote coordinator arm matches on it
+    assert row["eligible"] is True, row                                         # confident and lower
+    assert run("shadow", conf=0.5)[1]["eligible"] is False                      # under cutoff
+    assert run("shadow", conf=0.1, explore=1.0)[1]["eligible"] is True          # explored lower
+    assert run("shadow", pick="high")[1]["eligible"] is False                   # agrees with the coordinator
+    row = run("shadow", pick="bogus")[1]                                        # invalid -> coordinator fallback
+    assert row["source"] == "coordinator" and row["eligible"] is False, row
     out, row = run("advisory")
     assert out["permissionDecision"] == "deny" and "tw-worker-low" in out["permissionDecisionReason"]
     assert row["action"] == "advise"
@@ -61,6 +68,9 @@ if __name__ == "__main__":
     out, row = run("active")
     assert out["permissionDecision"] == "allow" and out["updatedInput"]["subagent_type"] == "tw-worker-low"
     assert out["updatedInput"]["prompt"].startswith("TW-Role: worker") and row["action"] == "rewrite"
+    assert out["additionalContext"] == ("thinker-worker: dispatched as tw-worker-low instead of tw-worker-high "
+                                        "(router p=0.95); judge the result at that tier"), out
+    assert row["eligible"] is True, row
     out, row = run("active", guard="context-mode PreToolUse Agent hook is registered")
     assert out["permissionDecision"] == "deny" and row["action"] == "advise" and row["guard"].startswith("context-mode")
     out, row = run("active", flag=True)

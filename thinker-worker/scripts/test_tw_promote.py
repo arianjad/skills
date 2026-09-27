@@ -28,11 +28,16 @@ def verdict(k, n=10, lost=0):
                                                   "class": "C-coding", "action": "rewrite",
                                                   "router_tier": "low", "coordinator_tier": "high"})
             tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"q{i}", "accepted": False})
-        for i in range(1000):  # coordinator arm: table wanted low, ran at high
+        for i in range(1000):  # coordinator arm: table wanted low (and would have acted), ran at high
             tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"c{i}", "ticket": f"u{i}",
                                                   "class": "C-coding", "action": None, "source": "table",
-                                                  "router_tier": "low", "coordinator_tier": "high"})
+                                                  "router_tier": "low", "coordinator_tier": "high", "eligible": True})
             tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"c{i}", "accepted": i < 850})
+        for i in range(200):  # table wanted low but would not have acted (under cutoff, unexplored): neither arm
+            tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"e{i}", "ticket": f"y{i}",
+                                                  "class": "C-coding", "action": None, "source": "table",
+                                                  "router_tier": "low", "coordinator_tier": "high", "eligible": False})
+            tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"e{i}", "accepted": True})
         for i in range(50):  # agreement and coordinator-fallback rows: in neither arm
             tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"a{i}", "ticket": f"w{i}",
                                                   "class": "C-coding", "action": None,
@@ -47,6 +52,7 @@ if __name__ == "__main__":
     got = {k: verdict(k)["verdict"] for k in (9, 8, 6, 5)}
     assert got == {9: "promote", 8: "hold", 6: "hold", 5: "demote"}, got
     v = verdict(9, lost=5)
-    assert (v["n_router"], v["n_coord"], v["verdict"]) == (10, 1000, "promote"), v   # lost races, agreement
-                                                                                 # and coordinator-fallback rows count for neither arm
-    print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5); lost races excluded")
+    assert (v["n_router"], v["n_coord"], v["verdict"]) == (10, 1000, "promote"), v   # lost races, agreement,
+                                                    # coordinator-fallback and ineligible rows count for neither arm
+    print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5); lost races and "
+          "ineligible rows excluded")

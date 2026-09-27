@@ -437,7 +437,8 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
 def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.15,
             draws: int = 200_000, seed: int = 7) -> dict:
     """Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
-    (backend wanted lower, child ran at the coordinator tier); promote/demote/hold on P(diff >= -margin)."""
+    (backend wanted lower and the row is `eligible`, child ran at the coordinator tier); promote/demote/hold on
+    P(diff >= -margin)."""
     rows = []
     for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
         rows += read_rows(path)  # skips torn lines
@@ -458,8 +459,8 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
         if rewrite_lower or complied:
             router.append(ok)
         elif (r.get("action") is None and not (r.get("source") or "coordinator").endswith("coordinator")
-              and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])):
-            coord.append(ok)  # router wanted lower, child ran at the coordinator tier
+              and r.get("eligible") and TIERS.index(r["router_tier"]) < TIERS.index(r["coordinator_tier"])):
+            coord.append(ok)  # router wanted lower and would have acted; child ran at the coordinator tier
     k, n, kc, nc = sum(router), len(router), sum(coord), len(coord)
     rng = random.Random(seed)
     hit = sum(rng.betavariate(1 + k, 1 + n - k) - rng.betavariate(1 + kc, 1 + nc - kc) >= -margin
@@ -665,40 +666,46 @@ def advisory_flag(home: Path, harness: str, session: str) -> Path:
 
 
 def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: dict, routes: dict):
-    """(hook output | None, action None/"advise"/"rewrite", guard | None) for an admitted, routed dispatch."""
+    """(hook output | None, action None/"advise"/"rewrite", guard | None, eligible) for an admitted, routed dispatch.
+    eligible: a backend disagrees at the cutoff or explores lower, whatever the mode; promote's coordinator arm
+    keeps only such rows so it matches the dispatches the router would have acted on."""
+    target = r["tier"]
+    lower = TIERS.index(target) < TIERS.index(d.tier)
+    disagree = target != d.tier and r["confidence"] >= routes["router"]["cutoff"]
+    explored = lower and r["explore"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["explore"]
+    eligible = r["source"] != "coordinator" and (disagree or explored)
     if r["mode"] == "shadow" or r["source"] == "coordinator":
-        return None, None, None
+        return None, None, None, eligible
     inp = envelope["tool_input"]
     brief = inp.get("message" if harness == "codex" else "prompt")
     # Checked before the cached decision is used: the ticket ignores TW-Override, so an override
     # re-dispatch of an advised brief reuses the decision that advised it.
     if any(x.startswith("TW-Override: ") and x[13:].strip() for x in brief.split("\n")[1:12]):  # header lines only
-        return None, None, None
+        return None, None, None, eligible
     pol = routes["harnesses"][harness]["roles"][d.role]
-    target = r["tier"]
     risky = d.fields["TW-Risk"] != "none"  # design §5: any risk-flagged brief (Fable review, finding 6)
     if risky and target == pol["tiers"][0]:
-        return None, None, None  # risk-flagged briefs never route to the role's cheapest tier
-    lower = TIERS.index(target) < TIERS.index(d.tier)
-    disagree = target != d.tier and r["confidence"] >= routes["router"]["cutoff"]
-    explored = lower and r["explore"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["explore"]
-    if not (disagree or explored):
-        return None, None, None
+        return None, None, None, eligible  # risk-flagged briefs never route to the role's cheapest tier
+    if not eligible:
+        return None, None, None, eligible
     guard = None
     if r["mode"] == "active" and harness == "claude":
         guard = competing_agent_writer(home)
         if guard is None and advisory_flag(home, harness, session).exists():
             guard = "lost race recorded earlier this session"
         if guard is None:
-            new = {**inp, "subagent_type": agent_name(d.role, target)}  # whole tool_input, one key changed
+            pick = agent_name(d.role, target)
+            new = {**inp, "subagent_type": pick}  # whole tool_input, one key changed
+            note = (f"thinker-worker: dispatched as {pick} instead of {inp['subagent_type']} "
+                    f"(router p={r['confidence']:.2f}); judge the result at that tier")
             return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
-                                            "updatedInput": new}}, "rewrite", None)
+                                            "updatedInput": new, "additionalContext": note}}, "rewrite", None, eligible)
     why = "exploration" if explored and not disagree else f"p={r['confidence']:.2f}"
     pick = agent_name(d.role, target) if harness == "claude" else "reasoning_effort=" + target
     reason = (f"router picks {target} ({why}); dispatch {pick} or add `TW-Override: <reason>` to keep {d.tier}"
               + (f" [active held: {guard}]" if guard else ""))
     return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                    "permissionDecisionReason": f"{OWNER}: {reason}"}}, "advise", guard)
+                                    "permissionDecisionReason": f"{OWNER}: {reason}"}}, "advise", guard, eligible)
 
 
 def hook(home: Path, harness: str, owner: str) -> None:
@@ -759,11 +766,11 @@ def hook(home: Path, harness: str, owner: str) -> None:
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
-               "action": None, "guard": None}
+               "action": None, "guard": None, "eligible": None}  # eligible stays None if act() fails
         if r.get("errors"):
             row["errors"] = r["errors"]
         try:  # an act() bug still records the router's decision
-            out, row["action"], row["guard"] = act(home, harness, session, envelope, d, r, routes)
+            out, row["action"], row["guard"], row["eligible"] = act(home, harness, session, envelope, d, r, routes)
         except Exception as exc:
             out, row["action"], row["guard"] = None, None, f"act error: {type(exc).__name__}"
         if record.get("store_bodies"):
