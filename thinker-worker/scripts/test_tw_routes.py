@@ -62,4 +62,24 @@ if __name__ == "__main__":
     for b in bad:
         print("FAIL", b)
     assert not bad
-    print(f"PASS {len(CASES)} route-policy cases")
+    import json, tempfile
+    from pathlib import Path
+    good = {"backends": [], "budget_s": 2.0, "classes": {"*": {"mode": "shadow"}}}
+    with tempfile.TemporaryDirectory() as tmp:
+        for router, ok in [(good, True), (None, False), ([], False), ({**good, "backends": "table"}, False),
+                           ({**good, "budget_s": 0}, False), ({**good, "budget_s": "2"}, False),
+                           ({**good, "budget_s": True}, False), ({**good, "classes": {}}, False),
+                           ({**good, "classes": {"*": {}}}, False)]:
+            doc = {**R, "router": router}
+            if router is None:
+                del doc["router"]
+            p = Path(tmp) / "routes.json"
+            p.write_text(json.dumps(doc), encoding="utf-8")
+            try:
+                tw.load_routes(p)
+                got = True
+            except tw.Conflict as exc:
+                got = False
+                assert "bad router block" in str(exc), exc
+            assert got == ok, router
+    print(f"PASS {len(CASES)} route-policy cases; router block validated")

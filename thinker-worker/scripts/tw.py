@@ -66,6 +66,13 @@ def load_routes(path: Path | None = None) -> dict:
             if (not pol.get("models") or not pol.get("tiers") or any(t not in TIERS for t in pol["tiers"])
                     or pol.get("default") not in pol["tiers"]):
                 raise Conflict(f"routes.json: bad policy for {harness}/{role}")
+    rt = doc.get("router")
+    budget = rt.get("budget_s") if isinstance(rt, dict) else None
+    star = rt.get("classes", {}).get("*") if isinstance(rt, dict) and isinstance(rt.get("classes"), dict) else None
+    if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list)
+            or isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0
+            or not isinstance(star, dict) or "mode" not in star):
+        raise Conflict("routes.json: bad router block")
     return doc
 
 
@@ -238,32 +245,32 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
             return Decision(False, problem, role, model)
         route = role
         if role in ("independent-review", "ideation") and not review_details(brief):
-            return Decision(False, f"{role} brief needs TW-Authorization and TW-Scope lines", role, model)
+            return Decision(False, f"{role} brief needs TW-Authorization and TW-Scope lines", role, model, fields=fields)
     pol = roles[route]
     if harness == "codex":
         if model is None:
-            return Decision(False, "explicit model is required; inherited/omitted model is disallowed", role)
+            return Decision(False, "explicit model is required; inherited/omitted model is disallowed", role, fields=fields)
         if inp.get("agent_type") not in (None, "default"):
-            return Decision(False, "custom agent_type is outside this route", role, model)
+            return Decision(False, "custom agent_type is outside this route", role, model, fields=fields)
         if model not in pol["models"]:
-            return Decision(False, f"model is not allowed for {route}", role, model)
+            return Decision(False, f"model is not allowed for {route}", role, model, fields=fields)
         tier = inp.get("reasoning_effort")
         if tier not in pol["tiers"]:
-            return Decision(False, f"reasoning_effort must be one of {', '.join(pol['tiers'])} for {route}", role, model)
+            return Decision(False, f"reasoning_effort must be one of {', '.join(pol['tiers'])} for {route}", role, model, fields=fields)
         if not valid_codex_fork(inp.get("fork_turns")):
-            return Decision(False, "fork_turns must be explicit 'none' or a bounded positive count", role, model)
+            return Decision(False, "fork_turns must be explicit 'none' or a bounded positive count", role, model, fields=fields)
     else:
         st = inp.get("subagent_type")
         match = AGENT_NAME.fullmatch(st) if isinstance(st, str) else None
         if not match or match.group(1) != role:
-            return Decision(False, f"subagent_type must be tw-{role}-<tier>", role, model)
+            return Decision(False, f"subagent_type must be tw-{role}-<tier>", role, model, fields=fields)
         tier = match.group(2)
         if tier not in pol["tiers"]:
-            return Decision(False, f"tier {tier} is outside {role}'s tiers {pol['tiers']}", role, model)
+            return Decision(False, f"tier {tier} is outside {role}'s tiers {pol['tiers']}", role, model, fields=fields)
         if model is not None and model not in pol["models"]:
-            return Decision(False, f"per-call model {model} differs from the {role} agent's model", role, model)
+            return Decision(False, f"per-call model {model} differs from the {role} agent's model", role, model, fields=fields)
         if inp.get("fork_context") or inp.get("fork"):
-            return Decision(False, "Claude inherited-model fork is outside fresh dispatch", role, model)
+            return Decision(False, "Claude inherited-model fork is outside fresh dispatch", role, model, fields=fields)
     return Decision(True, "admitted-request-only", role, model, tier, fields)
 
 
@@ -316,7 +323,8 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
 
 
 def ticket(brief: str) -> tuple[str, str]:
-    norm = "\n".join(x.rstrip() for x in brief.split("\n") if not x.startswith("TW-Route:")).strip()
+    norm = "\n".join(x.rstrip() for x in brief.split("\n")
+                     if not x.startswith(("TW-Route:", "TW-Override:"))).strip()
     digest = sha(norm.encode("utf-8"))
     return digest[:12], digest
 
@@ -356,9 +364,13 @@ def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | Non
     if not path.exists():
         return None
     for line in path.read_text(encoding="utf-8").splitlines():
-        row = json.loads(line) if line.strip() else {}
-        if row.get("kind") == "route" and row.get("ticket") == tick:
-            return row  # the first decision for this brief
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # blank, or torn by a concurrent hook
+        if (isinstance(row, dict) and row.get("kind") == "route" and row.get("ticket") == tick
+                and row.get("source") not in ("coordinator", "cached:coordinator")):
+            return row  # the first backend decision for this brief; coordinator picks are recomputed
     return None
 
 
@@ -384,7 +396,8 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
                 continue
             try:
                 out = fn(cfg.get(name, {}), pol, fields, brief)
-            except Exception:
+            except Exception as exc:
+                result.setdefault("errors", []).append(f"{name}: {type(exc).__name__}")
                 continue
             if valid_route(out, pol["tiers"]):
                 result.update(out, source=name)
@@ -397,6 +410,8 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     if found is None:
         found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator",
                  "body_chars_sent": 0}
+        if result.get("errors"):
+            found["errors"] = list(result["errors"])
     return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
             "mode": mode, "explore": explore}
 
@@ -447,22 +462,32 @@ def hook(home: Path, harness: str, owner: str) -> None:
         return
     if d.role is None or tool == "collaborationspawn_agent":
         return  # ponytail: Codex v2 ciphertext; the task_name join is phase 2
-    brief = inp.get("message" if harness == "codex" else "prompt")
-    prior = prior_route(home, harness, session, ticket(brief)[0])
-    r = route(routes, harness, d.role, d.fields, brief, d.tier, prior)
-    row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
-           "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
-           "coordinator_tier": d.tier, "router_tier": r["tier"], "probs": r["probs"],
-           "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "ms": r["ms"],
-           "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
-           "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,
-           "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
-           "action": None, "guard": None}
-    if record.get("store_bodies"):
-        body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
-        body.parent.mkdir(parents=True, exist_ok=True)
-        body.write_text(brief, encoding="utf-8")
-    append_receipt(home, harness, session, row)
+    try:  # fail open after admission: the dispatch receipt already says admit, so a routing bug must not deny
+        brief = inp.get("message" if harness == "codex" else "prompt")
+        prior = prior_route(home, harness, session, ticket(brief)[0])
+        r = route(routes, harness, d.role, d.fields, brief, d.tier, prior)
+        row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
+               "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
+               "coordinator_tier": d.tier, "router_tier": r["tier"], "probs": r["probs"],
+               "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "ms": r["ms"],
+               "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
+               "router_agent": agent_name(d.role, r["tier"]) if harness == "claude" else None,
+               "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
+               "action": None, "guard": None}
+        if r.get("errors"):
+            row["errors"] = r["errors"]
+        if record.get("store_bodies"):
+            body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
+            body.parent.mkdir(parents=True, exist_ok=True)
+            body.write_text(brief, encoding="utf-8")
+        append_receipt(home, harness, session, row)
+    except Exception as exc:
+        try:
+            append_receipt(home, harness, session, {"kind": "error", "at": now(), "harness": harness,
+                                                    "session_id": session, "tool_use_id": envelope.get("tool_use_id"),
+                                                    "where": "route", "error": type(exc).__name__})
+        except Exception:
+            pass  # ponytail: best effort; an unwritable receipts dir already failed above
 
 
 def source_root() -> Path:

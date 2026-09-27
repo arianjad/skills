@@ -40,6 +40,10 @@ if __name__ == "__main__":
         assert deny["subagent_type"] == "tw-worker-high", deny
         raw = next(Path(home).rglob("receipts/claude/*.jsonl")).read_text(encoding="utf-8")
         assert "SECRET-BODY-TEXT" not in raw
+        hook(home, "claude", "Agent", {"subagent_type": "tw-leaf-low",   # denied after the header parsed
+                                       "prompt": "TW-Role: worker\n" + HDR + BODY})
+        late = receipts(home, "claude")[-1]
+        assert late["decision"] == "deny" and late["header"] == admit["header"], late
 
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "codex", "--session", SESSION])
