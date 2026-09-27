@@ -1511,6 +1511,9 @@ Commit: `git commit -m "thinker-worker: docs for routes.json, tier agents, act m
   `route` CLI write a route row keyed by ticket.
 - Codex rewrite (design §6: waits on the Codex hook-rewrite probe).
 - Lifting the five-session HOLD and re-baselining the real install against phase-2 backends.
+- `eligible` excludes risk-floored rows: a risk-flagged brief whose router pick is the role's cheapest tier
+  (the router arm can never hold its counterpart). A risk-flagged brief where the router wanted lower but
+  not lowest stays eligible, and overrides stay eligible (agreed with Fable, 2026-09-26).
 
 ## Self-review
 
