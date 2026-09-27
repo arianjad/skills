@@ -255,11 +255,27 @@ block 2.7 % of main.
    `additionalContext` naming the ctx tools and their `ToolSearch select:` bootstrap (~60 tokens vs ~1.2 k).
    It emits only while `enabledPlugins["context-mode@context-mode"]` is true, so removing the plugin
    silences it. The router has no dependency on context-mode.
-4. **Guard (approved in principle by Arian 2026-09-26; mechanism on hold, §7 item 5, because the disk read
-   below misses the first session after an update):** before returning `updatedInput`, `active` mode reads the active context-mode
-   `hooks.json` (via `installed_plugins.json` → `installPath`). If a PreToolUse `Agent` entry is present, it
-   downgrades that dispatch to `advisory`. This turns the post-update window from a silent race into a
-   visible denial. [I] cost: one JSON read per dispatch.
+4. **Guard (Arian, 2026-09-26: mtime variant).** The hook set is fixed at session start. [V] In this
+   session, with the Agent entry removed from `hooks.json` on disk, a fresh subagent's prompt still carried
+   `<context_window_protection>` (control before the edit: present; test after the edit: present; file
+   restored, sha1 `85c970cd…` and mtime unchanged). So the guard reasons about when the disk changed:
+   - Resolve the active context-mode `hooks.json` via `installed_plugins.json` → `installPath`. If a
+     PreToolUse `Agent` entry is present, the dispatch goes `advisory`.
+   - If the entry is absent but `mtime(hooks.json) >= session_start − 1 s`, the heal patched it after this
+     session loaded, and the whole session goes `advisory`. The 1 s allows for coarse mtime resolution;
+     errors fall toward `advisory`, which is safe.
+   - `session_start` is the start time of the Claude Code process, not the transcript. Per the Fable
+     session's measurement [3P] (session 7609ebe8), the heal's write lands ~1.5 s after process start,
+     before the transcript's first record and before the file exists. Anchoring on the transcript would
+     read "clean" in exactly the dirty case.
+   - Take the process start from the first ancestor of the hook process named `claude.exe` (Windows) or
+     `claude`/`node` (Mac). The chain is ~5 hops: cmd → bash ×3 → claude.exe, per the same [3P]
+     measurement. Compute it once per `session_id` and cache it in tw.py's existing per-session state,
+     because a PowerShell/wmic query costs ~300 ms and psutil is not in the hook's Python [3P].
+   - The current `hooks.json` mtime is 2026-07-06 [V], so ordinary sessions do not false-positive.
+   - **Tripwire:** at SubagentStop, if the router emitted `updatedInput` for that child and the child's
+     first user message contains `<context_window_protection>`, write a `lost-race` receipt and set the
+     session to `advisory`. A lost race is then never silent.
 5. **Measure:** the parent-silent subagent ctx rate was 24/511 (4.7 %) with the old block. Re-run the split
    after a week with the one-line nudge. If it falls well below that, lengthen the nudge; do not restore the
    prompt append.
@@ -345,14 +361,10 @@ Decided 2026-09-26 (Arian):
    2026-09-26). A reviewer can run tests itself to falsify a claim, and a Bash-capable role is never really
    read-only anyway. "Report findings; do not edit the files under review" is a line in the brief, not a
    tool restriction.
-5. **§4.6 guard: on hold.** Fable's review, 2026-09-26: plugin hooks are fixed at session start
-   (code.claude.com/docs/en/plugins/loading), and the heal runs after that. So a disk-reading guard reads
-   "clean" in exactly the first session after an update. Candidate fixes: a heal-written state record
-   (Fable), or downgrade when the Agent entry is gone on disk but hooks.json's mtime is later than session
-   start (Opus). Both keep a SubagentStop tripwire that logs a lost race when a child prompt carries
-   `<context_window_protection>`. Waiting on Arian.
+5. **§4.6 guard: the mtime variant, anchored at process start, plus the SubagentStop tripwire.** Fable's
+   review, 2026-09-26: plugin hooks are fixed at session start, so a guard that only reads disk misses the
+   first session after an update. Confirmed by this session's cache-edit test, whose file was restored.
 6. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
-   The guard mechanism is on hold (item 5).
 
 Defaults taken unless objected to: everything in §4.7; `TW-Class` stays required as the coordinator's label;
 per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
