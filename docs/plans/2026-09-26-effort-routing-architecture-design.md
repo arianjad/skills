@@ -20,7 +20,7 @@ rewrites the dispatch to the router's tier agent (`active`, verified possible to
 ciphertext, so there the coordinator calls `tw.py route` first and the ticket rides in `task_name`. Backends
 are small resident local scorers compared as equal arms (SemIf over a 4B GGUF with AnyJev's bias-free
 readout, Kev-0.8B, Eos-0.8B, Laya); none is preset as the first backend; nobody launches the 27B for this. Backends
-run in shadow on real receipts first, then `table`-driven exploration generates two-sided tier labels, and
+run in shadow on real receipts first, then exploration one tier below the coordinator generates tier labels, and
 the backend is chosen on those labels (§5); promotion is by a posterior rule with a hold band, and per-class
 promotion is out of reach of the five-session run, only a pooled one.
 
@@ -139,7 +139,7 @@ The baseline every backend must beat; it is the `coordinator` backend below.
     }
   },
   "router": {
-    "backends": ["<Stage-3 winner>", "table"],   // phase 1 ships []: coordinator only until the Opus 5.5 table lands
+    "backends": ["<Stage-3 winner>"],   // [] until then: Stage 2 exploration needs no backend (§5)
     "fallback": "coordinator",
     "budget_s": 2.0,
     "semif4b": {"url": "http://127.0.0.1:8765", "readout": "anyjev-L0", "body_chars": 4000},
@@ -177,7 +177,8 @@ route(harness, role, header: dict, body: str, cfg) -> {
   a **prior on the class, not a per-dispatch signal**: the Opus 5.5 synthetic tasks saturate at `low` for
   nearly every class (`~/Code/effortmining-runs/2026-09-26-opus55/PROGRESS.md`), so in shadow `table` marks
   almost every dispatch "router wanted lower". That fills the coordinator arm fast but carries no information
-  about the individual brief.
+  about the individual brief. It does not drive exploration either (§5 Stage 2); it stays available for a
+  real per-class prior once one exists.
 - `semif4b`: one closed-set question over the state (four header keys + body prefix), letters → tiers,
   temperature 0, scored from a 4B GGUF's logits by SemIf (llama.cpp on CPU, MLX on the Mac). The
   `anyjev-L0` readout averages option-order bias over rotations and divides out the label prior with zero
@@ -339,12 +340,15 @@ synthetic tasks saturate at `low` (the X1.3 gradient was a harness artifact, `PR
 backend that says `low` would score perfectly. The grids remain a smoke test that each backend answers and
 the source of the `table` prior.
 
-**Stage 2, exploration driven by `table` (label generation).** Exploration needs no chosen backend. `table`
-says `low` for nearly every class (§4.3), so a class in `advisory` with `backends: ["table"]` and
-`explore: ε` runs a fraction ε of the dispatches the coordinator sent above `low` at `low` (the denial says
-"exploration"; `table`'s confidence is 0, so no other denial fires). The risk floor applies (below). An
-explored dispatch accepted at `low` fixes c = `low`; one rejected at `low` for tier reasons and then accepted
-at the coordinator's tier t gives `low` < c ≤ t. These are the two-sided rows.
+**Stage 2, exploration one tier below the coordinator (label generation; Arian, 2026-09-27).** Exploration
+needs no backend and no table: with no Opus 5.5 calibration a table is only a constant. When no backend
+answers, a fraction ε of dispatches (by ticket hash) in an `advisory` class is advised to the role's next
+tier below the coordinator's tier t (`source: "explore"`, the denial says "exploration"); the risk floor
+applies (below), and a dispatch at the role's cheapest tier is never explored. Accepted at t−1: c ≤ t−1, a
+tighter upper bound. Rejected at t−1 for tier reasons (`--cause tier`) and then accepted at t: c = t exactly,
+a two-sided row. One tier below was chosen over the role's cheapest tier because every rejection gives an
+exact label and the risk to real work is smaller; the cheapest-tier target finds "`low` suffices" faster but
+its rejections leave the middle tiers unknown.
 
 **Stage 3, backend selection on interval labels [A].** Every Stage-1 survivor scores every labeled stored
 brief. Metrics per arm, chosen to be robust to the censoring above:
@@ -462,7 +466,7 @@ Decided 2026-09-26 (Arian):
      judgment carries no `TW-Risk` flag.
 
 Defaults taken unless objected to: everything in §4.7; `TW-Class` stays required as the coordinator's label;
-per-dispatch cutoff 0.85; exploration ε = 0.2 in §5 Stage 2 (`table`-driven) and Stage 4.
+per-dispatch cutoff 0.85; exploration ε = 0.2 in §5 Stage 2 (one tier below the coordinator) and Stage 4.
 
 ## 8. After the yes
 
@@ -470,8 +474,8 @@ per-dispatch cutoff 0.85; exploration ε = 0.2 in §5 Stage 2 (`table`-driven) a
 (1) `routes.json` + loader + generated agents + gate rewrite + Codex effort-required revert, behind the
 existing tests; (2) hook order gate → receipt → route with the `coordinator` and `table` backends, route
 rows, ticket digest; (3) `tw.py serve` + the four backend arms (`semif4b`, `kev`, `eos`, `laya`) + stub-server tests;
-then, in §5 order, Stage 1 shadow (elimination, latency, calibration), Stage 2 `table`-driven exploration
-for interval labels, and the Stage-3 selection script over the stored bodies and those labels, which picks
+then, in §5 order, Stage 1 shadow (elimination, latency, calibration), Stage 2 exploration one tier below
+the coordinator for interval labels, and the Stage-3 selection script over the stored bodies and those labels, which picks
 `backends[0]` (provisional below ~300 two-sided rows); (4) cost rows at `outcome` and the next-dispatch race check; (5) `advisory`, exploration,
 promotion script over receipts; (6) the §4.6 patch, heal, nudge and guard, the O4b re-probe, then `active`; (7) Codex: `task_name` join
 probe, then the CLI path; (8) re-baseline the real install and lift the five-session HOLD. The Opus 5.5

@@ -1504,7 +1504,7 @@ Commit: `git commit -m "thinker-worker: docs for routes.json, tier agents, act m
 
 - `tw.py serve` and the resident scorers `semif4b` (with AnyJev L0), `kev`, `eos` and `laya` as `BACKENDS`
   entries, plus the design §5 sequence that picks `backends[0]`: Stage 1 shadow over the five-session run
-  (elimination, latency, calibration), Stage 2 `table`-driven exploration (`explore: ε` in `advisory`, risk
+  (elimination, latency, calibration), Stage 2 exploration one tier below the coordinator (`explore: ε` in `advisory`, risk
   floor applied) for two-sided tier labels, then the Stage-3 selection script scoring the stored bodies on
   censoring-robust over/under-routing rates (provisional below ~300 two-sided rows). The synthetic grids
   saturate at `low` on Opus 5.5 and are not a selection set. This needs each
