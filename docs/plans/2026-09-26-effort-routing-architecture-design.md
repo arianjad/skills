@@ -30,6 +30,11 @@ with a hold band, and per-class promotion is out of reach of the five-session ru
 | Claude: Agent has `model` per call, no effort field; effort comes only from the agent file's `effort:` | [V] | setup plan step 1: `CLAUDE_EFFORT` read `low`/`xhigh` in miner children with the parent at `high` |
 | Claude: a PreToolUse hook **can rewrite** an Agent dispatch. `updatedInput` on `subagent_type` and `model` is honored (child `meta.json` `agentType: effortmining:miner-xhigh`, `EFFORT=xhigh`; child `message.model = claude-sonnet-5`) | [V] | `2026-09-26-hook-updatedinput-probe-report.md` runs B2/C2, context-mode disabled |
 | Claude: hooks on one call run **in parallel** and when several return `updatedInput` the **last to finish wins**, whole object, no merge; listing order and settings-vs-plugin source do not matter. context-mode's Agent hook returns a full replacement on every dispatch (~350–380 ms Node start) | [V] 7/7 runs | `2026-09-26-hook-ordering-probe-report.md` O1–O6, O4/O4b |
+| Claude: hook outputs come in two kinds. **Additive** channels (`additionalContext` on SessionStart, SubagentStart, PreToolUse, PostToolUse) compose: "When several hooks return `additionalContext` for the same event, Claude receives all of the values." **Replacing** channels (`updatedInput`) do not compose (row above). So `updatedInput` on a tool is a single-writer resource | [D] + [V] | hooks doc "Add context for Claude"; ordering report |
+| Claude: SubagentStart `additionalContext` is injected into the subagent before its first prompt; a re-run does not duplicate it, and "the copy injected at launch stays in place, leaving the subagent's prompt cache intact" | [D] | hooks doc, SubagentStart |
+| Claude: "There is no way to disable an individual hook while keeping it in the configuration"; only whole-plugin `enabledPlugins` or global `disableAllHooks` | [D] | hooks doc, "Disable or remove hooks" |
+| context-mode's Agent hook uses a replacing channel for an additive job: it copies the input and appends a ~4.6 k-char routing block to `prompt` (`hooks/core/routing.mjs:907-928`, v1.0.169). It is its only `updatedInput` writer on `Agent`; its other hooks are additive, capture-only, or on other tools | [V] | `%TEMP%\tw-probe\context-mode-assessment.md` §1 |
+| Subagent ctx use, 30 d: 35/57 used a ctx tool when the parent's own prompt mentioned ctx, 24/511 (4.7 %) when only the injected block did; the Read/Bash/Grep tips fire once per session (`routing.mjs:121-144`) and reached 14 of the 59 users | [V] | assessment §2, split script this session |
 | Claude: a PreToolUse command hook that hits its `timeout` is cancelled and **does not block** the call; hooks have no user-interaction channel except `permissionDecision: "ask"` on the tool call itself | [D] | code.claude.com/docs/en/hooks, "Timeouts", JSON output table |
 | Claude: a coordinator-invoked Bash round trip costs 4.3–8.7 s wall here (other Bash hooks dominate; API ~1 s), 74 output tokens, and a cache read of the whole coordinator context; a `--brief-file` path emits the brief twice | [V] | review resolutions §2, probe transcript `ceae70b8-…` |
 | Claude: subagent transcript usage is per API call with one row per content block; the last row per `message.id` carries the true `output_tokens`; the parent's `toolUseResult.totalTokens` is the last call's context size, not a total | [V] 60 transcripts | review resolutions §13 |
@@ -54,7 +59,8 @@ with a hold band, and per-class promotion is out of reach of the five-session ru
 5. Model policy stays a strict, adjustable gate; effort policy is loose once routing is calibrated (round 2).
 6. Brief bodies may be stored privately for replay and training (round 1). Mac falls back to a local CPU
    scorer or the coordinator (round 1).
-7. One writer for Agent-call rewrites; whether context-mode stays is a separate assessment (round 4).
+7. One writer for Agent-call rewrites: the router. context-mode stays installed (Arian, 2026-09-26); its
+   Agent hook is patched out and its subagent nudge moves to an additive channel (§4.6).
 8. Simpler than what exists.
 
 ## 3. Approaches, re-ranked after the probes
@@ -195,8 +201,9 @@ Claude:
    normalized brief minus any `TW-Route:` line, full digest stored) → **act** per class mode: `shadow`
    nothing; `advisory` deny with "router picks <tier> (p); add `TW-Override: <reason>` to keep <tier>" when
    confidence ≥ cutoff and tiers differ and no override line; `active` return `updatedInput` with
-   `subagent_type` swapped to the router's tier agent (same override escape) and the context-mode block
-   appended if §4.6 resolves to "router appends it".
+   `subagent_type` swapped to the router's tier agent (same override escape) and the prompt untouched;
+   if another `updatedInput` writer on `Agent` is registered (§4.6 guard), act as `advisory` for that
+   dispatch instead.
 4. SubagentStop hook (new): parse `agent_transcript_path`, group assistant rows by `message.id`, keep the
    last row per id, sum input / cache-create / cache-read / output → `kind: cost`, joined by `tool_use_id`
    from `meta.json`. Not the parent's `totalTokens`. Whether the final row is flushed before SubagentStop
@@ -224,12 +231,39 @@ manual from turn metadata.
 
 ### 4.6 One writer on `Agent`
 
-Claude keeps the last `updatedInput` to finish and discards the rest (§1). context-mode's Agent hook writes
-one on every dispatch. So a routing hook that rewrites must be the only writer: either context-mode goes, or
-its Agent hook is disabled and the routing hook appends context-mode's block itself, or the routing hook
-wraps context-mode's script. B and C couple the router to a plugin that may be removed. Decided separately
-by the assessment prompt at `%TEMP%\tw-probe\PROMPT-context-mode-assessment.md`; until then `active` mode is
-not enabled and `shadow`/`advisory` (which return no `updatedInput`) are unaffected.
+**Rule: each tool's `updatedInput` has exactly one owner, and a hook that only adds text uses an additive
+channel.** Claude keeps the last `updatedInput` to finish and discards the rest, while `additionalContext`
+values all arrive (§1). The router's Agent rewrite changes the call (`subagent_type`), so it needs the
+replacing channel and owns it. context-mode's Agent hook only appends prose, so it belongs on SubagentStart.
+
+Decided (Arian, 2026-09-26): keep context-mode and remove its one conflicting hook. Assessment:
+`%TEMP%\tw-probe\context-mode-assessment.md`. In it, all of context-mode's steering and capture hooks together
+cost ~1.7 % of cost-weighted input over 30 days; the Agent block is 0.7 % of subagent input, the SessionStart
+block 2.7 % of main.
+
+1. **Patch:** delete the `PreToolUse` `"matcher": "Agent"` entry from the active context-mode
+   `hooks/hooks.json`. Patch the JSON rather than `routing.mjs`: the hook process no longer spawns, the
+   reapply is a parse-filter-write that tolerates upstream edits elsewhere, and context-mode's own normalizer
+   only rewrites command paths inside existing entries (`hooks/normalize-hooks.mjs:95-130`) [V]. Keep its
+   `PostToolUse` Agent capture (no input channel).
+2. **Heal:** `~/.claude/hooks/plugin-patch-heal.mjs` removes that entry from the newest context-mode version
+   dir at SessionStart and says so. That means auto-reapply, not the warn-only mode of the curl-gate check.
+   Register it in `plugin-patches.json` and the vault's `local-plugin-patches.md`. The first session after a
+   plugin update probably still carries the hook, if hooks load before SessionStart runs [I].
+3. **Nudge:** a small SubagentStart hook of its own, not part of the router, returns a one-line
+   `additionalContext` naming the ctx tools and their `ToolSearch select:` bootstrap (~60 tokens vs ~1.2 k).
+   It emits only while `enabledPlugins["context-mode@context-mode"]` is true, so removing the plugin
+   silences it. The router has no dependency on context-mode.
+4. **Guard (proposed):** before returning `updatedInput`, `active` mode reads the active context-mode
+   `hooks.json` (via `installed_plugins.json` → `installPath`). If a PreToolUse `Agent` entry is present, it
+   downgrades that dispatch to `advisory`. This turns the post-update window from a silent race into a
+   visible denial. [I] cost: one JSON read per dispatch.
+5. **Measure:** the parent-silent subagent ctx rate was 24/511 (4.7 %) with the old block. Re-run the split
+   after a week with the one-line nudge. If it falls well below that, lengthen the nudge; do not restore the
+   prompt append.
+
+Until 1-2 and the O4b re-probe pass (router wins, no `<context_window_protection>` in the child prompt),
+`active` stays off. `shadow` and `advisory` return no `updatedInput` and are unaffected.
 
 ### 4.7 What is deleted (audit-backed)
 
@@ -305,7 +339,8 @@ per arm). Per-class outputs from that run are shadow agreement rates; per-class 
    `worker.models`, or keep it out?
 4. **Ideation/review tiers and tools** (§4.2): `["high","xhigh"]` on Claude, `["medium","high","xhigh"]` on
    Codex, ideation with web tools, review read-only. Placeholders; change any.
-5. **context-mode:** keep or remove, from the separate assessment. `active` mode waits on it.
+5. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
+   The §4.6 guard (item 4) is proposed; yes/no.
 
 Defaults taken unless objected to: everything in §4.7; `TW-Class` stays required as the coordinator's label;
 per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
@@ -317,7 +352,7 @@ per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
 existing tests; (2) hook order gate → receipt → route with the `coordinator` and `table` backends, route
 rows, ticket digest; (3) `tw.py serve` + `semif4b` backend + stub-server tests; Stage-1 offline bench script
 over an effortmining grid; (4) SubagentStop cost rows and the flush check; (5) `advisory`, exploration,
-promotion script over receipts; (6) `active` after the context-mode decision; (7) Codex: `task_name` join
+promotion script over receipts; (6) the §4.6 patch, heal, nudge and guard, the O4b re-probe, then `active`; (7) Codex: `task_name` join
 probe, then the CLI path; (8) re-baseline the real install and lift the five-session HOLD. The Opus 5.5
 calibration run proceeds in parallel and feeds (2) and (3).
 
