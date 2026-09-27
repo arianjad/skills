@@ -123,8 +123,8 @@ The baseline every backend must beat; it is the `coordinator` backend below.
       "roles": {
         "worker":   {"model": "opus",   "tiers": ["low","medium","high","xhigh"], "default": "high", "tools": null},
         "leaf":     {"model": "sonnet", "tiers": ["low","medium"],                "default": "low",  "tools": null},
-        "review":   {"model": "fable",  "tiers": ["high","xhigh"],               "default": "high", "tools": ["Read","Glob","Grep"]},
-        "ideation": {"model": "fable",  "tiers": ["high","xhigh"],               "default": "high", "tools": ["Read","Glob","Grep","WebSearch","WebFetch"]}
+        "review":   {"model": "fable",  "tiers": ["high","xhigh"],               "default": "high", "tools": null},
+        "ideation": {"model": "fable",  "tiers": ["high","xhigh"],               "default": "high", "tools": null}
       }
     },
     "codex": {
@@ -255,7 +255,8 @@ block 2.7 % of main.
    `additionalContext` naming the ctx tools and their `ToolSearch select:` bootstrap (~60 tokens vs ~1.2 k).
    It emits only while `enabledPlugins["context-mode@context-mode"]` is true, so removing the plugin
    silences it. The router has no dependency on context-mode.
-4. **Guard (Arian, 2026-09-26):** before returning `updatedInput`, `active` mode reads the active context-mode
+4. **Guard (approved in principle by Arian 2026-09-26; mechanism on hold, §7 item 5, because the disk read
+   below misses the first session after an update):** before returning `updatedInput`, `active` mode reads the active context-mode
    `hooks.json` (via `installed_plugins.json` → `installPath`). If a PreToolUse `Agent` entry is present, it
    downgrades that dispatch to `advisory`. This turns the post-update window from a silent race into a
    visible denial. [I] cost: one JSON read per dispatch.
@@ -340,10 +341,18 @@ Decided 2026-09-26 (Arian):
 3. **Terra:** allowed as a Codex worker (`gpt-5.6-terra` in `worker.models`), but GPT-6 models are phasing it
    out. Nothing is built around it, and it is dropped when it stops being dispatched.
 4. **Ideation/review tiers:** default `high` on both harnesses (tentative: "idk...high?"). Ranges stay as in
-   §4.2 (Claude high–xhigh, Codex medium–xhigh). The tool lists (review read-only, ideation with web tools)
-   are placeholders Arian has not yet confirmed.
-5. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
-   The §4.6 guard (item 4) is approved.
+   §4.2 (Claude high–xhigh, Codex medium–xhigh). Tools: full access for both (`tools: null`, Arian
+   2026-09-26). A reviewer can run tests itself to falsify a claim, and a Bash-capable role is never really
+   read-only anyway. "Report findings; do not edit the files under review" is a line in the brief, not a
+   tool restriction.
+5. **§4.6 guard: on hold.** Fable's review, 2026-09-26: plugin hooks are fixed at session start
+   (code.claude.com/docs/en/plugins/loading), and the heal runs after that. So a disk-reading guard reads
+   "clean" in exactly the first session after an update. Candidate fixes: a heal-written state record
+   (Fable), or downgrade when the Agent entry is gone on disk but hooks.json's mtime is later than session
+   start (Opus). Both keep a SubagentStop tripwire that logs a lost race when a child prompt carries
+   `<context_window_protection>`. Waiting on Arian.
+6. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
+   The guard mechanism is on hold (item 5).
 
 Defaults taken unless objected to: everything in §4.7; `TW-Class` stays required as the coordinator's label;
 per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
