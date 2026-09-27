@@ -1129,6 +1129,11 @@ Wiring:
 - **`outcome`:** after appending the outcome row, when `harness == "claude"` and no `cost` row exists yet
   for this `tool_use_id`, compute `row = cost_row(home, harness, session, tool_use_id)` and append it if it
   is not `None`. It is written once, so a relabel does not duplicate it.
+- **Torn lines** (gate-1 fix side finding): concurrent hook processes can leave a receipts file whose last
+  line is partial. Add one reader `read_rows(path) -> list[dict]` that skips unparsable lines, and use it in
+  `prior_route`, `outcome`, `race_check` (and T7's `promote`). `append_receipt` writes a leading `"\n"`
+  when the file is non-empty and does not end in one, so the next row is not glued onto the torn line.
+  Test: a receipts file ending in a partial line, then `outcome` succeeds and the next appended row parses.
 
 `scripts/test_tw_settle.py`:
 
