@@ -254,7 +254,7 @@ block 2.7 % of main.
    `additionalContext` naming the ctx tools and their `ToolSearch select:` bootstrap (~60 tokens vs ~1.2 k).
    It emits only while `enabledPlugins["context-mode@context-mode"]` is true, so removing the plugin
    silences it. The router has no dependency on context-mode.
-4. **Guard (proposed):** before returning `updatedInput`, `active` mode reads the active context-mode
+4. **Guard (Arian, 2026-09-26):** before returning `updatedInput`, `active` mode reads the active context-mode
    `hooks.json` (via `installed_plugins.json` → `installPath`). If a PreToolUse `Agent` entry is present, it
    downgrades that dispatch to `advisory`. This turns the post-update window from a silent race into a
    visible denial. [I] cost: one JSON read per dispatch.
@@ -340,7 +340,7 @@ per arm). Per-class outputs from that run are shadow agreement rates; per-class 
 4. **Ideation/review tiers and tools** (§4.2): `["high","xhigh"]` on Claude, `["medium","high","xhigh"]` on
    Codex, ideation with web tools, review read-only. Placeholders; change any.
 5. **context-mode:** decided, keep; patch out its Agent hook and move the nudge to SubagentStart (§4.6).
-   The §4.6 guard (item 4) is proposed; yes/no.
+   The §4.6 guard (item 4) is approved.
 
 Defaults taken unless objected to: everything in §4.7; `TW-Class` stays required as the coordinator's label;
 per-dispatch cutoff 0.85; exploration ε = 0.2 once a class reaches advisory.
