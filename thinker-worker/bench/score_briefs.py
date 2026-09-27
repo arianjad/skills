@@ -288,7 +288,11 @@ def report():
                 kn = [r for r in br if r["dispatched_tier"]]
                 s["mean_Etier_by_dispatched"] = {str(t): round(statistics.mean(etier(r[key]) for r in br if r["dispatched_tier"] == t), 3)
                                                  for t in [*TIERS, None] if any(r["dispatched_tier"] == t for r in br)}
-                s["spearman_vs_dispatched_upper_bound"] =(round(spearman([etier(r[key]) for r in kn], [TIER_IDX[r["dispatched_tier"]] for r in kn]), 3), len(kn)) if len(kn) > 2 else None
+                s["spearman_vs_dispatched_upper_bound"] = (round(spearman([etier(r[key]) for r in kn], [TIER_IDX[r["dispatched_tier"]] for r in kn]), 3), len(kn)) if len(kn) > 2 else None
+                # length confound: rank corr with input length, and the Spearman restricted to truncated briefs (equal-length input)
+                s["spearman_Etier_vs_chars_sent"] = round(spearman([etier(r[key]) for r in br], [r["chars_sent"] for r in br]), 3)
+                kt = [r for r in kn if r["chars_full"] > r["chars_sent"]]
+                s["spearman_vs_dispatched_truncated_only"] = (round(spearman([etier(r[key]) for r in kt], [TIER_IDX[r["dispatched_tier"]] for r in kt]), 3), len(kt)) if len(kt) > 2 else None
             a[key] = s
         # option-order bias: mean prob at each displayed position over rotations x briefs (0.25 each = no bias),
         # plus mean total-variation distance between rotations in tier space and argmax flip rate across rotations
@@ -314,6 +318,8 @@ def report():
                                   "mean_abs_d_Etier_L0": round(statistics.mean(abs(etier(by_arm[x][k]["L0"]) - etier(by_arm[y][k]["L0"])) for k in ids), 3),
                                   "argmax_disagree_raw": round(statistics.mean(amax(by_arm[x][k]["raw"]) != amax(by_arm[y][k]["raw"]) for k in ids), 3)}
     out["pairwise"] = pw
+    kn = [r for r in load("briefs.jsonl") if r["dispatched_tier"]]   # null model: brief length alone
+    out["baseline_length_spearman_vs_dispatched"] = (round(spearman([r["chars"] for r in kn], [TIER_IDX[r["dispatched_tier"]] for r in kn]), 3), len(kn))
     (OUT / "report.json").write_text(json.dumps(out, indent=1))
     print(json.dumps(out, indent=1))
 
