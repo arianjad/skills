@@ -914,7 +914,7 @@ def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | Non
     for row in read_rows(receipts_path(home, harness, session)):
         if (row.get("kind") == "route" and row.get("ticket") == tick
                 and row.get("source") not in ("coordinator", "cached:coordinator")):
-            return row  # the first backend decision for this brief; coordinator picks are recomputed
+            return row  # the first bayes or exploration decision for this brief; coordinator picks are recomputed
     return None
 
 

@@ -184,7 +184,6 @@ if __name__ == "__main__":
 
     # D2 through the hook: advisory acts on a gated pick below the cutoff; a margin miss leaves the coordinator's
     # tier; the route row carries every backend, combined, gate; a re-dispatch reuses the decision (no calls)
-    from pathlib import Path
     import tempfile
     from test_tw_hook import run_main
     from test_tw_receipt import SESSION, hook, receipts
