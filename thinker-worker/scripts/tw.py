@@ -437,21 +437,51 @@ def kill_tree(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
+def check_shell() -> tuple[str | None, str | None]:
+    """(shell path, None) or (None, unknown_reason). Modeled on GitHub Actions `shell: bash`: TW_CHECK_BASH if set;
+    on Windows the bash of git's own install (never a PATH bash: WSL's bash.exe, or anything planted first);
+    elsewhere bash, else sh, from PATH."""
+    override = os.environ.get("TW_CHECK_BASH")
+    if override:
+        return (override, None) if Path(override).is_file() else (None, f"TW_CHECK_BASH not a file: {override}"[:200])
+    if os.name != "nt":
+        return shutil.which("bash") or shutil.which("sh"), None
+    try:
+        exec_path = subprocess.run(["git", "--exec-path"], capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        exec_path = ""
+    for root in Path(exec_path).parents if exec_path else ():  # <root>/mingw64/libexec/git-core
+        for rel in ("usr/bin/bash.exe", "bin/bash.exe"):
+            if (root / rel).is_file():
+                return str(root / rel), None
+    return None, "no git bash"
+
+
 def run_check(cmd: str, cwd: object, timeout: float) -> dict:
-    """Run a TW-Check once in cwd: label pass (exit 0) / fail (nonzero) / unknown (timeout, cwd missing, launch
-    error; unknown_reason says which), exit_code, seconds, tail (last 400 chars of stdout + stderr)."""
+    """Run a TW-Check once in cwd under `bash --noprofile --norc -eo pipefail -c` (check_shell): label pass (exit 0) /
+    fail (nonzero) / unknown (timeout, cwd missing, no shell, launch error; unknown_reason says which), exit_code,
+    seconds, tail (last 400 chars of stdout + stderr), shell, shell_version (first line of `--version`)."""
     start = time.monotonic()
-    res: dict = {"label": "unknown", "exit_code": None, "unknown_reason": None, "tail": ""}
+    res: dict = {"label": "unknown", "exit_code": None, "unknown_reason": None, "tail": "", "shell": None,
+                 "shell_version": None}
+    shell, why = check_shell()
+    if shell:
+        res["shell"] = shell
+        try:
+            ver = subprocess.run([shell, "--version"], capture_output=True, text=True, errors="replace", timeout=30,
+                                 stdin=subprocess.DEVNULL).stdout
+            res["shell_version"] = (ver.splitlines() or [None])[0]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     if not isinstance(cwd, str) or not Path(cwd).is_dir():
         res["unknown_reason"] = "cwd missing"
+    elif not shell:
+        res["unknown_reason"] = why or "no shell"
     else:
-        # Coordinators write checks in bash (Claude's Bash tool); on Windows shell=True is cmd.exe, which fails
-        # bash syntax (a for loop exits 1: a false fail). ponytail: first bash on PATH; WSL's bash.exe there would
-        # run the check in Linux.
-        bash = shutil.which("bash") if os.name == "nt" else None
+        flags = ["-e"] if Path(shell).stem == "sh" else ["--noprofile", "--norc", "-eo", "pipefail"]
         with tempfile.TemporaryFile() as out:  # a file, not a pipe: a surviving grandchild cannot hang the read
             try:
-                proc = subprocess.Popen([bash, "-c", cmd] if bash else cmd, shell=not bash, cwd=cwd,
+                proc = subprocess.Popen([shell, *flags, "-c", cmd], cwd=cwd,
                                         stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                         start_new_session=os.name != "nt")
             except OSError as exc:

@@ -124,13 +124,69 @@ if __name__ == "__main__":
 
         def boom(*_a, **_k):
             raise OSError("no shell")
+        os.environ["TW_CHECK_BASH"] = tw.check_shell()[0]  # resolved before Popen breaks (git lookup uses it too)
         real, tw.subprocess.Popen = tw.subprocess.Popen, boom
         try:
             assert outcome(home, "t_pass")[0] == 0
         finally:
             tw.subprocess.Popen = real
+            del os.environ["TW_CHECK_BASH"]
         c = kinds(home, "check")[-1]
         assert c["label"] == "unknown" and c["unknown_reason"].startswith("launch error") and "no shell" in \
             c["unknown_reason"], c
     print("PASS C2 outcome runs TW-Check: pass/fail/unknown (timeout, cwd missing, launch error), tail, "
           "--accepted optional, --no-check, exit 2 when nothing to record")
+
+    # C5: shell policy (GitHub Actions `shell: bash`): bash --noprofile --norc -eo pipefail -c; on Windows the bash
+    # of git's own install, never a PATH bash or cmd.exe; TW_CHECK_BASH overrides; the row records shell + version
+    with tempfile.TemporaryDirectory() as home:
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        work = Path(home) / "work"
+        work.mkdir()
+        # T1: pipefail — a failing command piped into cat is a fail, not masked by cat's exit 0
+        dispatch(home, brief(f'{PY} -c "import sys; sys.exit(3)" | cat'), str(work), "t_pipe")
+        assert outcome(home, "t_pipe")[0] == 0
+        c = kinds(home, "check")[-1]
+        assert (c["label"], c["exit_code"]) == ("fail", 3), c
+        assert c["shell"] and c["shell_version"] and c["shell_version"].startswith("GNU bash"), c
+        # T2: a bash planted first on PATH is not used on Windows
+        fake = Path(home) / "fakebin"
+        (fake / "src").mkdir(parents=True)
+        marker = Path(home) / "fake_bash_ran.txt"
+        src = fake / "src" / "bash"
+        src.write_text("#!python\nimport os, sys\nopen(os.environ['FAKE_BASH_MARKER'], 'w').write(' '.join(sys.argv))\n",
+                       encoding="utf-8")
+        if os.name == "nt":
+            from pip._vendor.distlib.scripts import ScriptMaker   # a real bash.exe (pip's script launcher)
+            maker = ScriptMaker(str(fake / "src"), str(fake))
+            maker.executable = sys.executable
+            maker.make("bash")
+            assert (fake / "bash.exe").is_file()
+        dispatch(home, brief("true"), str(work), "t_path")
+        old_path = os.environ["PATH"]
+        os.environ["FAKE_BASH_MARKER"] = str(marker)
+        os.environ["PATH"] = str(fake) + os.pathsep + old_path
+        try:
+            assert outcome(home, "t_path")[0] == 0
+            c = kinds(home, "check")[-1]
+            if os.name == "nt":
+                assert not marker.exists(), "the PATH-planted fake bash ran"
+                assert c["label"] == "pass" and c["shell"].lower().endswith(("usr\\bin\\bash.exe", "\\bin\\bash.exe")), c
+                # no git on PATH: unknown, never cmd.exe or the PATH bash
+                os.environ["PATH"] = str(fake)
+                assert outcome(home, "t_path")[0] == 0
+                c = kinds(home, "check")[-1]
+                assert (c["label"], c["unknown_reason"]) == ("unknown", "no git bash"), c
+                assert not marker.exists(), "the PATH-planted fake bash ran"
+        finally:
+            os.environ["PATH"] = old_path
+        # TW_CHECK_BASH naming a missing file: unknown, no fallback
+        os.environ["TW_CHECK_BASH"] = str(Path(home) / "nope" / "bash.exe")
+        try:
+            assert outcome(home, "t_path")[0] == 0
+        finally:
+            del os.environ["TW_CHECK_BASH"]
+        c = kinds(home, "check")[-1]
+        assert c["label"] == "unknown" and "TW_CHECK_BASH" in c["unknown_reason"], c
+    print("PASS C5 check shell: -eo pipefail (piped exit 3 fails), git's bash not a PATH bash (Windows), "
+          "no git -> unknown, TW_CHECK_BASH missing -> unknown, row shell + shell_version")
