@@ -29,9 +29,9 @@ Sources: `2026-09-28-router-ensemble-joint-routing-survey.md` (prior art, arXiv 
 
 ## 2. Decision models decide, exploration continues (D14)
 
-Today `route()` explores only when no backend answers (`source == "coordinator"`), so a deciding Kev would end
-exploration, the only source of lower-bound labels. D14 changes that: exploration applies to the final pick,
-backend or coordinator, one effort step (or, on its own ε, one model step) below it. Each backend's raw
+`route()` explores around the final pick, whichever source produced it (the combined backends or the coordinator),
+so a deciding Kev does not end exploration, the only source of lower-bound labels: one effort step below that pick
+(D14; the model step on its own ε is not built yet). Each backend's raw
 probabilities are logged on the route row whether or not the gate passes, so calibration against labels and the
 offline comparison of combination rules need no separate shadow run. Expected early behavior: Kev's probabilities
 are near-flat (p = .43–.57 on the probes), so the margin gate will mostly fall back to the coordinator until
