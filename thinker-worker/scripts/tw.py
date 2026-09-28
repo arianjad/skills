@@ -693,7 +693,8 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
     (backend wanted lower and the row is `eligible`, child ran at the coordinator tier); promote/demote/hold on
     P(diff >= -margin). "Lower" and "complied" compare the floored `target_tier` (`router_tier` on rows written
     before it existed). A dispatch whose cost row shows advisor calls measured tier + advisor, not the tier: it
-    leaves both arms and is counted in n_advisor_excluded."""
+    leaves both arms and is counted in n_advisor_excluded. A dispatch's label is its latest `check` row (pass accepted,
+    fail rejected, unknown excluded), else the coordinator's `outcome`; n_check / n_coordinator count each source."""
     rows = []
     for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
         rows += read_rows(path)  # skips torn lines
@@ -716,18 +717,21 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
 def arms(rows: list[dict], routes: list[dict], group: list[dict], margin: float, draws: int, seed: int) -> dict:
     """The promote verdict for one group of route rows (see promote)."""
     label = {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"}
+    checked = {r["tool_use_id"]: r.get("label") for r in rows if r.get("kind") == "check"}  # the latest wins
     race = {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"}  # outcome runs race_check
     advised_by = {r["tool_use_id"] for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")}
     tgt = lambda r: r.get("target_tier") or r["router_tier"]  # floored pick; rows before switch-on T3 lack it
     advised = {r["ticket"]: tgt(r) for r in routes if r.get("action") == "advise"
                and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])}
-    router, coord, n_adv = [], [], 0
+    router, coord, n_adv, src = [], [], 0, {"check": 0, "coordinator": 0}
     for r in group:
         if r.get("tool_use_id") in advised_by:
             n_adv += 1
             continue
-        ok = label.get(r.get("tool_use_id"))
-        if ok is None or race.get(r.get("tool_use_id")) is True:
+        tid = r.get("tool_use_id")  # an executed TW-Check outranks the coordinator's accept (design D6)
+        by = "check" if tid in checked else "coordinator"
+        ok = {"pass": True, "fail": False}.get(checked[tid]) if by == "check" else label.get(tid)
+        if ok is None or race.get(tid) is True:
             continue  # unlabeled, or lost race: ran at neither arm's tier
         rewrite_lower = (r.get("action") == "rewrite" and race.get(r.get("tool_use_id")) is False  # verified only
                          and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]))
@@ -735,16 +739,18 @@ def arms(rows: list[dict], routes: list[dict], group: list[dict], margin: float,
                     and advised.get(r["ticket"]) == r["coordinator_tier"])
         if rewrite_lower or complied:
             router.append(ok)
+            src[by] += 1
         elif (r.get("action") is None and not (r.get("source") or "coordinator").endswith("coordinator")
               and r.get("eligible") and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])):
             coord.append(ok)  # router wanted lower and would have acted; child ran at the coordinator tier
+            src[by] += 1
     k, n, kc, nc = sum(router), len(router), sum(coord), len(coord)
     rng = random.Random(seed)
     hit = sum(rng.betavariate(1 + k, 1 + n - k) - rng.betavariate(1 + kc, 1 + nc - kc) >= -margin
               for _ in range(draws))
     p = hit / draws
     return {"k_router": k, "n_router": n, "k_coord": kc, "n_coord": nc, "p": round(p, 3),
-            "n_advisor_excluded": n_adv, "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
+            "n_advisor_excluded": n_adv, "n_check": src["check"], "n_coordinator": src["coordinator"], "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
 
 
 def ticket(brief: str, model: str) -> tuple[str, str]:

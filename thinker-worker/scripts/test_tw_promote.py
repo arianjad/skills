@@ -94,5 +94,24 @@ if __name__ == "__main__":
         got = {(v["class"], v["model"]): (v["n_router"], v["verdict"]) for v in tw.promote(home, "claude")}
         assert got == {("C-coding", "opus"): (10, "promote"), ("C-coding", "gpt-6-sol"): (10, "demote")}, got
         assert [v["model"] for v in tw.promote(home, "claude", model="gpt-6-sol")] == ["gpt-6-sol"]
+    with tempfile.TemporaryDirectory() as tmp:           # a TW-Check label outranks the coordinator's accept
+        home = Path(tmp)
+        for tid, accepted, checks in (("k1", True, ["fail"]),             # check fail beats accept: rejected
+                                      ("k2", False, ["pass"]),            # check pass beats reject: accepted
+                                      ("k3", True, ["unknown"]),          # unknown: excluded
+                                      ("k4", True, ["fail", "pass"]),     # the latest check wins: accepted
+                                      ("k5", None, ["pass"]),             # check only: accepted
+                                      ("k6", True, []),                   # coordinator only: accepted
+                                      ("k7", True, ["pass", "unknown"])):  # latest unknown: excluded
+            tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": tid, "ticket": tid,
+                                                  "class": "C-coding", "action": "rewrite", "router_tier": "low",
+                                                  "coordinator_tier": "high"})
+            tw.append_receipt(home, "claude", S, {"kind": "race", "tool_use_id": tid, "lost": False})
+            if accepted is not None:
+                tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": tid, "accepted": accepted})
+            for lab in checks:
+                tw.append_receipt(home, "claude", S, {"kind": "check", "tool_use_id": tid, "label": lab})
+        [v] = tw.promote(home, "claude")
+        assert (v["k_router"], v["n_router"], v["n_check"], v["n_coordinator"]) == (4, 5, 4, 1), v
     print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5); lost races, "
-          "ineligible and advisor-assisted rows excluded")
+          "ineligible and advisor-assisted rows excluded; check labels outrank the coordinator's")
