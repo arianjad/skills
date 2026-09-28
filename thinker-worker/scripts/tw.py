@@ -1011,7 +1011,8 @@ def prior_route(home: Path, harness: str, session: str, tick: str, rows: list[di
 
 def ask_backends(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
     """Every name in router.backends, one thread each, within budget_s: {name: answer + ms} for a valid answer,
-    {"error": ...} otherwise ("timeout" for a thread still running at the deadline)."""
+    {"error": ..., "body_chars_sent": None} otherwise ("timeout" for a thread still running at the deadline; a
+    failed call's send is unknown, not zero)."""
     got: dict = {}
     deadline = time.monotonic() + cfg["budget_s"]
 
@@ -1023,11 +1024,11 @@ def ask_backends(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
                 raise LookupError
             out = fn({"options": cfg.get("options", {}), **cfg.get(name, {}),
                       "timeout": max(0.01, deadline - time.monotonic())}, pol, fields, brief)
-            rec = {**out} if valid_route(out, pol["tiers"]) else {"error": "invalid answer"}
+            rec = {**out} if valid_route(out, pol["tiers"]) else {"error": "invalid answer", "body_chars_sent": None}
         except LookupError:
-            rec = {"error": "unknown backend"}
+            rec = {"error": "unknown backend", "body_chars_sent": None}
         except Exception as exc:
-            rec = {"error": f"{type(exc).__name__}: {exc}"[:160]}
+            rec = {"error": f"{type(exc).__name__}: {exc}"[:160], "body_chars_sent": None}
         got[name] = {**rec, "ms": round((time.monotonic() - t0) * 1000)}
 
     threads = [threading.Thread(target=one, args=(n,), daemon=True) for n in dict.fromkeys(cfg["backends"])]
@@ -1035,7 +1036,8 @@ def ask_backends(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
         th.start()
     for th in threads:
         th.join(max(0.0, deadline - time.monotonic()))
-    return {n: got.get(n, {"error": "timeout"}) for n in dict.fromkeys(cfg["backends"])}  # a snapshot
+    return {n: got.get(n, {"error": "timeout", "body_chars_sent": None})  # a snapshot
+            for n in dict.fromkeys(cfg["backends"])}
 
 
 def combine(answers: dict, tiers: list[str], weights: dict) -> dict:
@@ -1071,9 +1073,12 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     start = time.monotonic()
     backends = ask_backends(cfg, pol, fields, brief)
     ok = {n: b for n, b in backends.items() if "tier" in b}
-    backends = {n: ({k: b[k] for k in ("tier", "probs", "ms")} if n in ok else b) for n, b in backends.items()}
-    found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator",
-             "body_chars_sent": 0}
+    backends = {n: ({k: b.get(k) for k in ("tier", "probs", "ms", "body_chars_sent")} if n in ok else b)
+                for n, b in backends.items()}
+    # what reached any backend, whatever the gate: the max sent; None if no backend's send is known, 0 with none
+    sent = max((b["body_chars_sent"] for b in backends.values() if b.get("body_chars_sent") is not None),
+               default=None if backends else 0)
+    found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator"}
     combined = mean = gate = None
     if ok:
         comb = cfg["combine"]
@@ -1085,7 +1090,6 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         gate = "pass" if top[0] - top[1] >= comb["margin"] else "margin"
         if gate == "pass":
             found = {"tier": pick, "probs": combined, "confidence": combined[pick], "source": "bayes",
-                     "body_chars_sent": max(b.get("body_chars_sent", 0) for b in ok.values()),
                      "provenance": "; ".join(f"{n}: {b['provenance']}" for n, b in ok.items()
                                              if b.get("provenance")) or None}
     # Exploration around the final pick, bayes or coordinator (design D14): eligible when eps > 0 and the role has a
@@ -1097,7 +1101,8 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     if explored:
         below = ladder[ladder.index(found["tier"]) - 1]  # one tier below the pick, on the role's own ladder
         found = {**found, "tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
-    return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
+    return {**found, "body_chars_sent": sent, "ms": round((time.monotonic() - start) * 1000), "ticket": tick,
+            "digest": digest,
             "mode": mode, "explore": explore, "eps": eps,
             "propensity": eps if explored else 1 - eps if drawn else 1.0,
             "backends": backends, "combined": combined, "combined_mean": mean, "gate": gate}

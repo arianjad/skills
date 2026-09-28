@@ -128,7 +128,17 @@ if __name__ == "__main__":
             s.close()
     for probs in ({"low": True}, {"low": float("inf")}, {"low": float("nan")}):   # the generic answer check too
         assert not tw.valid_route({"tier": "low", "probs": probs, "confidence": 1.0}, worker["tiers"]), probs
-    print("PASS backends D1: backend_jev request/renormalize/timeout, jev block resolution, malformed probabilities")
+    # review 2 F6: a margin miss still sent the body; the row says how much, per backend and overall (max)
+    s = Stub(answer({"low": 0.25, "medium": 0.25, "high": 0.25, "xhigh": 0.25}))
+    try:
+        r = tw.route(routes_with(backends=["kev"], kev={"kind": "jev", "url": s.url, "body_chars": 40}),
+                     "claude", "worker", fields, BRIEF, "high")
+        assert "B" * 40 in s.seen[-1][1]["state"] and r["gate"] == "margin", r
+        assert r["body_chars_sent"] == 40 and r["backends"]["kev"]["body_chars_sent"] == 40, r
+    finally:
+        s.close()
+    print("PASS backends D1: backend_jev request/renormalize/timeout, jev block resolution, malformed probabilities, "
+          "body sent on a margin miss")
 
     # D2: every configured backend in parallel within budget_s; weighted geometric mean (w = 1/n unless
     # router.combine.weights; zeros floored at 1e-6); acts (source "bayes") only if top1 - top2 >= margin
@@ -187,8 +197,15 @@ if __name__ == "__main__":
     assert time.monotonic() - t0 < 1.0, time.monotonic() - t0
     bk = r["backends"]
     assert (r["source"], r["tier"]) == ("bayes", "medium") and close(r["combined"], expect({"good": bk["good"]["probs"]})), r
-    assert bk["boom"]["error"] == "RuntimeError: down" and bk["slow"] == {"error": "timeout"}, bk
+    assert bk["boom"]["error"] == "RuntimeError: down" and bk["slow"] == {"error": "timeout", "body_chars_sent": None}, bk
     assert bk["bad"]["error"] == "invalid answer" and bk["nope"]["error"] == "unknown backend", bk
+    # F6: a completed send is counted per backend; a failed call's send is unknown (None), not zero
+    assert bk["good"]["body_chars_sent"] == 7 and r["body_chars_sent"] == 7, (r["body_chars_sent"], bk)
+    assert all(bk[n]["body_chars_sent"] is None for n in ("boom", "slow", "bad", "nope")), bk
+    r = tw.route(routes_with(backends=["c", "d"]), "claude", "worker", fields, BRIEF, "high")   # margin miss
+    assert r["gate"] == "margin" and r["body_chars_sent"] == 7 and r["backends"]["c"]["body_chars_sent"] == 7, r
+    r = tw.route(routes_with(backends=["boom"]), "claude", "worker", fields, BRIEF, "high")   # only a failed call
+    assert r["body_chars_sent"] is None, r
     # parallel: two 0.4 s backends both answer inside a 0.7 s budget (serially the second would miss it)
     tw.BACKENDS.update(p1=stub(A, delay=0.4), p2=stub(B, delay=0.4))
     r = tw.route(routes_with(backends=["p1", "p2"], budget_s=0.7), "claude", "worker", fields, BRIEF, "high")
