@@ -362,7 +362,8 @@ def label(disp, prow, sess_disps):
                    "text": f"{o['id']} ({o['input'].get('description')}) names {','.join(hit[:3])}; brief says: {m.group(0)!r}"})
         # ponytail: attribution (latest writer of a shared file) and "substantive" are unverified -> candidate, not fail
         flags["fix_dispatch"] = o["id"]
-    post = after_check(crow, cchecks[-1]) if cchecks else []   # the checked state may not be the delivered one
+    # the checked state may not be the delivered one; only a decisive (ok/bad) check has a verdict to void
+    post = after_check(crow, cchecks[-1]) if cchecks and cchecks[-1]["verdict"] in ("ok", "bad") else []
     flags["post_check_calls"] = len(post)
     if cchecks and cchecks[-1]["verdict"] == "bad" and not post:
         cev("child-final-check", disp["child"], cchecks[-1])
