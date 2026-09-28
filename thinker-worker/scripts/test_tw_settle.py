@@ -10,8 +10,8 @@ import tempfile
 from pathlib import Path
 
 import tw
-from test_tw_hook import pinned_routes, run_main
-from test_tw_receipt import SESSION, receipts
+from test_tw_hook import W_MIN, pinned_routes, run_main
+from test_tw_receipt import SESSION, hook, receipts
 
 
 def child(home, agent_type, block, meta_text=None, torn=False, sibling=None, advisor=False, ran=None, offered=()):
@@ -66,12 +66,8 @@ def race(agent_type, block, action="rewrite", **kw):
 
 
 def dispatch(home, tp):
-    env = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION, "tool_use_id": "toolu_new",
-           "transcript_path": tp,
-           "tool_input": {"subagent_type": "tw-worker-high",
-                          "prompt": "TW-Role: worker\nTW-Class: C-coding\nTW-Deliverable: d\nTW-Accept: a\n"
-                                    "TW-Risk: none\nx"}}
-    return run_main(["hook", "--home", home, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))
+    return hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": W_MIN}, "toolu_new",
+                transcript_path=tp)
 
 
 if __name__ == "__main__":

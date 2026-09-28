@@ -10,7 +10,7 @@ from pathlib import Path
 
 import tw
 from test_tw_hook import pinned_routes, run_main
-from test_tw_receipt import HDR, SESSION, hook, receipts
+from test_tw_receipt import HDR, REV, SESSION, hook, receipts
 
 BRIEF = "TW-Role: worker\n" + HDR + "SECRET-BODY do it"
 
@@ -173,10 +173,9 @@ if __name__ == "__main__":
         tw.load_routes = REAL_LOAD
 
     # a Codex model on native Agent is denied: it runs only through `tw.py codex` (test_tw_codex admits it there)
-    rev = "TW-Role: independent-review\nTW-Authorization: t\nTW-Scope: t\n" + HDR + "x"
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        for st, brief, m in (("tw-worker-high", BRIEF, "gpt-6-sol"), ("tw-independent-review-high", rev, "gpt-6-astra")):
+        for st, brief, m in (("tw-worker-high", BRIEF, "gpt-6-sol"), ("tw-independent-review-high", REV, "gpt-6-astra")):
             code, out = hook(home, "claude", "Agent", {"subagent_type": st, "prompt": brief, "model": m})
             o = json.loads(out)["hookSpecificOutput"]
             assert o["permissionDecision"] == "deny" and f"tw.py codex --model {m}" in o["permissionDecisionReason"], o

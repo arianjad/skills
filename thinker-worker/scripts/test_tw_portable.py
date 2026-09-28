@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 import tw
-from test_tw_hook import pinned_routes
+from test_tw_hook import W_MIN, pinned_routes
 
 TW = str(Path(__file__).with_name("tw.py"))
 
@@ -56,7 +56,7 @@ def seam2_command_runs_guard():
     session = "22222222-3333-4444-5555-666666666666"
     def envelope(subagent_type):
         return {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
-                "tool_input": {"subagent_type": subagent_type, "model": "opus", "prompt": "TW-Role: worker\nTW-Class: C-coding\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}}
+                "tool_input": {"subagent_type": subagent_type, "model": "opus", "prompt": W_MIN}}
     # A bogus first-choice interpreter must fall back to the PATH search.
     for extra in ([], ["--python-cmd", '"$USERPROFILE/no-such/python.exe"']):
         with tempfile.TemporaryDirectory() as tmp:
@@ -124,7 +124,7 @@ def seam6_no_interpreter_blocks_only_when_activated():
     session = "33333333-4444-5555-6666-777777777777"
     envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
                            "tool_input": {"subagent_type": "tw-worker-high", "model": "opus",
-                                          "prompt": "TW-Role: worker\nTW-Class: C-coding\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"}})
+                                          "prompt": W_MIN}})
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as empty_bin:
         home = Path(tmp)
         assert run_tw("install", "--portable", "--harness", "claude", "--home", str(home)).returncode == 0

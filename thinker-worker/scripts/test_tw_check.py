@@ -8,16 +8,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from test_tw_hook import pinned_routes, run_main
-from test_tw_receipt import HDR, SESSION, receipts
+from test_tw_hook import denied_kill, pinned_routes, reap, run_main
+from test_tw_receipt import HDR, SESSION, hook, receipts
 
 PY = '"' + Path(sys.executable).as_posix() + '"'
 
 
 def dispatch(home, brief, cwd, tid="toolu_x"):
-    env = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION, "tool_use_id": tid,
-           "cwd": cwd, "tool_input": {"subagent_type": "tw-worker-high", "prompt": brief}}
-    return run_main(["hook", "--home", home, "--harness", "claude", "--owner", "thinker-worker-v1"], json.dumps(env))
+    return hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": brief}, tid, cwd=cwd)
 
 
 def brief(check=None, extra=""):
@@ -199,34 +197,15 @@ if __name__ == "__main__":
     import tw
     with tempfile.TemporaryDirectory() as work:
         pidf = (Path(work) / "pid.txt").as_posix()
-        real_run, real_killpg = tw.subprocess.run, getattr(tw.os, "killpg", None)
-
-        def no_taskkill(argv, *a, **k):
-            if argv[0] == "taskkill":
-                return tw.subprocess.CompletedProcess(argv, 1, b"", b"ERROR: Access denied")
-            return real_run(argv, *a, **k)
-        tw.subprocess.run = no_taskkill
-        if real_killpg:
-            tw.os.killpg = lambda *_a: None
         t0 = time.monotonic()
         try:
-            c = tw.run_check(f"{PY} -c \"import os, time; open('{pidf}', 'w').write(str(os.getpid())); "
-                             f"time.sleep(60)\"", work, 1)
+            with denied_kill():
+                c = tw.run_check(f"{PY} -c \"import os, time; open('{pidf}', 'w').write(str(os.getpid())); "
+                                 f"time.sleep(60)\"", work, 1)
         finally:
-            tw.subprocess.run = real_run
-            if real_killpg:
-                tw.os.killpg = real_killpg
             took = time.monotonic() - t0
             if Path(pidf).exists():  # the sleeper this test launched
-                pid = int(Path(pidf).read_text())
-                if os.name == "nt":
-                    import subprocess
-                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
-                else:
-                    try:
-                        os.kill(pid, 9)
-                    except OSError:
-                        pass
+                reap(int(Path(pidf).read_text()))
         assert took < 30, took
         assert (c["label"], c["unknown_reason"], c.get("kill_failed")) == ("unknown", "timeout", True), c
     print("PASS R6 failed kill: bounded return, kill_failed true")

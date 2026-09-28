@@ -5,10 +5,13 @@ import json
 import tempfile
 from pathlib import Path
 
-from test_tw_hook import pinned_routes, run_main
+from test_tw_hook import envelope, pinned_routes, run_main
 
 SESSION = "44444444-5555-6666-7777-888888888888"
 HDR = "TW-Class: C-coding\nTW-Deliverable: patch\nTW-Accept: tests pass\nTW-Risk: destructive\n"
+AUTH = "TW-Authorization: t\nTW-Scope: t\n"   # review and ideation briefs need both
+W = "TW-Role: worker\n" + HDR + "x"
+REV = "TW-Role: independent-review\n" + AUTH + HDR + "x"
 BODY = "SECRET-BODY-TEXT do the thing"
 
 
@@ -18,9 +21,8 @@ def receipts(home, harness):
     return [json.loads(x) for x in files[0].read_text(encoding="utf-8").splitlines()]
 
 
-def hook(home, harness, tool, inp):
-    env = {"hook_event_name": "PreToolUse", "tool_name": tool, "session_id": SESSION,
-           "tool_use_id": "toolu_x", "tool_input": inp}
+def hook(home, harness, tool, inp, tool_use_id="toolu_x", **extra):
+    env = envelope(SESSION, inp, tool, tool_use_id, **extra)
     return run_main(["hook", "--home", home, "--harness", harness, "--owner", "thinker-worker-v1"], json.dumps(env))
 
 
@@ -56,7 +58,7 @@ if __name__ == "__main__":
         assert rec["kind"] == "dispatch" and rec["subagent_type"] is None, rec
     with tempfile.TemporaryDirectory() as home:          # route rows: the model each dispatch asked for
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        idea = "TW-Role: ideation\nTW-Authorization: t\nTW-Scope: t\n" + HDR + BODY
+        idea = "TW-Role: ideation\n" + AUTH + HDR + BODY
         hook(home, "claude", "Agent", {"subagent_type": "tw-ideation-high", "model": "opus", "prompt": idea})
         hook(home, "claude", "Agent", {"subagent_type": "tw-ideation-high", "prompt": idea})
         rows = receipts(home, "claude")

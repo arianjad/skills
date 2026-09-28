@@ -1,13 +1,10 @@
 """Role policy comes from routes.json: Claude tier agents tw-<role>-<tier>, Codex model + effort tiers.
 Run: python test_tw_routes.py"""
 import tw
+from test_tw_receipt import AUTH, HDR, REV, W
 
 R = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
-HDR = "TW-Class: C-coding\nTW-Deliverable: patch\nTW-Accept: tests pass\nTW-Risk: none\n"
-AUTH = "TW-Authorization: t\nTW-Scope: t\n"
-W = "TW-Role: worker\n" + HDR + "x"
 LEAF = "TW-Role: leaf\n" + HDR + "x"
-REV = "TW-Role: independent-review\n" + AUTH + HDR + "x"
 IDEA = "TW-Role: ideation\n" + AUTH + HDR + "x"
 
 
@@ -147,7 +144,7 @@ if __name__ == "__main__":
     assert tw.prior(R, "claude", "independent-review", "T1-mechanical") == "medium"    # clamped to the review ladder
     assert tw.prior(R, "codex", "ideation", "T1-mechanical") == "medium"
 
-    from test_tw_hook import pinned_routes, run_main
+    from test_tw_hook import envelope, pinned_routes, run_main
     hdr = "TW-Class: {}\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"
     with pinned_routes(), tempfile.TemporaryDirectory() as tmp:     # route CLI: prior tier, exploration pinned off
         for cls, role, want in (("C-coding", "worker", "high"), ("T1-mechanical", "worker", "low"),
@@ -222,8 +219,7 @@ if __name__ == "__main__":
             coin = lambda b: tw.coin(tw.ticket(b, "opus")[0])
             brief = next(b for b in ("TW-Role: worker\n" + hdr.format("C-coding") + str(i) for i in range(50))
                          if coin(b) >= 0.5)                   # shipped eps at t=1 is 0.5: stay unexplored
-            env = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session, "tool_use_id": "t1",
-                   "tool_input": {"subagent_type": "tw-worker-high", "prompt": brief}}
+            env = envelope(session, {"subagent_type": "tw-worker-high", "prompt": brief}, tool_use_id="t1")
             code, out = run_main(["hook", "--home", tmp, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))
             assert code == 0 and out == "", out
             rows = tw.read_rows(tw.receipts_path(Path(tmp), "claude", session))

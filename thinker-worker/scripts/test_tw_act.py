@@ -11,7 +11,7 @@ from pathlib import Path
 
 import tw
 from test_tw_hook import pinned_routes, run_main
-from test_tw_receipt import HDR, SESSION, receipts
+from test_tw_receipt import HDR, SESSION, hook, receipts
 
 BASE = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
 BASE["router"]["risk_floor"]["physics"] = "high"          # floor mechanics below, independent of the shipped value
@@ -35,9 +35,7 @@ def run(mode, pick="low", conf=0.95, explore=0.0, brief_extra="", guard=None, fl
             tw.advisory_flag(Path(home), "claude", SESSION).write_text("", encoding="utf-8")
         for s, extra in [(st, brief_extra)] + ([then] if then else []):
             brief = "TW-Role: worker\n" + HDR.replace("TW-Risk: destructive", f"TW-Risk: {risk}") + extra + "x"
-            env = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION,
-                   "tool_use_id": "toolu_x", "tool_input": {"subagent_type": s, "prompt": brief}}
-            _, out = run_main(["hook", "--home", home, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))
+            _, out = hook(home, "claude", "Agent", {"subagent_type": s, "prompt": brief})
         rows = receipts(home, "claude")
         assert rows[-2]["kind"] == "dispatch" and rows[-2]["decision"] == "admit", rows
         return (json.loads(out)["hookSpecificOutput"] if out else None), rows[-1]

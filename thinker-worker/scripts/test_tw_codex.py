@@ -8,9 +8,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+from test_tw_hook import denied_kill, reap, run_main
+from test_tw_receipt import AUTH, receipts
+
 TW = str(Path(__file__).with_name("tw.py"))
 HDR = "TW-Class: T3-moderate-reasoning\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\n"
-REV = "TW-Role: independent-review\nTW-Authorization: t\nTW-Scope: t\n" + HDR + "review the thing"
+REV = "TW-Role: independent-review\n" + AUTH + HDR + "review the thing"
 WORK = "TW-Role: worker\n" + HDR + "build the thing"
 LEAF = "TW-Role: leaf\n" + HDR + "list the things"
 FAKE = r'''
@@ -37,11 +40,6 @@ sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 
 def run(home: Path, env: dict, *extra: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, TW, *extra, "--home", str(home)], capture_output=True, text=True, env=env)
-
-
-def rows_of(home: Path) -> list:
-    return [json.loads(x) for x in next((home / ".thinker-worker" / "receipts" / "claude").glob("*.jsonl"))
-            .read_text(encoding="utf-8").splitlines()]
 
 
 if __name__ == "__main__":
@@ -91,7 +89,7 @@ if __name__ == "__main__":
         assert "model_reasoning_effort=medium" in a and a[a.index("-s") + 1] == "workspace-write", a
         assert call["stdin"].startswith("Review the assigned artifact") and call["stdin"].endswith(REV), call["stdin"][:80]
 
-        rows = rows_of(home)
+        rows = receipts(home, "claude")
         disp = [x for x in rows if x["kind"] == "dispatch"]
         cost = [x for x in rows if x["kind"] == "cost"]
         assert [x["decision"] for x in disp] == ["admit"] and disp[0]["requested_model"] == "gpt-6-astra", disp
@@ -100,7 +98,7 @@ if __name__ == "__main__":
         lab = run(home, env, "outcome", "--harness", "claude", "--session", "s1", "--tool-use-id", out["tool_use_id"],
                   "--accepted", "yes")
         assert lab.returncode == 0, lab
-        assert [(x["tool_use_id"], x["accepted"]) for x in rows_of(home) if x["kind"] == "outcome"] == \
+        assert [(x["tool_use_id"], x["accepted"]) for x in receipts(home, "claude") if x["kind"] == "outcome"] == \
             [(out["tool_use_id"], True)]
         env["FAKE_EXIT"] = "3"
         r = codex(REV)
@@ -121,12 +119,12 @@ if __name__ == "__main__":
         # TW-Check: stored on the dispatch row with --cd as its cwd; `outcome` alone runs it there
         r = codex(WORK.replace(HDR, HDR + "TW-Check: test -f call.json\n"), "high", "gpt-6-sol", "worker")
         assert r.returncode == 0, r.stderr
-        disp = [x for x in rows_of(home) if x["kind"] == "dispatch"][-1]
+        disp = [x for x in receipts(home, "claude") if x["kind"] == "dispatch"][-1]
         assert (disp["check"], disp["cwd"]) == ("test -f call.json", str(Path(tmp).resolve())), disp
         lab = run(home, env, "outcome", "--harness", "claude", "--session", "s1", "--tool-use-id",
                   json.loads(r.stdout.splitlines()[-1])["tool_use_id"])
         assert lab.returncode == 0 and "pass" in lab.stdout, lab
-        assert [x["label"] for x in rows_of(home) if x["kind"] == "check"] == ["pass"], rows_of(home)
+        assert [x["label"] for x in receipts(home, "claude") if x["kind"] == "check"] == ["pass"], receipts(home, "claude")
 
         (home / "call.json").unlink()
         for text, tier, model, role, why in (
@@ -139,7 +137,7 @@ if __name__ == "__main__":
             r = codex(text, tier, model, role)
             assert r.returncode == 2 and why in r.stderr, (why, r.stderr)
         assert not (home / "call.json").exists(), "codex ran on a denied dispatch"
-        assert [x["decision"] for x in rows_of(home) if x["kind"] == "dispatch"][-2:] == ["deny", "deny"]
+        assert [x["decision"] for x in receipts(home, "claude") if x["kind"] == "dispatch"][-2:] == ["deny", "deny"]
 
         # the router on the Codex path: no backend, explore 1.0, so a high dispatch is explored to medium
         def mode(m):
@@ -147,7 +145,7 @@ if __name__ == "__main__":
             (home / "routes.json").write_text(json.dumps(doc), encoding="utf-8")
 
         def last_route():
-            return [x for x in rows_of(home) if x["kind"] == "route"][-1]
+            return [x for x in receipts(home, "claude") if x["kind"] == "route"][-1]
         mode("shadow")
         r = codex(WORK + " shadow", "high", "gpt-6-sol", "worker")
         assert r.returncode == 0, r.stderr
@@ -182,8 +180,8 @@ if __name__ == "__main__":
         r = codex(WORK + " active, runtime ignored the tier", "high", "gpt-6-sol", "worker")
         env.pop("FAKE_EFFORT")
         bad_id = json.loads(r.stdout.splitlines()[-1])["tool_use_id"]
-        assert {x["tool_use_id"]: x["lost"] for x in rows_of(home) if x["kind"] == "race"} == \
-            {ok_id: False, bad_id: True}, rows_of(home)
+        assert {x["tool_use_id"]: x["lost"] for x in receipts(home, "claude") if x["kind"] == "race"} == \
+            {ok_id: False, bad_id: True}, receipts(home, "claude")
         for tid in (ok_id, bad_id):
             assert run(home, env, "outcome", "--harness", "claude", "--session", "s1", "--tool-use-id", tid,
                        "--accepted", "yes").returncode == 0
@@ -207,51 +205,30 @@ if __name__ == "__main__":
         took = time.monotonic() - t0
         env.pop("FAKE_SLEEP"); env.pop("TW_CODEX_TIMEOUT")
         assert took < 30 and r.returncode != 0 and "timed out" in r.stderr, (took, r)
-        cost = [x for x in rows_of(home) if x["kind"] == "cost"][-1]
+        cost = [x for x in receipts(home, "claude") if x["kind"] == "cost"][-1]
         assert cost["timed_out"] is True and cost["exit_code"] is None and cost["kill_failed"] is False, cost
 
         # R6 (Astra review finding 6): the kill fails (taskkill exit 1, as under Access denied). In process, so the
         # kill can be patched: bounded return, cost row kill_failed, and no "process tree killed" claim
         import contextlib
         import io
-        import tw
-        from test_tw_hook import run_main
-        real_run, real_killpg = tw.subprocess.run, getattr(tw.os, "killpg", None)
-
-        def no_taskkill(argv, *a, **k):
-            if argv[0] == "taskkill":
-                return tw.subprocess.CompletedProcess(argv, 1, b"", b"ERROR: Access denied")
-            return real_run(argv, *a, **k)
         saved = dict(os.environ)
         os.environ.update({k: env[k] for k in ("PATH", "FAKE_HOME", "TW_ROUTES")}, FAKE_SLEEP="60",
                           TW_CODEX_TIMEOUT="3")
         brief.write_text(REV + " wedged, kill denied", encoding="utf-8")
-        tw.subprocess.run = no_taskkill
-        if real_killpg:
-            tw.os.killpg = lambda *_a: None
         err = io.StringIO()
         t0 = time.monotonic()
         try:
-            with contextlib.redirect_stderr(err):
+            with denied_kill(), contextlib.redirect_stderr(err):
                 code, _ = run_main(["codex", "--home", str(home), "--session", "s1", "--role", "independent-review",
                                     "--tier", "high", "--model", "gpt-6-astra", "--brief-file", str(brief),
                                     "--cd", tmp])
         finally:
             took = time.monotonic() - t0
-            tw.subprocess.run = real_run
-            if real_killpg:
-                tw.os.killpg = real_killpg
             os.environ.clear()
             os.environ.update(saved)
-            pid = int((home / "codex.pid").read_text())  # the fake codex this test launched
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
-            else:
-                try:
-                    os.kill(pid, 9)
-                except OSError:
-                    pass
-        cost = [x for x in rows_of(home) if x["kind"] == "cost"][-1]
+            reap(int((home / "codex.pid").read_text()))  # the fake codex this test launched
+        cost = [x for x in receipts(home, "claude") if x["kind"] == "cost"][-1]
         assert took < 30 and code != 0, (took, code)
         assert cost["timed_out"] is True and cost["kill_failed"] is True, cost
         assert "timed out" in err.getvalue() and "process tree killed" not in err.getvalue(), err.getvalue()

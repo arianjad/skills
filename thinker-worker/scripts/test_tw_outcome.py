@@ -57,10 +57,8 @@ if __name__ == "__main__":
         work = Path(home) / "work"
         work.mkdir()
         marker = work / "marker.txt"
-        env = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION, "tool_use_id": "t_deny",
-               "cwd": str(work), "tool_input": {"subagent_type": "tw-worker-high", "model": "sonnet",
-                                                "prompt": brief("echo review-marker > marker.txt")}}
-        run_main(["hook", "--home", home, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "model": "sonnet",
+                                       "prompt": brief("echo review-marker > marker.txt")}, "t_deny", cwd=str(work))
         assert [r["decision"] for r in receipts(home, "claude") if r["kind"] == "dispatch"] == ["deny"]
         # advised: advisory mode, explore 1.0, no backends -> a high dispatch is advised to medium (denied)
         doc = json.loads(Path(os.environ["TW_ROUTES"]).read_text(encoding="utf-8"))
