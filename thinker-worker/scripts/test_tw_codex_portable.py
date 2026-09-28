@@ -2,14 +2,13 @@
 PowerShell `commandWindows`. Round trip plus execution of both forms. Run: python test_tw_codex_portable.py"""
 import base64
 import json
-import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from test_tw_hook import pinned_routes
+from test_tw_hook import hook_env, pinned_routes
 
 TW = str(Path(__file__).with_name("tw.py"))
 SESSION = "44444444-5555-6666-7777-888888888888"
@@ -30,10 +29,6 @@ def envelope(model):
     return json.dumps({"hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "session_id": SESSION,
                        "tool_input": {"message": "TW-Role: worker\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx", "model": model,
                                       "reasoning_effort": "high", "fork_turns": "none"}})
-
-
-def env_for(home, **extra):
-    return {**os.environ, "HOME": home.as_posix(), "USERPROFILE": str(home), **extra}
 
 
 def check_guard(run, label):
@@ -73,17 +68,17 @@ if __name__ == "__main__":
 
         # Mac/Linux form under sh-compatible bash; Windows form exactly as Codex runs it (cmd /C).
         check_guard(lambda inp: subprocess.run([bash, "-c", h["command"]], input=inp, capture_output=True,
-                                               text=True, env=env_for(home, OS="")), "posix")
+                                               text=True, env=hook_env(home, False)), "posix")
         check_guard(lambda inp: subprocess.run(["cmd", "/C", h["commandWindows"]], input=inp, capture_output=True,
-                                               text=True, env=env_for(home)), "windows")
+                                               text=True, env=hook_env(home, True)), "windows")
 
         # No interpreter with an activated session: both forms block with exit 2; inactive: exit 0.
         runs = {"posix": lambda: subprocess.run([bash, "-c", h["command"]], input=envelope("gpt-6-sol"),
                                                 capture_output=True, text=True,
-                                                env=env_for(home, OS="", PATH=empty_bin)),
+                                                env=hook_env(home, False, PATH=empty_bin)),
                 "windows": lambda: subprocess.run(powershell_argv(h["commandWindows"], powershell),
                                                   input=envelope("gpt-6-sol"), capture_output=True, text=True,
-                                                  env=env_for(home, PATH=empty_bin))}
+                                                  env=hook_env(home, True, PATH=empty_bin))}
         for label, run in runs.items():
             r = run()
             assert r.returncode == 2 and "could not run" in r.stderr, (label, r.returncode, r.stderr)

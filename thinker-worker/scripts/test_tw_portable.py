@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from test_tw_hook import W_MIN, pinned_routes
+from test_tw_hook import W_MIN, hook_env, pinned_routes
 
 TW = str(Path(__file__).with_name("tw.py"))
 
@@ -40,12 +40,10 @@ def seam1_no_absolute_home_paths():
 
 
 def run_hook_command(cmd, home, envelope, windows_branch):
-    import os
     import shutil
     bash = shutil.which("bash")
     assert bash and "system32" not in bash.lower(), bash  # WSL bash would not see this HOME
-    env = {**os.environ, "HOME": home.as_posix(), "USERPROFILE": str(home),
-           "OS": "Windows_NT" if windows_branch else ""}
+    env = hook_env(home, windows_branch)
     r = subprocess.run([bash, "-c", cmd], input=json.dumps(envelope), capture_output=True, text=True, env=env)
     assert r.returncode == 0, (r.returncode, r.stderr)
     return r.stdout.strip()
@@ -117,7 +115,6 @@ def seam5_second_machine_adopts_synced_entry():
 
 
 def seam6_no_interpreter_blocks_only_when_activated():
-    import os
     import shutil
     bash = shutil.which("bash")
     session = "33333333-4444-5555-6666-777777777777"
@@ -129,8 +126,7 @@ def seam6_no_interpreter_blocks_only_when_activated():
         assert run_tw("install", "--portable", "--harness", "claude", "--home", str(home)).returncode == 0
         cmd = claude_command(home)["command"]
         for windows_branch in (True, False):
-            env = {**os.environ, "PATH": empty_bin, "HOME": home.as_posix(), "USERPROFILE": str(home),
-                   "OS": "Windows_NT" if windows_branch else ""}
+            env = hook_env(home, windows_branch, PATH=empty_bin)
             def run():
                 return subprocess.run([bash, "-c", cmd], input=envelope, capture_output=True, text=True, env=env)
             r = run()  # no activation state: inactive sessions are unaffected

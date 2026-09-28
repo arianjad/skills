@@ -47,6 +47,15 @@ def pinned_routes():
             os.environ.pop("TW_ROUTES") if old is None else os.environ.__setitem__("TW_ROUTES", old)
 
 
+def hook_env(home, windows, **extra):
+    """Env for running a portable hook command under bash with `home` as the user's home. On Windows the
+    $HOME branch (OS="") runs with a Windows Python, so Git Bash must convert its /tmp/... home path:
+    MSYS_NO_PATHCONV is dropped."""
+    env = {k: v for k, v in os.environ.items() if k != "MSYS_NO_PATHCONV"}
+    return {**env, "HOME": home.as_posix(), "USERPROFILE": str(home),
+            "OS": "Windows_NT" if windows else "", **extra}
+
+
 def envelope(session, inp, tool="Agent", tool_use_id=None, **extra):
     """A PreToolUse hook envelope; tool_use_id and extra keys (cwd, transcript_path) only when given."""
     env = {"hook_event_name": "PreToolUse", "tool_name": tool, "session_id": session, "tool_input": inp, **extra}
