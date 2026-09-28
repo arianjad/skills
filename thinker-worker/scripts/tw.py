@@ -39,6 +39,11 @@ ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")
 # Routing header: labeled input for the routing classifier. Classes are effortmining's vocabulary.
 HEADER_KEYS = ("TW-Class", "TW-Deliverable", "TW-Accept", "TW-Risk")
 CHECK_KEY = "TW-Check"  # optional: a shell command `tw.py outcome` runs in the dispatch cwd for a pass/fail label
+OUTPUT_KEY = "TW-Output"  # optional: the one file path the child must write (the guard checks its basename)
+# Claude Code refuses a native subagent's Write to these basenames ("Subagents should return findings as text");
+# probed 2026-09-28 on 15 real names, matches anthropics/claude-code#44657. Undocumented: the agent text's
+# verbatim-return fallback covers a pattern change. Codex children are unaffected.
+REFUSED_OUTPUT = re.compile(r"(?i)(report|summary|findings|analysis).*\.md")
 TASK_CLASSES = {"T1-mechanical", "T2-simple-transform", "T3-moderate-reasoning",
                 "T4-hard-reasoning", "R-research", "C-coding"}
 RISKS = {"destructive", "external", "physics"}
@@ -298,11 +303,12 @@ def review_details(brief: str) -> bool:
 
 
 def header_fields(brief: str) -> tuple[dict | None, str]:
-    """Return ({key: value}, "") or (None, problem). Keys may sit anywhere in lines 2-12; TW-Check is optional."""
+    """Return ({key: value}, "") or (None, problem). Keys may sit anywhere in lines 2-12; TW-Check and TW-Output are
+    optional."""
     found: dict[str, str] = {}
     for line in brief.split("\n")[1:12]:
         key, sep, value = line.partition(": ")
-        if sep and key in HEADER_KEYS + (CHECK_KEY,):
+        if sep and key in HEADER_KEYS + (CHECK_KEY, OUTPUT_KEY):
             if key in found:
                 return None, f"routing header repeats {key}"
             found[key] = value.strip()
@@ -316,6 +322,8 @@ def header_fields(brief: str) -> tuple[dict | None, str]:
         return None, "routing header TW-Risk must be none or distinct values from " + ", ".join(sorted(RISKS))
     if CHECK_KEY in found and not found[CHECK_KEY]:
         return None, f"routing header {CHECK_KEY} is empty; drop the line or name a command"
+    if OUTPUT_KEY in found and not found[OUTPUT_KEY]:
+        return None, f"routing header {OUTPUT_KEY} is empty; drop the line or name the file"
     long = [k for k in found if len(found[k]) > VALUE_MAX]
     if long:
         return None, f"routing header value over {VALUE_MAX} characters: " + ", ".join(long)
@@ -390,6 +398,11 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
                             role, model, fields=fields)
         if inp.get("fork_context") or inp.get("fork"):
             return Decision(False, "Claude inherited-model fork is outside fresh dispatch", role, model, fields=fields)
+        output = (fields or {}).get(OUTPUT_KEY)
+        if envelope.get("tool_name") != "codex" and output and REFUSED_OUTPUT.fullmatch(re.split(r"[\\/]", output)[-1]):
+            return Decision(False, f"{OUTPUT_KEY} {output}: Claude Code refuses a native subagent's Write to a "
+                            "report/summary/findings/analysis*.md basename; name it for its task, e.g. worker-notes.md",
+                            role, model, fields=fields)
     return Decision(True, "admitted-request-only", role, model, tier, fields)
 
 
@@ -1515,6 +1528,12 @@ AGENT_TEXT = {  # role -> (description, body); bodies carried over from the reti
 }
 
 
+# Native Claude children only: Claude Code may refuse a subagent's Write of a report-like file (REFUSED_OUTPUT);
+# if it does, the artifact must survive whole in the final message, not as a summary.
+NATIVE_WRITE_FALLBACK = (" If a Write of your deliverable file is refused, return the complete artifact verbatim in "
+                         "your final message, not a summary, and name the path it was meant for.")
+
+
 def agent_files(routes: dict) -> dict[str, bytes]:
     out = {}
     for role, pol in routes["harnesses"]["claude"]["roles"].items():
@@ -1525,7 +1544,7 @@ def agent_files(routes: dict) -> dict[str, bytes]:
                     f"model: {pol['models'][0]}", f"effort: {tier}"]
             if pol.get("tools"):
                 head.append("tools: " + ", ".join(pol["tools"]))
-            out[f"{name}.md"] = ("\n".join(head + ["---", "", body, ""])).encode("utf-8")
+            out[f"{name}.md"] = ("\n".join(head + ["---", "", body + NATIVE_WRITE_FALLBACK, ""])).encode("utf-8")
     return out
 
 

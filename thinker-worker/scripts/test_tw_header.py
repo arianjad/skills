@@ -31,7 +31,27 @@ CASES = [
     ("review without header", "TW-Role: independent-review\n" + AUTH + "task", False),
 ]
 
+# TW-Output: <path>, optional. Claude Code refuses a native subagent's Write to some basenames ("Subagents should
+# return findings as text"); expected verdicts are the 2026-09-28 probe of real Writes by a native child (nsdpv
+# session handoff 2026-09-28-tw-report-block-fix.md), not the regex. The Codex pipeline's children are unaffected.
+REFUSED = ["REPORT.md", "report.md", "RePoRt.MD", "reports.md", "reporting.md", "summary.md", "summary-1.md",
+           "findings.md", "analysis.md"]
+WRITTEN = ["x-report.md", "report.txt", "report.md.txt", "worker-notes.md", "PROVENANCE-SPOTCHECK.md",
+           "REPORT.md/worker-notes.md"]
+out = lambda path: "TW-Role: worker\n" + HDR + f"TW-Output: C:/t/{path}\ntask"
+CASES += [(f"TW-Output {p} (refused by Claude Code)", out(p), False) for p in REFUSED]
+CASES += [(f"TW-Output {p} (written)", out(p), True) for p in WRITTEN]
+CASES += [("TW-Output backslash path", out("x").replace("C:/t/x", "C:\\t\\findings.md"), False),
+          ("empty TW-Output", out("x").replace("C:/t/x", " "), False),
+          ("deliverable prose naming report.md, no TW-Output",
+           "TW-Role: worker\n" + HDR.replace("patch to f.py", "a table summarizing /t/report.md") + "task", True)]
+
 if __name__ == "__main__":
+    ok, reason = verdict(out("REPORT.md"))
+    assert not ok and "worker-notes.md" in reason and "TW-Output" in reason, reason     # the denial says how to fix it
+    pipeline = {"tool_name": "codex", "tool_input": {"subagent_type": "tw-worker-high", "prompt": out("REPORT.md"),
+                                                     "model": "gpt-6-sol"}}
+    assert tw.decide("claude", pipeline, R)[0], "a tw.py codex child can write REPORT.md: stays admitted"
     bad = []
     for name, brief, want in CASES:
         st = "tw-independent-review-high" if "independent-review" in brief else "tw-worker-high"
