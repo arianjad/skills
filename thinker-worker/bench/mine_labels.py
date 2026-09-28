@@ -164,8 +164,11 @@ def after_check(rows, c):
     return mutating(rows, c["line"], float("inf"), c["id"], edits=False)
 
 
-# an output redirect to anything but an fd dup (`2>&1`) or the null device; one match per `>`/`>>` run
-FILE_REDIRECT = re.compile(r">>?(?!>)(?!\s*(?:&\d|/dev/null\b|nul\b|\$null\b))", re.I)
+# an output redirect to anything but an fd dup (`2>&1`) or the null device as a whole token (`nul-x.py` is a file,
+# Astra round-4 F1); one match per `>`/`>>` run
+FILE_REDIRECT = re.compile(r">>?(?!>)(?!\s*(?:&\d|(?:/dev/null|nul|\$null)(?=$|[\s;&|])))", re.I)
+# shell expansions that run code wherever they sit, even inside a filter's arguments: $(...), `...`, <(...), >(...)
+CODE_EXPANSION = re.compile(r"\$\(|`|[<>]\(")
 # read-only filters a check may pipe into; `cat` only bare, `sort` without -o, `uniq` without an output file
 PIPE_FILTER = re.compile(r"(?:tail|head|grep|findstr|wc)(?:\s.*)?|cat|sort(?!.*\s(?:-[a-z]*o|--output))(?:\s.*)?"
                          r"|uniq(?:\s+-\S+)*", re.I | re.S)
@@ -173,11 +176,11 @@ PIPE_FILTER = re.compile(r"(?:tail|head|grep|findstr|wc)(?:\s.*)?|cat|sort(?!.*\
 
 def compound(cmd):
     """The call may have left a state other than the one its check tested (Astra re-review F1a, round-3 R1): chained
-    statements (`;`, `&&`, `||`, newline), an output redirect anywhere other than `2>&1` or to the null device, or a
-    pipe stage after the first that is not a PIPE_FILTER (`| tee f`, `| xargs rm`).
+    statements (`;`, `&&`, `||`, newline), code-running expansion (`$(`, backtick, `<(`, `>(`: round-4 F1), an output
+    redirect anywhere other than `2>&1` or to the null device, or a pipe stage after the first that is not a PIPE_FILTER (`| tee f`, `| xargs rm`).
     ponytail: no shell parsing; quoted `;`/`>`/`|` also count (conservative, D15), so `grep "a|b"` reads as compound."""
     cmd = cmd.strip()
-    return (bool(re.search(r"&&|\|\||;|\n", cmd)) or bool(FILE_REDIRECT.search(cmd))
+    return (bool(re.search(r"&&|\|\||;|\n", cmd)) or bool(FILE_REDIRECT.search(cmd)) or bool(CODE_EXPANSION.search(cmd))
             or not all(PIPE_FILTER.fullmatch(s.strip()) for s in cmd.split("|")[1:]))
 
 
@@ -539,7 +542,17 @@ def selftest():
          ("unknown", "parent-possible-rescue")),
         ("F1b control read-only first", W, [_a(_tu("r1", "Read", file_path="module_impl.py")), _u(_tr("r1", "x")),
                                             _a(_tu("g1", "Grep", pattern="return")), _u(_tr("g1", "x"))] + PCHK,
-         ("pass", "parent-post-check"))]
+         ("pass", "parent-post-check")),
+        # Astra round-4 F1: code-running shell expansion inside a filter stage; a null-device prefix is not the null device
+        ("F1 head $(...)", W + bash("kc", T + " | head $(python -c \"(__import__('time').sleep(1), "
+                                            "open('module_impl.py','w').write('broken'))\")"), (), ("unknown", "compound-check")),
+        ("F1 grep backtick", W + bash("kd", T + " | grep `python fix.py`"), (), ("unknown", "compound-check")),
+        ("F1 grep <(...)", W + bash("ke", T + " | grep -f <(python fix.py)"), (), ("unknown", "compound-check")),
+        ("F1 2>> nul-module_impl.py", [_a(_tu("w2", "Write", file_path="nul-module_impl.py", content="return 0")),
+                                        _u(_tr("w2", "ok"))]
+         + bash("kf", "python -m pytest tests/test_nul_module_impl.py 2>> nul-module_impl.py"), (), ("unknown", "compound-check")),
+        ("F1 control > /dev/null", W + bash("kg", T + " > /dev/null"), (), ("pass", "child-final-check")),
+        ("F1 control 2>NUL", W + bash("kh", T + " 2>NUL"), (), ("pass", "child-final-check"))]
     bad = [(name, got(_label(c, p)), want) for name, c, p, want in cases if got(_label(c, p)) != want]
     assert not bad, "\n".join(f"FAIL {n}: got {g}, want {w}" for n, g, w in bad)
     print("selftest ok")
