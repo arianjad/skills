@@ -38,11 +38,16 @@ CASES = [
     ("old hand-written agent refused", claude(W, "thinker-worker-opus", "opus").admitted, False),
     ("miners are not a route", claude(W, "effortmining:miner-high", "opus").admitted, False),
     ("review tier agent", claude(REV, "tw-independent-review-high").admitted, True),
-    ("review below its floor", claude(REV, "tw-independent-review-medium").admitted, False),
+    ("review medium allowed", claude(REV, "tw-independent-review-medium").admitted, True),
+    ("review low below floor", claude(REV, "tw-independent-review-low").admitted, False),
+    ("review on astra", claude(REV, "tw-independent-review-high", "gpt-6-astra").admitted, True),
+    ("ideation on astra medium", claude(IDEA, "tw-ideation-medium", "gpt-6-astra").admitted, True),
+    ("worker on astra refused", claude(W, "tw-worker-high", "gpt-6-astra").admitted, False),
+    ("review default is astra", R["router"]["defaults"]["independent-review"], "gpt-6-astra"),
     ("ideation needs auth/scope", claude(IDEA.replace(AUTH, ""), "tw-ideation-high").admitted, False),
     ("ideation on opus per call", claude(IDEA, "tw-ideation-high", "opus").admitted, True),
     ("ideation on sonnet refused", claude(IDEA, "tw-ideation-xhigh", "sonnet").admitted, False),
-    ("review stays fable-only", claude(REV, "tw-independent-review-high", "opus").admitted, False),
+    ("review refuses opus", claude(REV, "tw-independent-review-high", "opus").admitted, False),
     ("ideation agent file stays fable", R["harnesses"]["claude"]["roles"]["ideation"]["models"][0], "fable"),
     ("denial names model and role", claude(W, "tw-worker-high", "sonnet").reason, "model sonnet is not allowed for worker"),
     ("fork refused", claude(W, "tw-worker-high", fork=True).admitted, False),
@@ -119,14 +124,14 @@ if __name__ == "__main__":
                                      "R-research": "medium", "C-coding": "high"}, R["router"]["priors"]
     assert not [(h, r) for h in R["harnesses"] for r, pol in R["harnesses"][h]["roles"].items() if "default" in pol]
     assert tw.prior(R, "claude", "worker", "C-coding") == "high"
-    assert tw.prior(R, "claude", "independent-review", "T1-mechanical") == "high"      # clamped to the review ladder
+    assert tw.prior(R, "claude", "independent-review", "T1-mechanical") == "medium"    # clamped to the review ladder
     assert tw.prior(R, "codex", "ideation", "T1-mechanical") == "medium"
 
     from test_tw_hook import pinned_routes, run_main
     hdr = "TW-Class: {}\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"
     with pinned_routes(), tempfile.TemporaryDirectory() as tmp:     # route CLI: prior tier, exploration pinned off
         for cls, role, want in (("C-coding", "worker", "high"), ("T1-mechanical", "worker", "low"),
-                                ("T1-mechanical", "independent-review", "high")):
+                                ("T1-mechanical", "independent-review", "medium")):
             f = Path(tmp) / "b.md"
             f.write_text(f"TW-Role: {role}\n" + hdr.format(cls), encoding="utf-8")
             code, out = run_main(["route", "--harness", "claude", "--role", role, "--brief-file", str(f)])

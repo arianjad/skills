@@ -16,7 +16,9 @@ import platform
 import random
 import re
 import shlex
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -57,7 +59,8 @@ def agent_name(role: str, tier: str) -> str:
 
 
 MODES = ("shadow", "advisory", "active")
-OVERRIDABLE = {"priors", "classes", "risk_floor"}  # the only router keys the user override file may set
+OVERRIDABLE = {"priors", "classes", "risk_floor", "defaults"}  # the only router keys the user override file may set
+ASTRA = "gpt-6-astra"  # Claude-coordinated review/ideation on Astra runs through `codex exec` (tw.py astra)
 
 
 def load_routes(path: Path | None = None) -> dict:
@@ -86,10 +89,11 @@ def merge_override(doc: dict, ov_path: Path) -> dict:
     if (not isinstance(ov, dict) or set(ov) != {"router"} or not isinstance(rt, dict) or not set(rt) <= OVERRIDABLE
             or not all(isinstance(v, dict) for v in rt.values())
             or not all(isinstance(v, dict) for v in rt.get("classes", {}).values())):
-        raise Conflict("may set only router.priors, router.classes and router.risk_floor, each an object")
+        raise Conflict("may set only router.priors, router.classes, router.risk_floor and router.defaults, each an object")
     merged = json.loads(json.dumps(doc))
     mr = merged["router"]
     mr["priors"].update(rt.get("priors", {}))
+    mr.setdefault("defaults", {}).update(rt.get("defaults", {}))
     mr["risk_floor"].update(rt.get("risk_floor", {}))
     star = {**mr["classes"]["*"], **rt.get("classes", {}).get("*", {})}
     for cls, entry in rt.get("classes", {}).items():
@@ -125,6 +129,11 @@ def check_routes(doc: object, path: Path) -> None:
             or not isinstance(priors, dict) or "*" not in priors or not set(priors) <= TASK_CLASSES | {"*"}
             or any(v not in TIERS for v in priors.values())):
         raise Conflict("routes.json: bad router block")
+    defaults = rt.get("defaults", {})  # per-role default model the coordinator dispatches; guidance, not enforced
+    claude_roles = doc["harnesses"]["claude"]["roles"]
+    if not isinstance(defaults, dict) or any(r not in claude_roles or m not in claude_roles[r]["models"]
+                                             for r, m in defaults.items()):
+        raise Conflict("routes.json: router.defaults must map a Claude role to one of its models")
 
 
 def prior(routes: dict, harness: str, role: str, cls: str | None) -> str:
@@ -138,7 +147,8 @@ def priors_line(routes: dict) -> str:
     source = (f"override ignored: {routes['_override_error']}" if routes.get("_override_error")
               else "installed routes.json" + (f" + {routes['_override']}" if routes.get("_override") else ""))
     return (f"Tier priors ({source}): " + ", ".join(f"{k}={v}" for k, v in rt["priors"].items())
-            + "; risk floors: " + ", ".join(f"{k}={v}" for k, v in rt["risk_floor"].items()))
+            + "; risk floors: " + ", ".join(f"{k}={v}" for k, v in rt["risk_floor"].items())
+            + "; default models: " + (", ".join(f"{k}={v}" for k, v in rt.get("defaults", {}).items()) or "agent files"))
 
 
 def now() -> str:
@@ -415,6 +425,69 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
         if row is not None:
             append_receipt(home, harness, session, row)
     print(f"Recorded {'accepted' if accepted else 'rejected'} for {tool_use_id}.")
+
+
+CODEX_USAGE = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
+
+
+def codex_cmd(exe: str, role: str, tier: str, cd: Path, out: Path) -> list[str]:
+    # Same reach as a Claude reviewer/ideator: may write (temp files, scripts) and search the web.
+    return [exe, "--search", "exec", "-m", ASTRA, "-c", f"model_reasoning_effort={tier}", "-s", "workspace-write",
+            "--json", "--skip-git-repo-check", "-C", str(cd), "-o", str(out), "-"]
+
+
+def codex_evidence(home: Path, events: str) -> dict:
+    """Thread id and summed usage from `codex exec --json`; effective model/effort from the rollout's turn_context."""
+    ev: dict = {"thread_id": None, "model": None, "effort": None, **{k: 0 for k in CODEX_USAGE}}
+    for line in events.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if row.get("type") == "thread.started":
+            ev["thread_id"] = row.get("thread_id")
+        elif row.get("type") == "turn.completed":
+            for k in CODEX_USAGE:
+                ev[k] += (row.get("usage") or {}).get(k) or 0
+    if ev["thread_id"]:
+        rollout = next((home / ".codex" / "sessions").rglob(f"rollout-*{ev['thread_id']}.jsonl"), None)
+        for row in read_rows(rollout) if rollout else []:
+            if row.get("type") == "turn_context":  # last one wins
+                ev["model"], ev["effort"] = row["payload"].get("model"), row["payload"].get("effort")
+    return ev
+
+
+def astra(home: Path, session: str, role: str, tier: str, brief_file: Path, cd: Path, out: Path | None) -> int:
+    """Claude coordinator -> Astra review/ideation via `codex exec`. Same gate as a native dispatch (decide() on a
+    synthetic Agent call with model gpt-6-astra); receipts get a dispatch row and a cost row with effective model/effort."""
+    if activation(home, "claude", session) is None:
+        raise Conflict(f"claude session {session} is not activated for thinker-worker")
+    brief = brief_file.read_text(encoding="utf-8")
+    tool_use_id = f"astra-{os.urandom(6).hex()}"
+    env = {"tool_name": "astra", "tool_use_id": tool_use_id,
+           "tool_input": {"subagent_type": agent_name(role, tier), "model": ASTRA, "prompt": brief}}
+    d = decide("claude", env, load_routes())
+    receipt(home, "claude", session, env, d)
+    if not d.admitted:
+        raise Conflict(d.reason)
+    exe = shutil.which("codex")
+    if not exe:
+        raise Conflict("codex CLI not found on PATH")
+    out = out or state_root(home) / "astra" / f"{tool_use_id}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(codex_cmd(exe, role, tier, cd, out), input=(AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
+                          capture_output=True)
+    ev = codex_evidence(home, proc.stdout.decode("utf-8", errors="replace"))
+    append_receipt(home, "claude", session, {"kind": "cost", "at": now(), "harness": "claude", "session_id": session,
+                                             "tool_use_id": tool_use_id, "via": "codex-exec", "exit_code": proc.returncode,
+                                             "requested_effort": tier, **ev})
+    print(json.dumps({"tool_use_id": tool_use_id, "report": str(out), "exit_code": proc.returncode,
+                      "effective_model": ev["model"], "effective_effort": ev["effort"], "thread_id": ev["thread_id"]}))
+    if proc.returncode:
+        print(proc.stderr.decode("utf-8", errors="replace")[-2000:], file=sys.stderr)
+    return proc.returncode
 
 
 COST_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
@@ -1380,9 +1453,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "route", "promote"):
+                 "route", "promote", "astra"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
+        if name == "astra":  # Claude harness only; Codex dispatches Astra natively
+            p.add_argument("--session", required=True)
+            p.add_argument("--role", choices=("independent-review", "ideation"), required=True)
+            p.add_argument("--tier", choices=TIERS, required=True)
+            p.add_argument("--brief-file", type=Path, required=True)
+            p.add_argument("--cd", type=Path, default=Path.cwd(), help="Astra's working root (default: cwd)")
+            p.add_argument("--out", type=Path, help="report path (default ~/.thinker-worker/astra/<tool_use_id>.md)")
         if name in {"activate", "deactivate", "status", "hook", "outcome", "route", "promote"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
         if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
@@ -1440,6 +1520,9 @@ def main() -> int:
                     args.cause)
         elif args.command == "promote":
             print(json.dumps(promote(home, args.harness, args.cls)))
+        elif args.command == "astra":
+            return astra(home, session_value(args.session), args.role, args.tier, args.brief_file,
+                         args.cd.expanduser().resolve(), args.out.expanduser().resolve() if args.out else None)
         elif args.command == "route":
             routes = load_routes()
             brief = args.brief_file.read_text(encoding="utf-8")

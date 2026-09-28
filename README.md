@@ -40,14 +40,14 @@ npx skills@latest add arianjad/skills/read-it-fully
 
 ### thinker-worker
 
-Coordinator/worker mode for substantial tasks: a strong model owns framing, planning, adversarial review and acceptance; bounded workers do the execution. Built for Codex (Astra/Sol/Luna) and ported to Claude Code (Opus workers, Sonnet leaves, Fable independent review and ideation).
+Coordinator/worker mode for substantial tasks: a strong model owns framing, planning, adversarial review and acceptance; bounded workers do the execution. Built for Codex (Astra/Sol/Luna) and ported to Claude Code (Opus workers, Sonnet leaves; independent review and ideation on Astra via `tw.py astra`, or on Fable/Opus natively, default per role in `router.defaults`).
 
 A session-scoped PreToolUse guard (`scripts/tw.py hook`) checks every fresh agent dispatch in an activated session: the brief starts with `TW-Role: worker|leaf|independent-review|ideation` and carries a routing header (`TW-Class`, `TW-Deliverable`, `TW-Accept`, `TW-Risk`). The role policy in `routes.json` sets the allowed models and effort tiers: a Claude dispatch names a generated `tw-<role>-<tier>` agent, a Codex dispatch an allowed model and `reasoning_effort`. Any guard error before admission denies the dispatch. After admission a router logs a tier decision to the session's receipts; per task class it can advise a different tier or (Claude) rewrite the agent, and a routing failure never denies. As shipped the router has no backend and every class is `advisory` with exploration 0.2: about one in five dispatches above the role's cheapest tier is advised one tier down (raised to a per-flag risk floor), and the rest run at the coordinator's tier. `tw.py outcome` labels a child's result and, on Claude only, records its token cost and race-checks pending rewrites; `tw.py promote` turns labeled receipts into a promote/demote/hold verdict. The guard checks request fields only; it cannot confirm the model or effort the child actually ran.
 
 **Files:**
 - `SKILL.md` — the contract; `references/claude.md`, `references/codex.md` — per-harness routing, receipts, and context-mode coexistence.
 - `routes.json` — role policy per harness and router config; the installer generates one Claude agent per role and tier from it into `~/.claude/agents/`.
-- `scripts/tw.py` — reversible installer, activation, the guard hook, and the `route`/`outcome`/`promote` commands; `scripts/test_tw_*.py` — plain test scripts (`python scripts/test_tw_<name>.py`).
+- `scripts/tw.py` — reversible installer, activation, the guard hook, and the `route`/`outcome`/`promote`/`astra` commands; `scripts/test_tw_*.py` — plain test scripts (`python scripts/test_tw_<name>.py`).
 
 **Install:** clone the repo, then `python thinker-worker/scripts/tw.py install` (writes both `~/.claude` and `~/.codex` copies, the generated Claude agents, and one guard hook per harness; `uninstall` reverses it, `check` verifies). Activate per session with the command in `SKILL.md`.
 
