@@ -23,6 +23,7 @@ SUFFIX = " Answer the final answer in \\boxed{}"  # OTB generate.py, verbatim
 NO_TOOLS = "\n\nAnswer directly from reasoning. Do not use tools, run code, or read files."
 SYSTEM = "You are a careful problem solver."  # ponytail: short fixed system prompt; the default one is ~tens of k tokens
 TIMEOUT_S = 900
+HOME = Path.home()  # Codex rollouts: HOME/.codex/sessions/**/rollout-*<thread_id>.jsonl
 
 
 # ---- scorers: reasoning_gym v0.1.23, ported verbatim (reasoning_gym is not installed here) ----------------------------
@@ -82,11 +83,24 @@ SCORERS = {"ab": _ab, "bitwise_arithmetic": _bitwise, "fraction_simplification":
 # need their v0.1.23 scorers ported (sympy/numpy for two) before they can run.
 
 
+def boxed(text: str) -> str | None:
+    """Balanced contents of the first \\boxed{...}; None when absent or unclosed."""
+    i = text.find("\\boxed{")
+    depth, j = 0, i + len("\\boxed{")
+    for k in range(j, len(text) if i >= 0 else j):
+        depth += {"{": 1, "}": -1}.get(text[k], 0)
+        if depth < 0:
+            return text[j:k]
+    return None
+
+
 def extract(text: str, task: str, norm: bool = False) -> str:  # OTB evals/underthink_eval.py: first \boxed{, cut at first }
-    if norm:  # right answers OTB's extraction scores 0 (smoke 2026-09-28): `\#A\ B\#`, `\boxed{\mathrm{0xFD..}}`
+    if norm:  # right answers OTB's extraction scores 0 (smoke 2026-09-28): `\#A\ B\#`, `\boxed{\mathrm{0xFD..}}`,
+        # `\boxed{\frac{1}{2}}` (OTB cuts at the first `}`; the label takes the balanced box, Astra 2026-09-28 F8)
         text = re.sub(r"\\(?:mathrm|text|texttt|mathtt)\{([^{}]*)\}", r"\1", text.replace("\\#", "#"))
     try:
-        text = text.split("\\boxed{")[1].split("}")[0]
+        b = boxed(text) if norm else None
+        text = b if b is not None else text.split("\\boxed{")[1].split("}")[0]
     except Exception:
         pass
     if task == "ab":
@@ -136,25 +150,31 @@ def command(h: str, m: str, e: str, work: Path) -> list[str]:
         return [shutil.which("claude") or "claude", "-p", "--model", m, "--effort", e, "--output-format", "json",
                 "--no-session-persistence", "--tools", "", "--setting-sources", "", "--strict-mcp-config",
                 "--disable-slash-commands", "--system-prompt", SYSTEM]
+    # no --ephemeral: the rollout's turn_context is the only record of the executed model/effort (the stream has none)
     return [shutil.which("codex") or "codex", "exec", "-m", m, "-c", f"model_reasoning_effort={e}", "-s", "read-only",
-            "--ephemeral", "--json", "--skip-git-repo-check", "-C", str(work), "-o", str(work / "last.md"), "-"]
+            "--json", "--skip-git-repo-check", "-C", str(work), "-o", str(work / "last.md"), "-"]
 
 
 def parse(h: str, stdout: str, work: Path | None) -> dict:
-    """Answer text + usage. Claude: the single `--output-format json` result. Codex: `--json` events (tw.py's
-    codex_evidence reads the same turn.completed usage; duplicated here because tw.py is under concurrent edit)."""
+    """Answer text + usage + executed identity. Claude: the single `--output-format json` result; executed model =
+    modelUsage keys (effort is not reported: null). Codex: `--json` events; executed model/effort from the rollout's
+    last turn_context (tw.py's codex_evidence reads the same; duplicated here because tw.py is under concurrent edit)."""
     if h == "claude":
         try:
             j = json.loads(stdout)
         except ValueError:
-            return {"text": "", "parse_error": True}
+            return {"text": "", "parse_error": True, "executed": {"model": None, "effort": None}}
         u = j.get("usage") or {}
+        keys = sorted(j.get("modelUsage") or {})
         return {"text": j.get("result") or "", "is_error": j.get("is_error"), "cost_usd": j.get("total_cost_usd"),
                 "num_turns": j.get("num_turns"), "model_usage": j.get("modelUsage"),
+                # ponytail: tools are disabled, so a second turn or a permission denial is the only tool trace in -p json
+                "tool_events": len(j.get("permission_denials") or []) + max(0, (j.get("num_turns") or 1) - 1),
+                "executed": {"model": keys[0] if len(keys) == 1 else keys or None, "effort": None},
                 **{k: u.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens",
                                             "cache_read_input_tokens", "output_tokens")}}
-    ev = {"text": "", "tool_events": 0, **{k: 0 for k in ("input_tokens", "cached_input_tokens", "output_tokens",
-                                                          "reasoning_output_tokens")}}
+    ev = {"text": "", "tool_events": 0, "is_error": False, "thread_id": None, "executed": {"model": None, "effort": None},
+          **{k: 0 for k in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")}}
     for line in stdout.splitlines():
         try:
             row = json.loads(line)
@@ -163,7 +183,11 @@ def parse(h: str, stdout: str, work: Path | None) -> dict:
         if not isinstance(row, dict):
             continue
         t, item = row.get("type"), row.get("item") or {}
-        if t == "turn.completed":
+        if t == "thread.started":
+            ev["thread_id"] = row.get("thread_id")
+        elif t in ("turn.failed", "error"):
+            ev["is_error"] = True
+        elif t == "turn.completed":
             for k in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"):
                 ev[k] += (row.get("usage") or {}).get(k) or 0
         elif t == "item.completed" and item.get("type") == "agent_message":
@@ -172,7 +196,33 @@ def parse(h: str, stdout: str, work: Path | None) -> dict:
             ev["tool_events"] += 1  # a command or tool the no-tools line asked it not to use
     if not ev["text"] and work and (work / "last.md").exists():
         ev["text"] = (work / "last.md").read_text(encoding="utf-8", errors="replace")
+    ro = next((HOME / ".codex" / "sessions").rglob(f"rollout-*{ev['thread_id']}.jsonl"), None) if ev["thread_id"] else None
+    for line in ro.read_text(encoding="utf-8", errors="replace").splitlines() if ro else []:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("type") == "turn_context":  # last one wins
+            ev["executed"] = {"model": row["payload"].get("model"), "effort": row["payload"].get("effort")}
     return ev
+
+
+def same_model(req: str, exe: str) -> bool:
+    """Exact id, or a bare alias (`sonnet`) that is a dash-delimited token of the executed id (`claude-sonnet-5`)."""
+    return exe == req or ("-" not in req and req in exe.split("-"))
+
+
+def gate(rec: dict, m: str, e: str) -> tuple[str, str | None]:
+    """(label, reason). pass/fail only when the answer was produced by the requested pair under the no-tools protocol;
+    anything unverified is unknown with its reason (Astra 2026-09-28 F9, design D6)."""
+    ex = rec.get("executed") or {}
+    models = [ex["model"]] if isinstance(ex.get("model"), str) else ex.get("model") or []
+    reason = ("no-answer" if rec["score"] is None else f"rc={rec['rc']}" if rec["rc"] != 0
+              else "is-error" if rec.get("is_error") else "tool-events" if rec.get("tool_events")
+              else "executed-model-unknown" if not models
+              else "executed-model-differs" if not all(same_model(m, x) for x in models)
+              else "executed-effort-differs" if ex.get("effort") not in (None, e) else None)
+    return ("unknown" if reason else "pass" if rec["score"] == 1.0 else "fail"), reason
 
 
 def run(args) -> None:
@@ -207,15 +257,16 @@ def run(args) -> None:
         raw.write_text(stdout + "\n--- stderr ---\n" + stderr, encoding="utf-8")
         ev = parse(h, stdout, work)
         s = score(row, ev["text"]) if ev.get("text") else None
-        label = "unknown" if s is None or rc not in (0,) else ("pass" if s == 1.0 else "fail")
-        rec = {"item": iid, "pair": pair, "rep": r, "label": label, "score": s, "rc": rc, "wall_s": wall,
+        rec = {"item": iid, "pair": pair, "rep": r, "label": None, "reason": None, "score": s, "rc": rc, "wall_s": wall,
+               "requested": {"model": m, "effort": e},
                "otb_score": score(row, ev["text"], norm=False) if ev.get("text") else None,
                "extracted": extract(ev.get("text", ""), iid.split(":")[0], True)[:200], "gold": row["answer"][:200],
                "raw": str(raw), **{k: v for k, v in ev.items() if k != "text"}}
+        rec["label"], rec["reason"] = gate(rec, m, e)
         with res.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
         shutil.rmtree(work, ignore_errors=True)
-        print(f"{iid:28s} {pair:28s} r{r} {label:7s} score={s} wall={wall}s rc={rc}")
+        print(f"{iid:28s} {pair:28s} r{r} {rec['label']:7s} score={s} wall={wall}s rc={rc} {rec['reason'] or ''}")
 
 
 def selftest() -> None:
@@ -237,7 +288,71 @@ def selftest() -> None:
     ev = parse("codex", '{"type":"item.completed","item":{"type":"agent_message","text":"\\\\boxed{2}"}}\n'
                         '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":3}}', None)
     assert ev["text"] == "\\boxed{2}" and ev["input_tokens"] == 10, ev
-    print(f"selftest ok ({len(items)} scorers, gold pass + perturbed fail)")
+    # F8 (Astra 2026-09-28): nested LaTeX inside \boxed{} is extracted with balanced braces for the label only
+    half = {"answer": "1/2", "metadata": json.dumps({"source_dataset": "fraction_simplification", "numerator": 2,
+            "denominator": 4, "simplified_numerator": 1, "simplified_denominator": 2})}
+    assert score(half, r"\boxed{\frac{1}{2}}") == 1.0 and score(half, r"\boxed{\frac{1}{2}}", norm=False) == 0.01
+    assert score(half, r"so $\boxed{\dfrac{1}{2}}$ {done}") == 1.0 and score(half, r"\boxed{\frac{2}{4}}") == 0.1
+    assert extract(r"\boxed{\frac{1}{2}", "fraction_simplification", True) == r"\frac{1"   # unbalanced: OTB's cut
+    fr = dict(items)["fraction_simplification:0"]
+    n, d = fr["answer"].strip("$").split("/")
+    assert score(fr, rf"\boxed{{\frac{{{n}}}{{{d}}}}}") == 1.0, fr["answer"]
+    _selftest_run(dict(items)["ab:0"]["answer"])
+    print(f"selftest ok ({len(items)} scorers, gold pass + perturbed fail; nested boxes; run/reparse label gates)")
+
+
+def _selftest_run(gold: str) -> None:
+    """F9 (Astra 2026-09-28): run() and reparse() with a mocked subprocess; no CLI or model is called."""
+    from types import SimpleNamespace
+    from unittest import mock
+    global HOME
+    ans = f"work \\boxed{{{gold}}}"
+    claude = lambda model_usage, is_error=False, **kw: json.dumps({"result": ans, "is_error": is_error, "num_turns": 1,
+                                                                   "modelUsage": model_usage, "usage": {}, **kw})
+    tid = "01a0e6b0-0000-7000-8000-000000000001"
+    codex = lambda *extra: "\n".join([json.dumps({"type": "thread.started", "thread_id": tid}), *extra,
+        json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": ans}}),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 3}})])
+    tool = json.dumps({"type": "item.started", "item": {"type": "command_execution", "command": "python -c 1"}})
+    cases = [  # (pair, stdout, rollout turn_context or None, expected label)
+        ("claude:sonnet:low", claude({"actually-another-model": {}}, True), None, "unknown"),   # Astra's counterexample
+        ("claude:sonnet:low", claude({"actually-another-model": {}}), None, "unknown"),
+        ("claude:sonnet:low", claude({"claude-sonnet-5": {}}, True), None, "unknown"),
+        ("claude:sonnet:low", claude(None), None, "unknown"),
+        ("claude:sonnet:low", claude({"claude-sonnet-5": {}}, num_turns=3), None, "unknown"),
+        ("claude:sonnet:low", claude({"claude-sonnet-5": {}}), None, "pass"),
+        ("codex:gpt-6-sol:low", codex(tool), {"model": "gpt-6-sol", "effort": "low"}, "unknown"),   # Astra's counterexample
+        ("codex:gpt-6-sol:low", codex(), None, "unknown"),
+        ("codex:gpt-6-sol:low", codex(), {"model": "gpt-5.6-terra", "effort": "low"}, "unknown"),
+        ("codex:gpt-6-sol:low", codex(), {"model": "gpt-6-sol", "effort": "high"}, "unknown"),
+        ("codex:gpt-6-sol:low", codex(), {"model": "gpt-6-sol", "effort": "low"}, "pass")]
+    reasons = ["is-error", "executed-model-differs", "is-error", "executed-model-unknown", "tool-events", None,
+               "tool-events", "executed-model-unknown", "executed-model-differs", "executed-effort-differs", None]
+    old = HOME
+    try:
+        for (pair, stdout, ctx, want), why in zip(cases, reasons, strict=True):
+            with tempfile.TemporaryDirectory() as td:
+                HOME = Path(td) / "home"
+                if ctx:
+                    ro = HOME / ".codex" / "sessions" / "2026" / "09" / "28" / f"rollout-2026-09-28T00-00-00-{tid}.jsonl"
+                    ro.parent.mkdir(parents=True)
+                    ro.write_text(json.dumps({"type": "turn_context", "payload": ctx}) + "\n", encoding="utf-8")
+                fake = lambda *a, **k: SimpleNamespace(stdout=stdout.encode(), stderr=b"", returncode=0)
+                args = SimpleNamespace(items="ab:0", tasks=None, n=0, seed=0, pairs=pair, k=1, out=str(Path(td) / "o"),
+                                       dry_run=False)
+                with mock.patch.object(subprocess, "run", fake):
+                    run(args)
+                res = Path(args.out) / "results.jsonl"
+                row = json.loads(res.read_text(encoding="utf-8"))
+                h, m, e = pair.split(":")
+                assert row["label"] == want and row["requested"] == {"model": m, "effort": e} and "executed" in row, (pair, want, row)
+                assert row["reason"] == why, (pair, why, row)
+                reparse(Path(args.out))
+                again = json.loads(res.read_text(encoding="utf-8"))
+                assert (again["label"], again.get("reason"), again["executed"]) == (row["label"], row.get("reason"), row["executed"]), (row, again)
+    finally:
+        HOME = old
+    assert "--ephemeral" not in command("codex", "gpt-6-sol", "low", Path("w"))  # the rollout must exist to be read
 
 
 def reparse(out: Path) -> None:
@@ -249,13 +364,13 @@ def reparse(out: Path) -> None:
         items[d["item"]] = load_items(f"{t}:{i}", None, 0, 0)[0][1]
     new = []
     for d in rows:
-        h = d["pair"].split(":")[0]
+        h, m, e = d["pair"].split(":")
         ev = parse(h, Path(d["raw"]).read_text(encoding="utf-8").split("\n--- stderr ---\n")[0], None)
         s = score(items[d["item"]], ev["text"]) if ev.get("text") else None
-        d.update({k: v for k, v in ev.items() if k != "text"}, score=s,
+        d.update({k: v for k, v in ev.items() if k != "text"}, score=s, requested={"model": m, "effort": e},
                  otb_score=score(items[d["item"]], ev["text"], norm=False) if ev.get("text") else None,
-                 extracted=extract(ev.get("text", ""), d["item"].split(":")[0], True)[:200],
-                 label="unknown" if s is None or d["rc"] != 0 else ("pass" if s == 1.0 else "fail"))
+                 extracted=extract(ev.get("text", ""), d["item"].split(":")[0], True)[:200])
+        d["label"], d["reason"] = gate(d, m, e)
         new.append(d)
     (out / "results.jsonl").write_text("".join(json.dumps(d) + "\n" for d in new), encoding="utf-8")
     print(f"reparsed {len(new)} rows")
