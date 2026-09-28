@@ -1,6 +1,7 @@
 """Act modes: shadow silent; advisory denies with the router's pick; active rewrites subagent_type unless the
 guard or a lost-race flag holds it to advisory; override (header lines only), per-flag risk floor (the pick is
-raised to the highest flag's floor, recorded as target_tier; no action at or above the coordinator's tier), cutoff,
+raised to the highest flag's floor, recorded as target_tier; no action at or above the coordinator's tier), margin
+gate (a gated pick acts at any confidence),
 exploration; a failure inside act() leaves the dispatch admitted and the route row recorded with guard
 "act error: <Exc>" and target_tier the raw pick.
 Run: python test_tw_act.py"""
@@ -17,14 +18,15 @@ BASE["router"]["risk_floor"]["physics"] = "high"          # floor mechanics belo
 
 
 def run(mode, pick="low", conf=0.95, explore=0.0, brief_extra="", guard=None, flag=False, risk="none",
-        st="tw-worker-high", then=None, backends=("stub",), prior=None):
+        st="tw-worker-high", then=None, backends=("stub",), prior=None, probs=None):
     """One dispatch in a fresh temp home (plus `then=(st, brief_extra)`, a re-dispatch in the same home).
     Returns (hookSpecificOutput | None, last non-dispatch row). The real guard is never consulted. The tier prior
     is the last dispatch's tier unless `prior` is given, so the prior reminder stays out of the act() cases."""
     routes = json.loads(json.dumps(BASE))
     routes["router"].update(backends=list(backends), classes={"*": {"mode": mode, "explore": explore}},
                             priors={"*": prior or (then or (st,))[0].rsplit("-", 1)[1]})
-    tw.BACKENDS["stub"] = lambda *a: {"tier": pick, "probs": {pick: 1.0}, "confidence": conf, "body_chars_sent": 0}
+    tw.BACKENDS["stub"] = lambda *a: {"tier": pick, "probs": probs or {pick: 1.0}, "confidence": conf,
+                                      "body_chars_sent": 0}
     tw.load_routes = lambda path=None: routes
     tw.competing_agent_writer = guard if callable(guard) else (lambda home: guard)
     with tempfile.TemporaryDirectory() as home:
@@ -45,6 +47,9 @@ def boom(home):
     raise RuntimeError("simulated act bug")
 
 
+FLAT = {"low": 0.5, "high": 0.5}  # the combined pick misses the margin gate: the coordinator's tier stands
+
+
 if __name__ == "__main__":
     pin = pinned_routes()  # held for the run: run() stubs load_routes; the pin keeps run_main's routing assertion
     pin.__enter__()
@@ -52,8 +57,8 @@ if __name__ == "__main__":
     assert out is None and row["action"] is None and row["router_tier"] == "low"
     # eligible (would the router act?) is recorded in shadow too: the promote coordinator arm matches on it
     assert row["eligible"] is True, row                                         # confident and lower
-    assert run("shadow", conf=0.5)[1]["eligible"] is False                      # under cutoff
-    assert run("shadow", conf=0.1, explore=1.0)[1]["eligible"] is True          # explored lower
+    assert run("shadow", probs=FLAT)[1]["eligible"] is False                    # margin miss
+    assert run("shadow", probs=FLAT, explore=1.0)[1]["eligible"] is True        # explored lower
     assert run("shadow", pick="high")[1]["eligible"] is False                   # agrees with the coordinator
     row = run("shadow", pick="bogus")[1]                                        # invalid -> coordinator fallback
     assert row["source"] == "coordinator" and row["eligible"] is False, row
@@ -63,7 +68,9 @@ if __name__ == "__main__":
     assert run("advisory", brief_extra="TW-Override: needs high\n")[0] is None
     late = "pad\n" * 15 + "TW-Override: in the body\n"                  # brief line 20: not a header line
     assert run("advisory", brief_extra=late)[0]["permissionDecision"] == "deny"
-    assert run("advisory", conf=0.5)[0] is None                          # under cutoff
+    assert run("advisory", probs=FLAT)[0] is None                        # margin miss
+    assert run("advisory", conf=0.1)[0]["permissionDecision"] == "deny"  # a gated pick acts whatever its confidence
+    assert "tw-worker-xhigh" in run("advisory", pick="xhigh")[0]["permissionDecisionReason"]   # upward too
     assert run("advisory", risk="physics")[0] is None                    # floor high = coordinator's high
     out, row = run("advisory", risk="external")                          # floor medium: advised to medium
     assert "tw-worker-medium" in out["permissionDecisionReason"] and row["router_tier"] == "low", (out, row)
@@ -74,22 +81,21 @@ if __name__ == "__main__":
     assert run("advisory", explore=1.0, backends=(), st="tw-worker-xhigh", risk="physics")[0]["permissionDecisionReason"].count("tw-worker-high") == 1
     # re-dispatch of an advised brief hits the cached decision: override or taking the pick both admit
     out, row = run("advisory", then=("tw-worker-high", "TW-Override: needs high\n"))
-    assert out is None and row["source"] == "cached:stub" and row["action"] is None
+    assert out is None and row["source"] == "cached:bayes" and row["action"] is None
     out, row = run("advisory", then=("tw-worker-low", ""))
-    assert out is None and row["source"] == "cached:stub" and row["action"] is None
+    assert out is None and row["source"] == "cached:bayes" and row["action"] is None
     out, row = run("active")
     assert out["permissionDecision"] == "allow" and out["updatedInput"]["subagent_type"] == "tw-worker-low"
     assert out["updatedInput"]["prompt"].startswith("TW-Role: worker") and row["action"] == "rewrite"
     assert out["additionalContext"] == ("thinker-worker: dispatched as tw-worker-low instead of tw-worker-high "
-                                        "(router p=0.95); judge the result at that tier"), out
+                                        "(router p=1.00); judge the result at that tier"), out
     assert row["eligible"] is True, row
     out, row = run("active", guard="context-mode PreToolUse Agent hook is registered")
     assert out["permissionDecision"] == "deny" and row["action"] == "advise" and row["guard"].startswith("context-mode")
     out, row = run("active", flag=True)
     assert out["permissionDecision"] == "deny" and "lost race" in row["guard"]
-    assert run("advisory", conf=0.1, explore=1.0)[0]["permissionDecisionReason"].count("exploration") == 1
-    assert run("advisory", conf=0.1, explore=0.0)[0] is None
-    assert run("advisory", pick="xhigh", conf=0.1, explore=1.0)[0] is None   # exploration only goes lower
+    assert run("advisory", probs=FLAT, explore=1.0)[0]["permissionDecisionReason"].count("exploration") == 1
+    assert run("advisory", probs=FLAT, explore=0.0)[0] is None
     out, row = run("active", guard=boom)          # act() raises: fail open, the route row is kept, no error row
     assert out is None and row["kind"] == "route" and row["action"] is None, row
     assert row["guard"] == "act error: RuntimeError" and row["router_tier"] == "low" and row["target_tier"] == "low", row
@@ -116,5 +122,5 @@ if __name__ == "__main__":
     assert out["permissionDecision"] == "deny" and "additionalContext" not in out, out
     out, row = run("active", prior="medium")                            # nor does a rewrite add the reminder
     assert out["permissionDecision"] == "allow" and "prior for" not in out["additionalContext"], out
-    print("PASS act: shadow, advisory, override, cutoff, risk floor, cached re-dispatch, active rewrite, "
+    print("PASS act: shadow, advisory, override, margin gate, risk floor, cached re-dispatch, active rewrite, "
           "guard/flag hold, exploration, fail-open")

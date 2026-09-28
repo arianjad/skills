@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -912,12 +913,53 @@ def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | Non
     return None
 
 
+def ask_backends(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
+    """Every name in router.backends, one thread each, within budget_s: {name: answer + ms} for a valid answer,
+    {"error": ...} otherwise ("timeout" for a thread still running at the deadline)."""
+    got: dict = {}
+    deadline = time.monotonic() + cfg["budget_s"]
+
+    def one(name: str) -> None:
+        t0 = time.monotonic()
+        try:
+            fn = backend_fn(cfg, name)
+            if fn is None:
+                raise LookupError
+            out = fn({"options": cfg.get("options", {}), **cfg.get(name, {}),
+                      "timeout": max(0.01, deadline - time.monotonic())}, pol, fields, brief)
+            rec = {**out} if valid_route(out, pol["tiers"]) else {"error": "invalid answer"}
+        except LookupError:
+            rec = {"error": "unknown backend"}
+        except Exception as exc:
+            rec = {"error": f"{type(exc).__name__}: {exc}"[:160]}
+        got[name] = {**rec, "ms": round((time.monotonic() - t0) * 1000)}
+
+    threads = [threading.Thread(target=one, args=(n,), daemon=True) for n in dict.fromkeys(cfg["backends"])]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(max(0.0, deadline - time.monotonic()))
+    return {n: got.get(n, {"error": "timeout"}) for n in dict.fromkeys(cfg["backends"])}  # a snapshot
+
+
+def combine(answers: dict, tiers: list[str], weights: dict) -> dict:
+    """Weighted geometric mean over tiers (design D11): p(t) ∝ Π p_i(t)^w_i, w_i = weights[i] else 1/n, each
+    probability floored at 1e-6 before the log."""
+    w = {k: weights.get(k, 1 / len(answers)) for k in answers}
+    logp = {t: sum(w[k] * math.log(max(a["probs"].get(t, 0.0), 1e-6)) for k, a in answers.items()) for t in tiers}
+    top = max(logp.values())
+    un = {t: math.exp(v - top) for t, v in logp.items()}
+    return {t: v / sum(un.values()) for t, v in un.items()}
+
+
 def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
           prior: dict | None = None, model: str | None = None, t: int = 1) -> dict:
-    """Fail-open router: the first backend giving a valid answer inside budget_s wins, else the coordinator,
-    except that a ticket whose coin falls below eps goes one tier below it (source "explore"). eps is the class's
-    explore at the class's t-th routed dispatch (epsilon), 0 when cached or pinned.
-    model: the requested model (default the role's models[0]); it keys the ticket."""
+    """Fail-open router (design D11, D14): every backend is asked in parallel (ask_backends); the valid answers are
+    combined (combine) and the combined pick decides (source "bayes") if its top1 - top2 >= router.combine.margin
+    (gate "pass"), else the coordinator's tier stands (gate "margin"; None when no backend answered). A ticket whose
+    coin falls below eps goes one tier below that pick (source "explore"). eps is the class's explore at the class's
+    t-th routed dispatch (epsilon), 0 when cached or pinned. model: the requested model (default the role's
+    models[0]); it keys the ticket."""
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
     tick, digest = ticket(brief, model or pol["models"][0])
@@ -927,34 +969,25 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
                 "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
-                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "propensity": 1.0}
-    result: dict = {}
+                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "propensity": 1.0,
+                "backends": {}, "combined": None, "gate": None}
     start = time.monotonic()
-
-    def work() -> None:
-        for name in cfg["backends"]:
-            fn = backend_fn(cfg, name)
-            if fn is None:
-                continue
-            try:
-                out = fn({"options": cfg.get("options", {}), **cfg.get(name, {}),
-                          "timeout": max(0.01, cfg["budget_s"] - (time.monotonic() - start))}, pol, fields, brief)
-            except Exception as exc:
-                result.setdefault("errors", []).append(f"{name}: {type(exc).__name__}")
-                continue
-            if valid_route(out, pol["tiers"]):
-                result.update(out, source=name)
-                return
-
-    worker = threading.Thread(target=work, daemon=True)
-    worker.start()
-    worker.join(cfg["budget_s"])
-    found = dict(result) if result.get("source") else None  # copy: the thread may still be running
-    if found is None:
-        found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator",
-                 "body_chars_sent": 0}
-        if result.get("errors"):
-            found["errors"] = list(result["errors"])
+    backends = ask_backends(cfg, pol, fields, brief)
+    ok = {n: b for n, b in backends.items() if "tier" in b}
+    backends = {n: ({k: b[k] for k in ("tier", "probs", "ms")} if n in ok else b) for n, b in backends.items()}
+    found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator",
+             "body_chars_sent": 0}
+    combined = gate = None
+    if ok:
+        comb = cfg.get("combine", {"margin": 0.2})
+        combined = combine(ok, pol["tiers"], comb.get("weights", {}))
+        pick = max(pol["tiers"], key=combined.get)  # a tie goes to the cheaper tier (and fails any margin > 0)
+        top = sorted(combined.values(), reverse=True) + [0.0]
+        gate = "pass" if top[0] - top[1] >= comb["margin"] else "margin"
+        if gate == "pass":
+            found = {"tier": pick, "probs": combined, "confidence": combined[pick], "source": "bayes",
+                     "body_chars_sent": max(b.get("body_chars_sent", 0) for b in ok.values()),
+                     "provenance": "; ".join(f"{n}: {b.get('provenance')}" for n, b in ok.items())}
     # Eligible for exploration: no backend answered, eps > 0, a tier below exists. The coin decides, and the row's
     # propensity is the probability of the logged action: eps if explored, 1 - eps if not, 1.0 with no draw.
     drawn = (found["source"] == "coordinator" and eps > 0 and coord_tier in pol["tiers"]
@@ -965,7 +998,8 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         found = {**found, "tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
     return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
             "mode": mode, "explore": explore, "eps": eps,
-            "propensity": eps if explored else 1 - eps if drawn else 1.0}
+            "propensity": eps if explored else 1 - eps if drawn else 1.0,
+            "backends": backends, "combined": combined, "gate": gate}
 
 
 def _win_claude_start() -> float | None:
@@ -1092,7 +1126,9 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     target = TIERS[max(TIERS.index(raw), floor)]
     floored = target != raw
     lower = TIERS.index(target) < TIERS.index(d.tier)
-    disagree = target != d.tier and r["confidence"] >= routes["router"]["cutoff"]
+    # a combined pick already cleared the margin gate (design D14); router.cutoff applies to other sources only
+    disagree = target != d.tier and (r["source"].split(":")[-1] == "bayes"
+                                     or r["confidence"] >= routes["router"]["cutoff"])
     explored = lower and r["eps"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["eps"]
     eligible = r["source"] != "coordinator" and (disagree or explored) and not (floored and not lower)
     if floored and not lower:
@@ -1217,11 +1253,12 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
-               "pinned": flagged(brief, "TW-Pin")}
+               "pinned": flagged(brief, "TW-Pin"),
+               # every configured backend's answer ({tier, probs, ms}) or {error}, logged whether or not the gate
+               # passed; {} on a cached row
+               "backends": r["backends"], "combined": r["combined"], "gate": r["gate"]}
         if via:
             row["via"] = via
-        if r.get("errors"):
-            row["errors"] = r["errors"]
         try:  # an act() bug still records the router's decision
             out, row["action"], row["guard"], row["eligible"], target = act(home, harness, session, envelope, d, r,
                                                                             routes, via)

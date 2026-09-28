@@ -38,6 +38,7 @@ class Stub:
             def log_message(self, *a):
                 pass
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.srv.handle_error = lambda *a: None  # the timeout case: the client hung up before the reply
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1/systemone"
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
@@ -115,3 +116,103 @@ if __name__ == "__main__":
         s.close()
     print("PASS backends D1: backend_jev request/renormalize/timeout, jev block resolution")
 
+    # D2: every configured backend in parallel within budget_s; weighted geometric mean (w = 1/n unless
+    # router.combine.weights; zeros floored at 1e-6); acts (source "bayes") only if top1 - top2 >= margin
+    calls = []
+
+    def stub(probs, delay=0.0, boom=False, name="?"):
+        def fn(cfg, pol, fields, brief):
+            calls.append(name)
+            time.sleep(delay)
+            if boom:
+                raise RuntimeError("down")
+            tier = max(probs, key=probs.get)
+            return {"tier": tier, "probs": probs, "confidence": probs[tier], "body_chars_sent": 7}
+        return fn
+
+    def expect(answers, weights=None, tiers=("low", "medium", "high", "xhigh")):   # the rule, written out
+        import math
+        w = {k: (weights or {}).get(k, 1 / len(answers)) for k in answers}
+        un = {t: math.exp(sum(w[k] * math.log(max(p.get(t, 0.0), 1e-6)) for k, p in answers.items())) for t in tiers}
+        return {t: v / sum(un.values()) for t, v in un.items()}
+
+    close = lambda a, b: set(a) == set(b) and all(abs(a[k] - b[k]) < 1e-5 for k in a)
+    A, B = {"low": 0.7, "medium": 0.2, "high": 0.1}, {"low": 0.6, "medium": 0.3, "high": 0.1}
+    tw.BACKENDS.update(a=stub(A, name="a"), b=stub(B, name="b"))
+    r = tw.route(routes_with(backends=["a", "b"]), "claude", "worker", fields, BRIEF, "high")
+    want = expect({"a": A, "b": B})
+    assert (r["source"], r["tier"], r["gate"]) == ("bayes", "low", "pass"), r
+    assert close(r["combined"], want) and close(r["probs"], want), (r["combined"], want)
+    assert abs(r["confidence"] - want["low"]) < 1e-5 and r["confidence"] < SHIPPED["router"]["cutoff"], r
+    assert set(r["backends"]) == {"a", "b"} and r["backends"]["a"]["tier"] == "low", r["backends"]
+    assert r["backends"]["b"]["probs"] == B and isinstance(r["backends"]["b"]["ms"], int), r["backends"]
+    C, D = {"low": 0.5, "medium": 0.5}, {"low": 0.4, "medium": 0.6}               # margin ~0.1 < 0.2
+    tw.BACKENDS.update(c=stub(C), d=stub(D))
+    r = tw.route(routes_with(backends=["c", "d"]), "claude", "worker", fields, BRIEF, "high")
+    assert (r["source"], r["tier"], r["gate"]) == ("coordinator", "high", "margin"), r
+    assert close(r["combined"], expect({"c": C, "d": D})) and set(r["backends"]) == {"c", "d"}, r
+    r = tw.route(routes_with(backends=["c", "d"], combine={"rule": "bayes", "margin": 0.05}),
+                 "claude", "worker", fields, BRIEF, "high")
+    assert (r["source"], r["tier"], r["gate"]) == ("bayes", "medium", "pass"), r   # the margin is the knob
+    E, F = {"low": 0.9, "medium": 0.1}, {"medium": 1.0}
+    tw.BACKENDS.update(e=stub(E), f=stub(F))
+    assert tw.route(routes_with(backends=["e", "f"]), "claude", "worker", fields, BRIEF, "high")["tier"] == "medium"
+    r = tw.route(routes_with(backends=["e", "f"], combine={"rule": "bayes", "margin": 0.2, "weights": {"e": 1.0, "f": 0.0}}),
+                 "claude", "worker", fields, BRIEF, "high")
+    assert r["tier"] == "low" and close(r["combined"], expect({"e": E, "f": F}, {"e": 1.0, "f": 0.0})), r   # weights
+    G, H = {"low": 1.0}, {"medium": 1.0}                                            # disjoint: floored, not log(0)
+    tw.BACKENDS.update(g=stub(G), h=stub(H))
+    r = tw.route(routes_with(backends=["g", "h"]), "claude", "worker", fields, BRIEF, "high")
+    assert r["gate"] == "margin" and abs(r["combined"]["low"] - r["combined"]["medium"]) < 1e-9, r
+    # failures are logged per backend; the one valid answer decides alone (n = 1)
+    tw.BACKENDS.update(good=stub({"low": 0.2, "medium": 0.8}), boom=stub({}, boom=True), slow=stub({"low": 1.0}, delay=3),
+                       bad=lambda *a: {"tier": "low", "probs": {"low": 0.7}, "confidence": 0.9})
+    t0 = time.monotonic()
+    r = tw.route(routes_with(backends=["good", "boom", "slow", "bad", "nope"], budget_s=0.5), "claude", "worker",
+                 fields, BRIEF, "high")
+    assert time.monotonic() - t0 < 1.0, time.monotonic() - t0
+    bk = r["backends"]
+    assert (r["source"], r["tier"]) == ("bayes", "medium") and close(r["combined"], expect({"good": bk["good"]["probs"]})), r
+    assert bk["boom"]["error"] == "RuntimeError: down" and bk["slow"] == {"error": "timeout"}, bk
+    assert bk["bad"]["error"] == "invalid answer" and bk["nope"]["error"] == "unknown backend", bk
+    # parallel: two 0.4 s backends both answer inside a 0.7 s budget (serially the second would miss it)
+    tw.BACKENDS.update(p1=stub(A, delay=0.4), p2=stub(B, delay=0.4))
+    r = tw.route(routes_with(backends=["p1", "p2"], budget_s=0.7), "claude", "worker", fields, BRIEF, "high")
+    assert set(k for k, v in r["backends"].items() if "tier" in v) == {"p1", "p2"} and r["source"] == "bayes", r
+    r = tw.route(routes_with(backends=[]), "claude", "worker", fields, BRIEF, "high")
+    assert (r["source"], r["backends"], r["combined"], r["gate"]) == ("coordinator", {}, None, None), r
+
+    # D2 through the hook: advisory acts on a gated pick below the cutoff; a margin miss leaves the coordinator's
+    # tier; the route row carries every backend, combined, gate; a re-dispatch reuses the decision (no calls)
+    from pathlib import Path
+    import tempfile
+    from test_tw_hook import run_main
+    from test_tw_receipt import SESSION, hook, receipts
+    real_load = tw.load_routes
+    plain = BRIEF.replace("TW-Risk: destructive", "TW-Risk: none")               # no risk floor on the pick
+    try:
+        for backends, gate in ((["a", "b"], "pass"), (["c", "d"], "margin")):
+            rr = routes_with(backends=backends + ["nope"])
+            rr["router"]["classes"]["*"]["mode"] = "advisory"
+            tw.load_routes = lambda path=None: rr
+            with tempfile.TemporaryDirectory() as home:
+                run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+                code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": plain})
+                row = receipts(home, "claude")[-1]
+                assert row["kind"] == "route" and row["gate"] == gate and "errors" not in row, row
+                assert set(row["backends"]) == set(backends) | {"nope"} and row["combined"], row
+                if gate == "pass":
+                    why = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+                    assert "router picks low (p=0.65)" in why and "tw-worker-low" in why, why
+                    assert (row["source"], row["action"], row["eligible"]) == ("bayes", "advise", True), row
+                    n = len(calls)
+                    code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": plain})
+                    again = receipts(home, "claude")[-1]
+                    assert out == "" and again["source"] == "cached:bayes" and len(calls) == n, (out, again)
+                    assert again["backends"] == {} and again["gate"] is None, again
+                else:
+                    assert out == "" and (row["source"], row["action"], row["eligible"]) == ("coordinator", None, False), row
+    finally:
+        tw.load_routes = real_load
+    print("PASS backends D2: parallel backends, Bayesian combination, weights, zero floor, margin gate, per-backend "
+          "errors/timeout, hook row, cached decision")

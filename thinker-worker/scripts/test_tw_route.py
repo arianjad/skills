@@ -33,8 +33,8 @@ if __name__ == "__main__":
         cal = Path(tmp) / "calibration.json"
         cal.write_text(json.dumps({"classes": {"C-coding": {"recommended_tier": "xhigh"}}}), encoding="utf-8")
         r = tw.route(routes_with(cal), "claude", "worker", fields, BRIEF, "high")
-        assert (r["source"], r["tier"], r["confidence"], r["mode"]) == ("table", "xhigh", 0.0, "shadow"), r
-        assert r["provenance"].startswith("calibration "), r
+        assert (r["source"], r["tier"], r["mode"], r["gate"]) == ("bayes", "xhigh", "shadow", "pass"), r  # n = 1
+        assert r["backends"]["table"]["tier"] == "xhigh" and r["provenance"].startswith("table: calibration "), r
         r = tw.route(routes_with(cal), "claude", "leaf", fields, BRIEF, "low")
         assert r["tier"] == "medium", r                                   # clamped into leaf tiers
         r = tw.route(routes_with(Path(tmp) / "missing.json"), "claude", "worker", fields, BRIEF, "high")
@@ -63,11 +63,11 @@ if __name__ == "__main__":
                     assert [x["kind"] for x in rows] == ["dispatch", "route", "dispatch"], rows   # no route row on deny
                     assert rows[1]["coordinator_tier"] == "high" and rows[1]["action"] is None, rows[1]
                     assert rows[1]["router_agent"] == tw.agent_name("worker", rows[1]["router_tier"]), rows[1]
-                    assert rows[1]["source"] == "table" and "errors" not in rows[1], rows[1]
+                    assert rows[1]["source"] == "bayes" and rows[1]["backends"]["table"]["tier"] == "xhigh", rows[1]
                     code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": BRIEF})  # same ticket
                     assert code == 0 and "you dispatched low" in out, out            # admitted; only the prior reminder
                     again = receipts(home, "claude")[-1]
-                    assert again["source"] == "cached:table", again
+                    assert again["source"] == "cached:bayes", again
                     assert again["router_tier"] == "xhigh" and again["coordinator_tier"] == "low", again
                     raw = next(Path(home).rglob("receipts/claude/*.jsonl")).read_text(encoding="utf-8")
                     assert "SECRET-BODY" not in raw
@@ -81,7 +81,7 @@ if __name__ == "__main__":
                 assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")
                 row = receipts(home, "claude")[-1]
                 assert row["kind"] == "route" and row["source"] == "coordinator", row
-                assert row.get("errors") and row["errors"][0].startswith("table: "), row
+                assert row["backends"]["table"]["error"].startswith("ValueError"), row
         finally:
             tw.load_routes = REAL_LOAD
 
