@@ -165,6 +165,8 @@ if __name__ == "__main__":
                 assert code == 0 and "permissionDecision" not in out and "updatedInput" not in out, out
                 row = receipts(home, "claude")[-1]
                 assert (row["pinned"], row["source"], row["action"]) == (True, "coordinator", None), row
+                assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-medium", "prompt": pinned}) == (0, "")
+                # ^ below the C-coding prior (high), but the user asked for it: no prior reminder either
                 hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
                 assert receipts(home, "claude")[-1]["pinned"] is False                     # unpinned rows say so
     finally:
