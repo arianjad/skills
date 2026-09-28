@@ -14,7 +14,7 @@ Rows append to <out>/results.jsonl, keyed (item, pair, rep), so a rerun resumes.
   python controlled_runs.py --items ... --pairs ... --k 1 --out <dir>
 """
 from __future__ import annotations
-import argparse, json, os, random, re, shutil, subprocess, sys, tempfile, time
+import argparse, json, random, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))

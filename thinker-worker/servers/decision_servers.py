@@ -1,5 +1,5 @@
 """Start/stop/status for the CPU decision servers (Kev 8766, Laya 8767). Usage: decision_servers.py start|stop|status"""
-import json, os, re, subprocess, sys, time, urllib.request
+import json, os, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent

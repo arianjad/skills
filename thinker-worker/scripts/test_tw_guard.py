@@ -3,7 +3,6 @@ Run: python test_tw_guard.py"""
 import json
 import os
 import tempfile
-import time
 from pathlib import Path
 
 import tw

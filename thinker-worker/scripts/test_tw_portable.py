@@ -6,7 +6,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-import tw
 from test_tw_hook import W_MIN, pinned_routes
 
 TW = str(Path(__file__).with_name("tw.py"))

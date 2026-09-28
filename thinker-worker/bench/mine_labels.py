@@ -17,7 +17,7 @@ Rule (Astra review, agreed by Arian): only hard evidence counts; missing evidenc
 Transcripts are read-only; outputs carry private content and stay out of git.
 """
 from __future__ import annotations
-import argparse, collections, difflib, glob, json, os, re, sys
+import argparse, collections, difflib, glob, json, re, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
