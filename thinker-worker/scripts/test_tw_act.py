@@ -123,5 +123,30 @@ if __name__ == "__main__":
     assert out["permissionDecision"] == "deny" and "additionalContext" not in out, out
     out, row = run("active", prior="medium")                            # nor does a rewrite add the reminder
     assert out["permissionDecision"] == "allow" and "prior for" not in out["additionalContext"], out
+    # review 2 F5: propensity is the probability of the executed action (after floor, override and mode), summed
+    # over the draw branches that map to it; draw_propensity keeps the pre-floor draw's probability
+    real_coin = tw.coin
+    try:
+        # the re-review's table: high request, gated pick medium, floor medium (external), eps 0.25: both branches
+        # rewrite to medium
+        for draw, raw, src, dp in ((0.1, "low", "explore", 0.25), (0.9, "medium", "bayes", 0.75)):
+            tw.coin = lambda tick, d=draw: d
+            out, row = run("active", pick="medium", explore=0.25, risk="external")
+            assert (row["router_tier"], row["source"], row["target_tier"], row["action"]) == \
+                (raw, src, "medium", "rewrite"), row
+            assert (row["propensity"], row["draw_propensity"]) == (1.0, dp), row
+        for draw, want in ((0.1, 0.25), (0.9, 0.75)):   # no floor: rewrite low vs rewrite medium stay distinct
+            tw.coin = lambda tick, d=draw: d
+            row = run("active", pick="medium", explore=0.25)[1]
+            assert row["propensity"] == row["draw_propensity"] == want, row
+        tw.coin = lambda tick: 0.1                      # shadow and override: your tier runs in both branches
+        row = run("shadow", pick="medium", explore=0.25)[1]
+        assert (row["source"], row["propensity"], row["draw_propensity"]) == ("explore", 1.0, 0.25), row
+        row = run("active", pick="medium", explore=0.25, brief_extra="TW-Override: keep\n")[1]
+        assert (row["action"], row["propensity"], row["draw_propensity"]) == (None, 1.0, 0.25), row
+        row = run("active", pick="medium", explore=0.25, guard=boom)[1]   # act() failed: executed action unknown
+        assert row["propensity"] is None and row["draw_propensity"] == 0.25, row
+    finally:
+        tw.coin = real_coin
     print("PASS act: shadow, advisory, override, margin gate, risk floor, cached re-dispatch, active rewrite, "
-          "guard/flag hold, exploration, fail-open")
+          "guard/flag hold, exploration, fail-open, executed-action propensity")

@@ -1068,8 +1068,8 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
                 "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
-                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "propensity": 1.0,
-                "backends": {}, "combined": None, "combined_mean": None, "gate": None}
+                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "draw_propensity": 1.0,
+                "draws": [], "backends": {}, "combined": None, "combined_mean": None, "gate": None}
     start = time.monotonic()
     backends = ask_backends(cfg, pol, fields, brief)
     ok = {n: b for n, b in backends.items() if "tier" in b}
@@ -1093,18 +1093,23 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
                      "provenance": "; ".join(f"{n}: {b['provenance']}" for n, b in ok.items()
                                              if b.get("provenance")) or None}
     # Exploration around the final pick, bayes or coordinator (design D14): eligible when eps > 0 and the role has a
-    # tier below the pick. The coin decides, and the row's propensity is the probability of the logged action: eps
-    # if explored, 1 - eps if not, 1.0 with no draw.
+    # tier below the pick. The coin decides. draw_propensity is the probability of the drawn branch (eps if explored,
+    # 1 - eps if not, 1.0 with no draw); draws lists both branches (probability, the router fields act() reads) so
+    # routed() can give the probability of the executed action after the floor and the action mapping.
     ladder = pol["tiers"]
     drawn = eps > 0 and found["tier"] in ladder and ladder.index(found["tier"]) > 0
     explored = drawn and coin(tick) < eps
-    if explored:
+    draws = []
+    if drawn:
         below = ladder[ladder.index(found["tier"]) - 1]  # one tier below the pick, on the role's own ladder
-        found = {**found, "tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
+        alt = {"tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
+        draws = [(eps, alt), (1 - eps, {k: found[k] for k in ("tier", "probs", "confidence", "source")})]
+        if explored:
+            found = {**found, **alt}
     return {**found, "body_chars_sent": sent, "ms": round((time.monotonic() - start) * 1000), "ticket": tick,
             "digest": digest,
             "mode": mode, "explore": explore, "eps": eps,
-            "propensity": eps if explored else 1 - eps if drawn else 1.0,
+            "draw_propensity": eps if explored else 1 - eps if drawn else 1.0, "draws": draws,
             "backends": backends, "combined": combined, "combined_mean": mean, "gate": gate}
 
 
@@ -1356,7 +1361,7 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "agent_model": model,
                "probs": r["probs"],
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "eps": r["eps"],
-               "propensity": r["propensity"], "ms": r["ms"],
+               "propensity": None, "draw_propensity": r["draw_propensity"], "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
@@ -1367,12 +1372,21 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "gate": r["gate"]}
         if via:
             row["via"] = via
-        try:  # an act() bug still records the router's decision
+        try:  # an act() bug still records the router's decision (propensity stays None: executed action unknown)
             out, row["action"], row["guard"], row["eligible"], target = act(home, harness, session, envelope, d, r,
                                                                             routes, pinned, via)
         except Exception as exc:
             out, row["action"], row["guard"] = None, None, f"act error: {type(exc).__name__}"
             target = r["tier"]
+        else:
+            def executed(alt: dict) -> tuple:  # act()'s action on a draw branch, and the tier it runs or names
+                _, action, _, _, tier = act(home, harness, session, envelope, d, {**r, **alt}, routes, pinned, via)
+                return action, tier if action else d.tier
+            mine = (row["action"], target if row["action"] else d.tier)
+            try:  # the probability of the executed action: the draw branches mapping to it (floor, override, mode)
+                row["propensity"] = sum(p for p, alt in r["draws"] if executed(alt) == mine) if r["draws"] else 1.0
+            except Exception:
+                pass  # stays None
         row["target_tier"] = target  # floored pick; router_tier stays the raw backend/explore pick
         row["router_agent"] = agent_name(d.role, target) if harness == "claude" else None  # race_check compares it
         if record.get("store_bodies"):

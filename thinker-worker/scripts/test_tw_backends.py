@@ -248,7 +248,7 @@ if __name__ == "__main__":
           "errors/timeout, hook row, cached decision")
 
     # D3 (design D14): exploration applies to the final pick, whichever source produced it: one tier below it on the
-    # role's ladder (never below the cheapest), propensity eps / 1 - eps / 1.0 as before
+    # role's ladder (never below the cheapest), draw_propensity eps / 1 - eps / 1.0 as before
     decay = {"c": 0.5, "power": 0.25, "floor": 0.05}
     coin = lambda b: tw.coin(tw.ticket(b, "opus")[0])
     mid = next(b for b in (plain + f" d{i}" for i in range(500)) if 0.3 < coin(b) < 0.5)   # explored iff eps > coin
@@ -258,13 +258,13 @@ if __name__ == "__main__":
                                                                                          "explore": explore}}),
                                                "claude", "worker", fields, mid, "high", t=1)
     r = rx(["med"])                                             # eps 0.5 at t=1 > coin: one tier below the bayes pick
-    assert (r["source"], r["tier"], r["eps"], r["propensity"], r["gate"]) == ("explore", "low", 0.5, 0.5, "pass"), r
+    assert (r["source"], r["tier"], r["eps"], r["draw_propensity"], r["gate"]) == ("explore", "low", 0.5, 0.5, "pass"), r
     assert r["combined"] and r["combined"]["medium"] > 0.8, r                     # what the models said is kept
     r = tw.route(routes_with(backends=["med"], classes={"*": {"mode": "advisory", "explore": decay}}),
                  "claude", "worker", fields, mid, "high", t=16)                    # eps 0.25 < coin
-    assert (r["source"], r["tier"], r["propensity"]) == ("bayes", "medium", 0.75), r
+    assert (r["source"], r["tier"], r["draw_propensity"]) == ("bayes", "medium", 0.75), r
     r = rx(["lo"], 1.0)                                          # the pick is the cheapest tier: no draw
-    assert (r["source"], r["tier"], r["propensity"]) == ("bayes", "low", 1.0), r
+    assert (r["source"], r["tier"], r["draw_propensity"]) == ("bayes", "low", 1.0), r
     r = rx(["top"], 1.0)                                         # above the coordinator: explored to xhigh - 1 = high
     assert (r["source"], r["tier"]) == ("explore", "high"), r
     tw.BACKENDS["rev"] = stub({"medium": 0.9, "high": 0.1})

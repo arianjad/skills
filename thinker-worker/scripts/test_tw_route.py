@@ -192,9 +192,10 @@ if __name__ == "__main__":
     r = tw.route(r1, "claude", "worker", fields, mid, "high", t=16)
     assert (r["source"], r["eps"]) == ("coordinator", 0.25), r
     assert tw.route(r1, "claude", "worker", fields, mid, "high", t=10 ** 8)["eps"] == 0.05       # the floor
-    # propensity of the logged action: explored eps_t, eligible but unexplored 1 - eps_t, otherwise 1.0
+    # route()'s draw_propensity, the drawn branch: explored eps_t, eligible but unexplored 1 - eps_t, otherwise 1.0
+    # (the row's executed-action propensity is routed()'s; test_tw_act)
     prop = lambda brief=mid, tier="high", t=1, prior=None: tw.route(r1, "claude", "worker", fields, brief, tier,
-                                                                    prior, t=t)["propensity"]
+                                                                    prior, t=t)["draw_propensity"]
     assert (prop(), prop(t=16)) == (0.5, 0.75), (prop(), prop(t=16))
     assert prop(tier="low") == 1.0                                                   # nothing below: not eligible
     assert prop(mid.replace(HDR, HDR + "TW-Pin: user asked for high\n")) == 1.0      # pinned
