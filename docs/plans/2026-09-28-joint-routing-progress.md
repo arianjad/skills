@@ -92,3 +92,11 @@ Baseline before S1: TW-Check (18 `test_tw_*.py` + mine_labels, controlled_runs, 
 | S11 tests: test_tw_promote builds each fixture file in memory and writes it once (`write(home, rows)`; sha256 of the receipts file at each of the 11 promote() calls equals the HEAD test's; the test drops from 191 s to 6 s); shared fixtures: `receipts` (test_tw_receipt) replaces test_tw_codex's `rows_of`; `envelope(session, inp, tool, tool_use_id=None, **extra)`, `W_MIN`, `denied_kill()`, `reap(pid)` in test_tw_hook; `hook()` (test_tw_receipt) takes an optional tool_use_id and extra envelope keys and serves test_tw_check, test_tw_settle, test_tw_act, test_tw_outcome; `AUTH`, `W`, `REV` in test_tw_receipt used by test_tw_routes (its decide-only cases now on the `destructive` HDR), test_tw_route, test_tw_codex | c8bba4f | exit 0 (103 s) |
 
 Simplify final: S1-S11 applied, none skipped. The brief's TW-Check, run verbatim on c8bba4f: exit 0 (95 s, 2026-09-28, Windows). ruff F on tw.py and the tests: only the 2 pre-existing F401 (test_tw_guard.py `time`, test_tw_portable.py `tw`); controlled_runs.py `os` and decision_servers.py `re` F401 are pre-existing too.
+
+## Review 2 fixes (Astra re-review of a1ff123: `scratchpad/astra/review-2026-09-28-a1ff123.md`, findings F2, F4-F8)
+
+F1 and F3 (bench/) belong to a sibling worker. Baseline: a partial TW-Check run on a1ff123 passed act, agents, backends, check before it was stopped (the tree changed under it); HEAD's last full run is S11 above.
+
+| Item | Test (seam) | Red evidence | Green |
+|---|---|---|---|
+| F2 promote needs positive effort evidence | test_tw_promote.py R3 block (promote() over receipt files): the re-review's Claude coordinator-arm row, accepted, cost row `{model: claude-opus-5-5, agent_type: null}` -> OPUS group (0 router, 0 coord, 2 excluded). `ran()` helper now takes the tier the child ran as (`agent_type tw-worker-<tier>`); older fixtures pass it | `AssertionError: {... 'claude-opus-5-5': (0, 1, 1)}`: the no-effort row counted in the coordinator arm | arms() `ran_as`: cost `model` and effort evidence (codex `effort`, else `tw-*` agent_type tier) equal to the arm's tier; absent/unknown effort -> `n_excluded_identity`. promote docstring, claude.md promote paragraph |

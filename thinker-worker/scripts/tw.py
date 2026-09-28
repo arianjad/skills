@@ -811,10 +811,10 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
             draws: int = 200_000, seed: int = 7) -> list[dict]:
     """One verdict per (class, model) group of route rows, filtered by cls/model. The model is the executed one, the
     dispatch's latest `cost` row `model` (never the requested `agent_model`, never a role default), else None.
-    An arm counts a dispatch only on executed evidence that agrees with it: a cost row with a model, and, when the
-    row carries effort evidence (codex `effort`, which must be non-null; else the tier of a Claude `tw-*`
-    `agent_type`), that effort equals the arm's tier (the floored target for a rewrite, the coordinator's tier
-    otherwise). A dispatch failing this leaves both arms and is counted in n_excluded_identity.
+    An arm counts a dispatch only on executed evidence that agrees with it: a cost row with a model and positive
+    effort evidence (codex `effort`; else the tier of a Claude `tw-*` `agent_type`) equal to the arm's tier (the
+    floored target for a rewrite, the coordinator's tier otherwise). A dispatch failing this, missing or unknown
+    effort included, leaves both arms and is counted in n_excluded_identity.
     Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
     (backend wanted lower and the row is `eligible`, child ran at the coordinator tier); promote/demote/hold on
     P(diff >= -margin). "Lower" and "complied" compare the floored `target_tier` (`router_tier` on rows written
@@ -860,7 +860,7 @@ def arms(maps: dict, group: list[dict], margin: float, draws: int, seed: int) ->
         c = cost.get(tid) or {}
         m = AGENT_NAME.fullmatch(c.get("agent_type") or "")
         eff = c.get("effort") if "effort" in c else m.group(2) if m else None
-        return bool(c.get("model")) and not ("effort" in c and eff is None) and (eff is None or eff == tier)
+        return bool(c.get("model")) and eff == tier  # no effort evidence: unknown tier, in neither arm
     router, coord, n_adv, n_id, src = [], [], 0, 0, {"check": 0, "coordinator": 0}
     for r in group:
         if r.get("tool_use_id") in advised_by:

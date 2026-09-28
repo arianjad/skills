@@ -10,9 +10,11 @@ S = "55555555-6666-7777-8888-999999999999"
 OPUS = "claude-opus-5-5"  # an executed model id, as a Claude cost row records it
 
 
-def ran(rows, tid, model=OPUS, **extra):
-    """The cost row: executed identity (Claude `model`, optional `agent_type`; codex `model` + `effort`)."""
-    rows.append({"kind": "cost", "tool_use_id": tid, "model": model, **extra})
+def ran(rows, tid, tier=None, model=OPUS, **extra):
+    """The cost row: executed identity (Claude `model` + `agent_type`; codex `model` + `effort`). `tier`: the child
+    ran as tw-worker-<tier> (the effort evidence promote requires); else only what `extra` gives."""
+    rows.append({"kind": "cost", "tool_use_id": tid, "model": model,
+                 **({"agent_type": f"tw-worker-{tier}"} if tier else {}), **extra})
 
 
 def write(home, rows):
@@ -38,7 +40,7 @@ def verdict(k, n=10, lost=0, advised=0):
                          "router_tier": "low", "coordinator_tier": "high"})
             rows.append({"kind": "race", "tool_use_id": f"r{i}", "lost": False})
             rows.append({"kind": "outcome", "tool_use_id": f"r{i}", "accepted": i < k})
-            ran(rows, f"r{i}", **({"advisor_calls": 1} if i < advised else {}))  # advisor: tier + Fable, not the tier
+            ran(rows, f"r{i}", "low", **({"advisor_calls": 1} if i < advised else {}))  # advisor: tier + Fable, not the tier
         for i in range(5):  # rewrites never race-checked: unverified, in neither arm
             rows.append({"kind": "route", "tool_use_id": f"q{i}", "ticket": f"z{i}",
                          "class": "C-coding", "action": "rewrite",
@@ -49,7 +51,7 @@ def verdict(k, n=10, lost=0, advised=0):
                          "class": "C-coding", "action": None, "source": "table",
                          "router_tier": "low", "coordinator_tier": "high", "eligible": True})
             rows.append({"kind": "outcome", "tool_use_id": f"c{i}", "accepted": i < 850})
-            ran(rows, f"c{i}")
+            ran(rows, f"c{i}", "high")
         for i in range(200):  # table wanted low but would not have acted (margin miss, unexplored): neither arm
             rows.append({"kind": "route", "tool_use_id": f"e{i}", "ticket": f"y{i}",
                          "class": "C-coding", "action": None, "source": "table",
@@ -84,7 +86,7 @@ if __name__ == "__main__":
         rows.append({**base, "tool_use_id": "f1", "action": None, "source": "cached:table",
                      "coordinator_tier": "medium", "eligible": False})
         rows.append({"kind": "outcome", "tool_use_id": "f1", "accepted": True})
-        ran(rows, "f1")
+        ran(rows, "f1", "medium")
         write(home, rows)
         [v] = tw.promote(home, "claude", model=OPUS)
         assert (v["n_router"], v["n_coord"]) == (1, 0), v    # complied at the floored tier: router arm
@@ -99,14 +101,14 @@ if __name__ == "__main__":
                              "coordinator_tier": "high", **own})
                 rows.append({"kind": "race", "tool_use_id": f"{m}r{i}", "lost": False})
                 rows.append({"kind": "outcome", "tool_use_id": f"{m}r{i}", "accepted": i < k})
-                ran(rows, f"{m}r{i}", m)
+                ran(rows, f"{m}r{i}", "low", m)
             for i in range(1000):
                 rows.append({"kind": "route", "tool_use_id": f"{m}c{i}", "ticket": f"{m}u{i}",
                              "class": "C-coding", "action": None, "source": "table",
                              "router_tier": "low", "coordinator_tier": "high",
                              "eligible": True, "agent_model": m})
                 rows.append({"kind": "outcome", "tool_use_id": f"{m}c{i}", "accepted": i < 850})
-                ran(rows, f"{m}c{i}", m)
+                ran(rows, f"{m}c{i}", "high", m)
         for i in range(20):  # pinned by the user: the router never acted, so neither arm (else sol would promote)
             rows.append({"kind": "route", "tool_use_id": f"p{i}", "ticket": f"p{i}",
                          "class": "C-coding", "action": "rewrite", "router_tier": "low",
@@ -135,7 +137,7 @@ if __name__ == "__main__":
                 rows.append({"kind": "outcome", "tool_use_id": tid, "accepted": accepted})
             for lab in checks:
                 rows.append({"kind": "check", "tool_use_id": tid, "label": lab})
-            ran(rows, tid)
+            ran(rows, tid, "low")
         write(home, rows)
         [v] = tw.promote(home, "claude", model=OPUS)
         assert (v["k_router"], v["n_router"], v["n_check"], v["n_coordinator"]) == (4, 5, 4, 1), v
@@ -149,7 +151,7 @@ if __name__ == "__main__":
                      "agent_model": "gpt-6-sol", "via": "codex-exec"})
         rows.append({"kind": "race", "tool_use_id": "sub", "lost": False})
         rows.append({"kind": "outcome", "tool_use_id": "sub", "accepted": True})
-        ran(rows, "sub", "gpt-5.6-terra", effort="low", via="codex-exec")
+        ran(rows, "sub", None, "gpt-5.6-terra", effort="low", via="codex-exec")
         # Astra 2: an advise to medium, then the cached retry at medium; the runtime ran high
         adv = {"kind": "route", "ticket": "cr", "class": "C-coding", "router_tier": "medium", "agent_model": "gpt-6-sol"}
         rows.append({**adv, "tool_use_id": "cr0", "action": "advise", "source": "table",
@@ -157,13 +159,19 @@ if __name__ == "__main__":
         rows.append({**adv, "tool_use_id": "cr1", "action": None, "source": "cached:table",
                      "coordinator_tier": "medium", "eligible": False})
         rows.append({"kind": "outcome", "tool_use_id": "cr1", "accepted": True})
-        ran(rows, "cr1", "gpt-6-sol", effort="high", via="codex-exec")
+        ran(rows, "cr1", None, "gpt-6-sol", effort="high", via="codex-exec")
         # a Claude coordinator-arm row whose child agent file was the low tier, not the coordinator's high
         rows.append({"kind": "route", "tool_use_id": "ag", "ticket": "ag", "class": "C-coding",
                      "action": None, "source": "table", "router_tier": "low",
                      "coordinator_tier": "high", "eligible": True, "agent_model": "opus"})
         rows.append({"kind": "outcome", "tool_use_id": "ag", "accepted": True})
         ran(rows, "ag", agent_type="tw-worker-low")
+        # review 2 F2: a Claude coordinator-arm row with no effort evidence (agent_type null) enters neither arm
+        rows.append({"kind": "route", "tool_use_id": "ne", "ticket": "ne", "class": "C-coding",
+                     "action": None, "source": "table", "router_tier": "low",
+                     "coordinator_tier": "high", "eligible": True})
+        rows.append({"kind": "outcome", "tool_use_id": "ne", "accepted": True})
+        ran(rows, "ne", agent_type=None)
         # no executed evidence: labeled, verified rewrite, no cost row; not back-filled from the role default (opus)
         rows.append({"kind": "route", "tool_use_id": "nx", "ticket": "nx", "class": "C-coding",
                      "action": "rewrite", "router_tier": "low", "coordinator_tier": "high",
@@ -174,7 +182,7 @@ if __name__ == "__main__":
         got = {v["model"]: (v["n_router"], v["n_coord"], v.get("n_excluded_identity")) for v in tw.promote(home, "claude")}
         assert got.get("gpt-6-sol") == (0, 0, 1), got   # the substituted run left; the ignored effort excluded
         assert got.get("gpt-5.6-terra") == (1, 0, 0), got           # counted under the model that ran
-        assert got.get(OPUS) == (0, 0, 1) and got.get(None) == (0, 0, 1) and "opus" not in got, got
+        assert got.get(OPUS) == (0, 0, 2) and got.get(None) == (0, 0, 1) and "opus" not in got, got
     print("PASS R3 promote groups by executed model; contradicted or missing executed identity -> n_excluded_identity")
     print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5); lost races, "
           "ineligible and advisor-assisted rows excluded; check labels outrank the coordinator's")
