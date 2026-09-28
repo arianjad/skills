@@ -463,7 +463,8 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     """Claude coordinator -> a Codex model via `codex exec`. Same gate as a native dispatch (decide() on a synthetic
     Agent call with the model), plus: the model must also be in some Codex role's models. Receipts get a dispatch row
     and a cost row with effective model/effort."""
-    if activation(home, "claude", session) is None:
+    record = activation(home, "claude", session)
+    if record is None:
         raise Conflict(f"claude session {session} is not activated for thinker-worker")
     brief = brief_file.read_text(encoding="utf-8")
     tool_use_id = f"codex-{os.urandom(6).hex()}"
@@ -476,6 +477,12 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     receipt(home, "claude", session, env, d)
     if not d.admitted:
         raise Conflict(d.reason)
+    hint, row = routed(home, "claude", session, env, d, routes, record, via="codex-exec")  # fails open: row None
+    if row and row["action"] == "advise":
+        raise Conflict(hint["hookSpecificOutput"]["permissionDecisionReason"])
+    if row and row["action"] == "rewrite":
+        tier = row["target_tier"]
+        print(hint["hookSpecificOutput"]["additionalContext"])
     exe = shutil.which("codex")
     if not exe:
         raise Conflict("codex CLI not found on PATH")
@@ -837,9 +844,11 @@ def advisory_flag(home: Path, harness: str, session: str) -> Path:
     return state_root(home) / "state" / harness / f"{sha(session.encode('utf-8'))}.advisory"
 
 
-def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: dict, routes: dict):
+def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: dict, routes: dict,
+        via: str | None = None):
     """(hook output | None, action None/"advise"/"rewrite", guard | None, eligible, target) for an admitted,
-    routed dispatch. target: the router's pick raised to the highest routes.json risk_floor among the brief's
+    routed dispatch; via (the `tw.py codex` path) skips the competing-writer/race guard and names picks as --tier.
+    target: the router's pick raised to the highest routes.json risk_floor among the brief's
     TW-Risk flags (the coordinator's tier on a coordinator-source row). eligible: a backend disagrees at the
     cutoff or explores lower, whatever the mode, and the floor did not lift the pick to the coordinator's tier or
     above; promote's coordinator arm keeps only such rows so it matches the dispatches the router would have
@@ -867,20 +876,21 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     if not eligible:
         return None, None, None, eligible, target
     guard = None
+    pick = ("--tier " + target if via else agent_name(d.role, target) if harness == "claude"
+            else "reasoning_effort=" + target)
     if r["mode"] == "active" and harness == "claude":
-        guard = competing_agent_writer(home)
-        if guard is None and advisory_flag(home, harness, session).exists():
-            guard = "lost race recorded earlier this session"
+        if not via:  # the codex path owns its subprocess: no competing writer, no race to lose
+            guard = competing_agent_writer(home)
+            if guard is None and advisory_flag(home, harness, session).exists():
+                guard = "lost race recorded earlier this session"
         if guard is None:
-            pick = agent_name(d.role, target)
-            new = {**inp, "subagent_type": pick}  # whole tool_input, one key changed
-            note = (f"thinker-worker: dispatched as {pick} instead of {inp['subagent_type']} "
+            new = {**inp, "subagent_type": agent_name(d.role, target)}  # whole tool_input, one key changed
+            note = (f"thinker-worker: dispatched as {pick} instead of {'--tier ' + d.tier if via else inp['subagent_type']} "
                     f"(router p={r['confidence']:.2f}); judge the result at that tier")
             return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
                                             "updatedInput": new, "additionalContext": note}}, "rewrite", None, eligible,
                     target)
     why = "exploration" if explored and not disagree else f"p={r['confidence']:.2f}"
-    pick = agent_name(d.role, target) if harness == "claude" else "reasoning_effort=" + target
     reason = (f"router picks {target} ({why}); dispatch {pick} or add `TW-Override: <reason>` to keep {d.tier}"
               + (f" [active held: {guard}]" if guard else ""))
     return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -939,7 +949,25 @@ def hook(home: Path, harness: str, owner: str) -> None:
         return
     if d.role is None or tool == "collaborationspawn_agent":
         return  # ponytail: Codex v2 ciphertext; the task_name join is phase 2
-    try:  # fail open after admission: the dispatch receipt already says admit, so a routing bug must not deny
+    out, row = routed(home, harness, session, envelope, d, routes, record)
+    if out:  # printed only after the route row is recorded; any earlier failure leaves the admit standing
+        print(json.dumps(out))
+    elif (row and harness == "claude" and d.tier != row["prior_tier"]  # no router action: point-of-use prior
+          and not (row["source"].startswith("cached:") and d.tier == row["target_tier"])):  # reminder, unless it
+        # obeys an earlier advise/exploration of this same brief (live check 2026-09-27: the reminder contradicted it)
+        # ponytail: Claude only; Codex's handling of additionalContext without a decision is unverified.
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
+                          f"thinker-worker: prior for {row['class']} is {row['prior_tier']}; "
+                          f"you dispatched {d.tier} (fine if deliberate)"}}))
+
+
+def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, routes: dict, record: dict,
+           via: str | None = None) -> tuple[dict | None, dict | None]:
+    """Post-admission routing shared by the hook and `tw.py codex` (via="codex-exec"): route(), act(), and the route
+    row. Returns (hook output | None, row). Fails open: the dispatch receipt already says admit, so any failure
+    writes an `error` row (where "route") and returns (None, None)."""
+    try:
+        inp = envelope["tool_input"]
         brief = inp.get("message" if harness == "codex" else "prompt")
         cached = prior_route(home, harness, session, ticket(brief)[0])
         r = route(routes, harness, d.role, d.fields, brief, d.tier, cached)
@@ -953,11 +981,13 @@ def hook(home: Path, harness: str, owner: str) -> None:
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None}  # eligible stays None if act() fails
+        if via:
+            row["via"] = via
         if r.get("errors"):
             row["errors"] = r["errors"]
         try:  # an act() bug still records the router's decision
             out, row["action"], row["guard"], row["eligible"], target = act(home, harness, session, envelope, d, r,
-                                                                            routes)
+                                                                            routes, via)
         except Exception as exc:
             out, row["action"], row["guard"] = None, None, f"act error: {type(exc).__name__}"
             target = r["tier"]
@@ -968,15 +998,7 @@ def hook(home: Path, harness: str, owner: str) -> None:
             body.parent.mkdir(parents=True, exist_ok=True)
             body.write_text(brief, encoding="utf-8")
         append_receipt(home, harness, session, row)
-        if out:  # printed only after the route row is recorded; any earlier failure leaves the admit standing
-            print(json.dumps(out))
-        elif (harness == "claude" and d.tier != row["prior_tier"]  # no router action: point-of-use prior reminder,
-              and not (row["source"].startswith("cached:") and d.tier == row["target_tier"])):  # unless it obeys an
-            # earlier advise/exploration of this same brief (live check 2026-09-27: the reminder contradicted it)
-            # ponytail: Claude only; Codex's handling of additionalContext without a decision is unverified.
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
-                              f"thinker-worker: prior for {row['class']} is {row['prior_tier']}; "
-                              f"you dispatched {d.tier} (fine if deliberate)"}}))
+        return out, row
     except Exception as exc:
         try:
             append_receipt(home, harness, session, {"kind": "error", "at": now(), "harness": harness,
@@ -984,6 +1006,7 @@ def hook(home: Path, harness: str, owner: str) -> None:
                                                     "where": "route", "error": type(exc).__name__})
         except Exception:
             pass  # ponytail: best effort; an unwritable receipts dir already failed above
+        return None, None
 
 
 def source_root() -> Path:

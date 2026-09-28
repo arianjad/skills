@@ -122,5 +122,36 @@ if __name__ == "__main__":
             assert r.returncode == 2 and why in r.stderr, (why, r.stderr)
         assert not (home / "call.json").exists(), "codex ran on a denied dispatch"
         assert [x["decision"] for x in rows_of(home) if x["kind"] == "dispatch"][-2:] == ["deny", "deny"]
+
+        # the router on the Codex path: no backend, explore 1.0, so a high dispatch is explored to medium
+        def mode(m):
+            doc = {**shipped, "router": {**shipped["router"], "backends": [], "classes": {"*": {"mode": m, "explore": 1.0}}}}
+            (home / "routes.json").write_text(json.dumps(doc), encoding="utf-8")
+
+        def last_route():
+            return [x for x in rows_of(home) if x["kind"] == "route"][-1]
+        mode("shadow")
+        r = codex(WORK + " shadow", "high", "gpt-6-sol", "worker")
+        assert r.returncode == 0, r.stderr
+        call = json.loads((home / "call.json").read_text(encoding="utf-8"))
+        row = last_route()
+        assert "model_reasoning_effort=high" in call["args"], call["args"]                # shadow: coordinator tier
+        assert (row["source"], row["mode"], row["action"], row["tool_use_id"]) == \
+            ("explore", "shadow", None, json.loads(r.stdout.splitlines()[-1])["tool_use_id"]), row
+        mode("advisory")
+        (home / "call.json").unlink()
+        r = codex(WORK + " advisory", "high", "gpt-6-sol", "worker")
+        assert r.returncode == 2 and "--tier medium" in r.stderr, r.stderr                # advised: codex not run
+        assert not (home / "call.json").exists() and last_route()["action"] == "advise", last_route()
+        r = codex(WORK.replace(HDR, HDR + "TW-Override: keep high\n") + " override", "high", "gpt-6-sol", "worker")
+        call = json.loads((home / "call.json").read_text(encoding="utf-8"))
+        assert r.returncode == 0 and "model_reasoning_effort=high" in call["args"], (r.stderr, call["args"])
+        assert last_route()["action"] is None and last_route()["eligible"] is True, last_route()
+        mode("active")
+        r = codex(WORK + " active", "high", "gpt-6-sol", "worker")
+        call = json.loads((home / "call.json").read_text(encoding="utf-8"))
+        assert r.returncode == 0 and "model_reasoning_effort=medium" in call["args"], (r.stderr, call["args"])
+        assert len(r.stdout.splitlines()) == 2 and "medium" in r.stdout.splitlines()[0], r.stdout   # one line says so
+        assert last_route()["action"] == "rewrite" and last_route()["target_tier"] == "medium", last_route()
     print("PASS codex: activation gate, decide() reuse (tier/role/scope), Codex-model admission per Claude role "
           "(Sol worker/review, Luna leaf; Luna worker and Sonnet denied), codex flags + stdin, receipts, outcome label")
