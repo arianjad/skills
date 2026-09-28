@@ -18,12 +18,13 @@ home = Path(os.environ["FAKE_HOME"])
 tid = "0000-thread-1"
 d = home / ".codex" / "sessions" / "2026" / "09" / "27"
 d.mkdir(parents=True, exist_ok=True)
-eff = args[args.index("-c") + 1].split("=")[1]
+eff = os.environ.get("FAKE_EFFORT") or args[args.index("-c") + 1].split("=")[1]  # runtime may differ from request
 (d / f"rollout-2026-09-27T00-00-00-{tid}.jsonl").write_text(
     json.dumps({"type": "turn_context", "payload": {"model": "gpt-6-astra", "effort": eff}}) + "\n", encoding="utf-8")
 Path(args[args.index("-o") + 1]).write_text("REPORT", encoding="utf-8")
 print(json.dumps({"type": "thread.started", "thread_id": tid}))
 print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 3}}))
+sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 '''
 
 
@@ -54,10 +55,12 @@ if __name__ == "__main__":
         assert r.returncode == 2 and "not activated" in r.stderr, r
         assert run(home, env, "activate", "--harness", "claude", "--session", "s1").returncode == 0
 
+        env["FAKE_EFFORT"] = "xhigh"  # effective effort must come from the rollout, not echo the request
         r = astra(REV, "medium")
+        env.pop("FAKE_EFFORT")
         assert r.returncode == 0, r
         out = json.loads(r.stdout)
-        assert (out["effective_model"], out["effective_effort"]) == ("gpt-6-astra", "medium"), out
+        assert (out["effective_model"], out["effective_effort"]) == ("gpt-6-astra", "xhigh"), out
         assert Path(out["report"]).read_text(encoding="utf-8") == "REPORT"
         call = json.loads((home / "call.json").read_text(encoding="utf-8"))
         a = call["args"]
@@ -74,6 +77,13 @@ if __name__ == "__main__":
         lab = run(home, env, "outcome", "--harness", "claude", "--session", "s1", "--tool-use-id", out["tool_use_id"],
                   "--accepted", "yes")
         assert lab.returncode == 0, lab
+        rows = [json.loads(x) for x in next((home / ".thinker-worker" / "receipts" / "claude").glob("*.jsonl"))
+                .read_text(encoding="utf-8").splitlines()]
+        assert [(x["tool_use_id"], x["accepted"]) for x in rows if x["kind"] == "outcome"] == [(out["tool_use_id"], True)]
+        env["FAKE_EXIT"] = "3"
+        r = astra(REV)
+        env.pop("FAKE_EXIT")
+        assert r.returncode == 3 and json.loads(r.stdout)["exit_code"] == 3, r  # codex failure propagates
 
         (home / "call.json").unlink()
         for text, tier, why in ((REV, "low", "outside"),
