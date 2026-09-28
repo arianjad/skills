@@ -82,21 +82,25 @@ SCORERS = {"ab": _ab, "bitwise_arithmetic": _bitwise, "fraction_simplification":
 # need their v0.1.23 scorers ported (sympy/numpy for two) before they can run.
 
 
-def extract(text: str, task: str) -> str:  # OTB evals/underthink_eval.py: first \boxed{, cut at first }
+def extract(text: str, task: str, norm: bool = False) -> str:  # OTB evals/underthink_eval.py: first \boxed{, cut at first }
+    if norm:  # right answers OTB's extraction scores 0 (smoke 2026-09-28): `\#A\ B\#`, `\boxed{\mathrm{0xFD..}}`
+        text = re.sub(r"\\(?:mathrm|text|texttt|mathtt)\{([^{}]*)\}", r"\1", text.replace("\\#", "#"))
     try:
         text = text.split("\\boxed{")[1].split("}")[0]
     except Exception:
         pass
     if task == "ab":
         text = re.sub(r"[^#AB]", " ", text).replace("  ", " ")
-    return text.replace("\\ ", " ").replace("\\ ", " ")
+    text = text.replace("\\ ", " ").replace("\\ ", " ")
+    return " ".join(text.split()) if norm and task == "ab" else text
 
 
-def score(row: dict, response: str) -> float:
+def score(row: dict, response: str, norm: bool = True) -> float:
+    """norm=False is OTB's scoring verbatim; norm=True (used for the label) also undoes LaTeX `\\#` escapes."""
     md = json.loads(row["metadata"])
     task = md["source_dataset"]
     entry = {**md, "answer": row["answer"], "metadata": md}
-    return SCORERS[task](extract(response, task), entry)
+    return SCORERS[task](extract(response, task, norm), entry)
 
 
 # ---- items and pairs ------------------------------------------------------------------------------------------------
@@ -205,7 +209,8 @@ def run(args) -> None:
         s = score(row, ev["text"]) if ev.get("text") else None
         label = "unknown" if s is None or rc not in (0,) else ("pass" if s == 1.0 else "fail")
         rec = {"item": iid, "pair": pair, "rep": r, "label": label, "score": s, "rc": rc, "wall_s": wall,
-               "extracted": extract(ev.get("text", ""), iid.split(":")[0])[:200], "gold": row["answer"][:200],
+               "otb_score": score(row, ev["text"], norm=False) if ev.get("text") else None,
+               "extracted": extract(ev.get("text", ""), iid.split(":")[0], True)[:200], "gold": row["answer"][:200],
                "raw": str(raw), **{k: v for k, v in ev.items() if k != "text"}}
         with res.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
@@ -222,6 +227,12 @@ def selftest() -> None:
         wrong = {"ab": "#A", "bitwise_arithmetic": "0x0" if gold != "0x0" else "0x1"}.get(iid.split(":")[0], gold + "9")
         assert score(row, f"\\boxed{{{wrong}}}") < 1.0, (iid, wrong)
     assert extract("x \\boxed{A# #B} y", "ab") == "A# #B"
+    ab = items[0][1]  # the smoke's escaped-but-right answer: OTB verbatim fails it, the label passes it
+    esc = "\\boxed{" + "\\ ".join(tok.replace("#", "\\#") for tok in ab["answer"].split()) + "}"
+    assert score(ab, esc, norm=False) == 0.0 and score(ab, esc) == 1.0, extract(esc, "ab", True)
+    bw = items[1][1]
+    wrapped = "\\boxed{\\mathrm{" + bw["answer"].upper().replace("0X", "0x") + "}}"
+    assert score(bw, wrapped, norm=False) == 0.0 and score(bw, wrapped) == 1.0, extract(wrapped, "bitwise_arithmetic", True)
     assert parse("claude", '{"result": "\\\\boxed{1}", "usage": {"output_tokens": 5}}', None)["output_tokens"] == 5
     ev = parse("codex", '{"type":"item.completed","item":{"type":"agent_message","text":"\\\\boxed{2}"}}\n'
                         '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":3}}', None)
@@ -242,7 +253,8 @@ def reparse(out: Path) -> None:
         ev = parse(h, Path(d["raw"]).read_text(encoding="utf-8").split("\n--- stderr ---\n")[0], None)
         s = score(items[d["item"]], ev["text"]) if ev.get("text") else None
         d.update({k: v for k, v in ev.items() if k != "text"}, score=s,
-                 extracted=extract(ev.get("text", ""), d["item"].split(":")[0])[:200],
+                 otb_score=score(items[d["item"]], ev["text"], norm=False) if ev.get("text") else None,
+                 extracted=extract(ev.get("text", ""), d["item"].split(":")[0], True)[:200],
                  label="unknown" if s is None or d["rc"] != 0 else ("pass" if s == 1.0 else "fail"))
         new.append(d)
     (out / "results.jsonl").write_text("".join(json.dumps(d) + "\n" for d in new), encoding="utf-8")
