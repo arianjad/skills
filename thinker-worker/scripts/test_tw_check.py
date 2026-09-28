@@ -210,6 +210,30 @@ if __name__ == "__main__":
         assert (c["label"], c["unknown_reason"], c.get("kill_failed")) == ("unknown", "timeout", True), c
     print("PASS R6 failed kill: bounded return, kill_failed true")
 
+    # review 2 F8: a stalled taskkill gets a timeout from kill_tree's budget; its timeout is a failed kill
+    if os.name == "nt":
+        import subprocess
+        real_run, stalls = tw.subprocess.run, []
+
+        def slow_taskkill(argv, *a, **k):  # taskkill replaced by a real process that outlives any sane timeout
+            if argv[0] == "taskkill":
+                stalls.append(k.get("timeout"))
+                return real_run([sys.executable, "-c", "import time; time.sleep(8)"], *a, **k)
+            return real_run(argv, *a, **k)
+        victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        tw.subprocess.run = slow_taskkill
+        t0 = time.monotonic()
+        try:
+            ok = tw.kill_tree(victim, wait=1)
+        finally:
+            took = time.monotonic() - t0
+            tw.subprocess.run = real_run
+            reap(victim.pid)  # the sleeper this test launched
+        assert took < 3 and ok is False and stalls and stalls[0] is not None and stalls[0] <= 1, (took, ok, stalls)
+        print("PASS F8 stalled taskkill: bounded by the cleanup budget, counted as a failed kill")
+    else:
+        print("SKIP F8 (taskkill is Windows-only; os.killpg does not block)")
+
     # R7 (Astra review finding 7): a shell without verified pipefail never labels. Git's sh.exe (Astra's
     # counterexample: `false | cat` recorded pass under `sh -e`) and a non-bash shell named sh
     bash = tw.check_shell()[0]

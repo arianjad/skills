@@ -450,18 +450,24 @@ def read_rows(path: Path) -> list[dict]:
 
 
 def kill_tree(proc: subprocess.Popen, wait: float = 10) -> bool:
-    """Kill proc and its descendants; True only if the kill command succeeded and proc exited within `wait` s.
-    Never blocks longer than that: a denied kill (taskkill exit 1, Access denied) returns False, proc may live on."""
+    """Kill proc and its descendants; True only if the kill command succeeded and proc exited, all within `wait` s.
+    Never blocks longer than that budget: the kill command and the exit wait share it. A denied kill (taskkill exit
+    1, Access denied) or a kill command that overruns returns False; proc may live on."""
+    deadline = time.monotonic() + wait
     ok = True
     if os.name == "nt":
-        ok = subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True).returncode == 0
+        try:
+            ok = subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True,
+                                timeout=wait).returncode == 0
+        except subprocess.TimeoutExpired:
+            return False  # a stalled taskkill: termination not established
     else:
         try:
             os.killpg(proc.pid, 9)  # SIGKILL; the check runs in its own session
         except OSError:
             proc.kill()
     try:
-        proc.wait(wait)
+        proc.wait(max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         return False
     return ok
