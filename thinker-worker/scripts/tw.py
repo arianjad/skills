@@ -358,6 +358,10 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
             return Decision(False, f"tier {tier} is outside {role}'s tiers {pol['tiers']}", role, model, fields=fields)
         if model is not None and model not in pol["models"]:
             return Decision(False, f"model {model} is not allowed for {role}", role, model, fields=fields)
+        if (envelope.get("tool_name") != "codex"  # the Codex pipeline's own synthetic call
+                and any(model in p["models"] for p in routes["harnesses"]["codex"]["roles"].values())):
+            return Decision(False, f"model {model} is a Codex model; dispatch it with `tw.py codex --model {model}`",
+                            role, model, fields=fields)
         if inp.get("fork_context") or inp.get("fork"):
             return Decision(False, "Claude inherited-model fork is outside fresh dispatch", role, model, fields=fields)
     return Decision(True, "admitted-request-only", role, model, tier, fields)
