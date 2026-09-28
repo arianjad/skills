@@ -17,3 +17,9 @@ Baseline before A1: 16/16 test scripts exit 0 (2026-09-28, Windows).
 | B6 | test_tw_route.py decay block (route()): propensity 0.5 explored at t=1, 0.75 unexplored at t=16, 1.0 at the cheapest tier, pinned, cached, and backend-answered; hook rows carry the same (0.5 / 0.75) | KeyError: 'propensity' | route() returns `propensity` (eps / 1-eps / 1.0), route row logs it next to `eps`; claude.md receipts; suite 16/16 |
 
 Final: A1-A3, A2 --out fix, B1-B6 green; full suite 16/16 exit 0.
+
+## Follow-up (coordinator, after acceptance)
+
+| Item | Test (seam) | Red evidence | Green |
+|---|---|---|---|
+| F1 codex rewrite labeling | test_tw_codex.py active block (codex CLI + promote CLI): rewrite whose fake rollout reports the target effort -> race `lost: false`; one reporting `high` -> `lost: true`; both labeled accepted; `promote --model gpt-6-sol` n_router == 1 | AssertionError: no race rows on the codex path | codex_run appends a `race` row after an active rewrite (`lost = effective effort != target`, None counts as lost; `via`, `effective_effort`); SKILL.md + claude.md; suite 16/16. Unknown-effort case is by construction (None != tier), not separately tested |

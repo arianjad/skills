@@ -507,6 +507,11 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     append_receipt(home, "claude", session, {"kind": "cost", "at": now(), "harness": "claude", "session_id": session,
                                              "tool_use_id": tool_use_id, "via": "codex-exec", "exit_code": proc.returncode,
                                              "requested_effort": tier, **ev})
+    if row and row["action"] == "rewrite":  # verified like race_check: did the child run the router's pick?
+        append_receipt(home, "claude", session, {"kind": "race", "at": now(), "harness": "claude",
+                                                 "session_id": session, "tool_use_id": tool_use_id,
+                                                 "lost": ev["effort"] != tier, "agent_type": None, "via": "codex-exec",
+                                                 "effective_effort": ev["effort"]})  # unknown effort counts as lost
     print(json.dumps({"tool_use_id": tool_use_id, "last_message": str(out), "exit_code": proc.returncode,
                       "effective_model": ev["model"], "effective_effort": ev["effort"], "thread_id": ev["thread_id"]}))
     if proc.returncode:

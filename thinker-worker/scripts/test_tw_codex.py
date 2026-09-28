@@ -163,5 +163,19 @@ if __name__ == "__main__":
         assert r.returncode == 0 and "model_reasoning_effort=medium" in call["args"], (r.stderr, call["args"])
         assert len(r.stdout.splitlines()) == 2 and "medium" in r.stdout.splitlines()[0], r.stdout   # one line says so
         assert last_route()["action"] == "rewrite" and last_route()["target_tier"] == "medium", last_route()
+        # a codex-path rewrite is labeled by the rollout's effective effort: only a verified one joins promote's
+        # router arm (the fake rollout echoes the requested effort unless FAKE_EFFORT says otherwise)
+        ok_id = json.loads(r.stdout.splitlines()[-1])["tool_use_id"]
+        env["FAKE_EFFORT"] = "high"
+        r = codex(WORK + " active, runtime ignored the tier", "high", "gpt-6-sol", "worker")
+        env.pop("FAKE_EFFORT")
+        bad_id = json.loads(r.stdout.splitlines()[-1])["tool_use_id"]
+        assert {x["tool_use_id"]: x["lost"] for x in rows_of(home) if x["kind"] == "race"} == \
+            {ok_id: False, bad_id: True}, rows_of(home)
+        for tid in (ok_id, bad_id):
+            assert run(home, env, "outcome", "--harness", "claude", "--session", "s1", "--tool-use-id", tid,
+                       "--accepted", "yes").returncode == 0
+        p = run(home, env, "promote", "--harness", "claude", "--model", "gpt-6-sol")
+        assert p.returncode == 0 and [json.loads(x)["n_router"] for x in p.stdout.splitlines()] == [1], p
     print("PASS codex: activation gate, decide() reuse (tier/role/scope), Codex-model admission per Claude role "
           "(Sol worker/review, Luna leaf; Luna worker and Sonnet denied), codex flags + stdin, receipts, outcome label")
