@@ -932,6 +932,9 @@ def backend_table(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
 JEV_INSTRUCTIONS = ("Pick the lowest reasoning-effort tier at which a capable model completes this delegated task "
                     "correctly.")  # provisional, like router.options
 JEV_MAX_BYTES = 64 * 1024  # a tier answer is well under 1 KiB; a larger body is refused before any JSON parse
+# Windows refuses a closed loopback port only after ~2 s (measured 2026-09-28), so a down server would cost every
+# dispatch the whole budget; the connect gets this bound, the reply keeps the budget left. Local servers only.
+JEV_CONNECT_S = 0.25
 
 
 def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
@@ -939,7 +942,18 @@ def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
     this backend plus `options` (router.options unless the block has its own) and `timeout` (the budget left), both
     added by route(). state = TW-Role + routing header + the brief body (lines 2-12 starting `TW-` dropped) cut to
     body_chars; probabilities renormalized over the role's tiers."""
+    import http.client
+    import socket
     import urllib.request
+
+    class Conn(http.client.HTTPConnection):
+        def connect(self):  # short connect bound; the socket then waits up to the budget left for the reply
+            self.sock = socket.create_connection((self.host, self.port), min(JEV_CONNECT_S, self.timeout))
+            self.sock.settimeout(self.timeout)
+
+    class Handler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(Conn, req)
     lines = brief.split("\n")
     body = "\n".join(x for i, x in enumerate(lines) if i and not (i < 12 and x.startswith("TW-")))
     body = body[:cfg.get("body_chars", 1500)]
@@ -949,7 +963,7 @@ def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
     http = urllib.request.Request(cfg["url"], data=json.dumps(req).encode("utf-8"),
                                   headers={"Content-Type": "application/json"})
     # ProxyHandler({}): a local server, never through a system proxy
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(http, timeout=cfg["timeout"]) as resp:
+    with urllib.request.build_opener(urllib.request.ProxyHandler({}), Handler).open(http, timeout=cfg["timeout"]) as resp:
         data = resp.read(JEV_MAX_BYTES + 1)  # the join deadline cannot preempt a GIL-holding parse: bound it (R4)
     if len(data) > JEV_MAX_BYTES:
         raise ValueError(f"oversize: response over {JEV_MAX_BYTES} bytes")

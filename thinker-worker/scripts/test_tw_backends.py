@@ -105,6 +105,19 @@ if __name__ == "__main__":
         assert time.monotonic() - t0 < 1.2, time.monotonic() - t0
     finally:
         s.close()
+    # a down server fails fast, not at the budget: Windows refuses a closed loopback port only after ~2 s
+    # (measured 2026-09-28), so the connect step has its own short bound (JEV_CONNECT_S)
+    import socket
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    dead = f"http://127.0.0.1:{probe.getsockname()[1]}/v1/systemone"
+    probe.close()
+    t0 = time.monotonic()
+    r = tw.route(routes_with(backends=["kev"], budget_s=2.0, kev={"kind": "jev", "url": dead}),
+                 "claude", "worker", fields, BRIEF, "high")
+    dt = time.monotonic() - t0
+    assert (r["source"], r["tier"]) == ("coordinator", "high") and r["backends"]["kev"]["error"] != "timeout", r
+    assert dt < 1.0, dt
 
     # D1: a named block with kind "jev" resolves to backend_jev inside route()
     s = Stub(answer({"low": 0.9, "medium": 0.05, "high": 0.05, "xhigh": 0.0}))
