@@ -156,6 +156,17 @@ if __name__ == "__main__":
                                                        "model": "claude-opus-5-5"})[1])  # another model: fresh decision
             a, b, c = [x for x in receipts(home, "claude") if x["kind"] == "route"]
             assert a["ticket"] == b["ticket"] != c["ticket"] and b["source"] == "cached:explore", (a, b, c)
+        pinned = BRIEF.replace(HDR, HDR + "TW-Pin: user asked for Opus high\n")
+        for mode in ("advisory", "active"):  # TW-Pin: the router never advises, rewrites, or explores
+            r0["router"]["classes"]["*"]["mode"] = mode
+            with tempfile.TemporaryDirectory() as home:
+                run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+                code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": pinned})
+                assert code == 0 and "permissionDecision" not in out and "updatedInput" not in out, out
+                row = receipts(home, "claude")[-1]
+                assert (row["pinned"], row["source"], row["action"]) == (True, "coordinator", None), row
+                hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
+                assert receipts(home, "claude")[-1]["pinned"] is False                     # unpinned rows say so
     finally:
         tw.load_routes = REAL_LOAD
 

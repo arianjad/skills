@@ -293,6 +293,11 @@ def header_text(fields: dict, cap: int = 256) -> str:
     return "\n".join(f"{k}: {cut(fields[k])}" for k in HEADER_KEYS)
 
 
+def flagged(brief: str, key: str) -> bool:
+    """A non-empty `<key>: <value>` line in brief lines 2-12 (the header lines)."""
+    return any(x.startswith(key + ": ") and x[len(key) + 2:].strip() for x in brief.split("\n")[1:12])
+
+
 def valid_codex_fork(value: object) -> bool:
     return value == "none" or (isinstance(value, str) and
                                bool(re.fullmatch(r"[1-9][0-9]*", value)))
@@ -621,6 +626,8 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
     routes = [r for r in rows if r.get("kind") == "route"]
     groups = {}
     for r in routes:
+        if r.get("pinned"):
+            continue  # the user pinned model/effort: the router never acted, so neither arm
         key = (r.get("class"), model_of(r))
         if (cls is None or key[0] == cls) and (model is None or key[1] == model):
             groups.setdefault(key, []).append(r)
@@ -716,6 +723,8 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     pol = routes["harnesses"][harness]["roles"][role]
     tick, digest = ticket(brief, model or pol["models"][0])
     mode, explore = class_mode(routes, fields["TW-Class"])
+    if flagged(brief, "TW-Pin"):
+        explore = 0.0  # the user pinned this model/effort: never explored
     if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
         return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
                 "provenance": prior.get("provenance"),
@@ -889,8 +898,8 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     inp = envelope["tool_input"]
     brief = inp.get("message" if harness == "codex" else "prompt")
     # Checked before the cached decision is used: the ticket ignores TW-Override, so an override
-    # re-dispatch of an advised brief reuses the decision that advised it.
-    if any(x.startswith("TW-Override: ") and x[13:].strip() for x in brief.split("\n")[1:12]):  # header lines only
+    # re-dispatch of an advised brief reuses the decision that advised it. TW-Pin: the user asked for this tier.
+    if flagged(brief, "TW-Override") or flagged(brief, "TW-Pin"):
         return None, None, None, eligible, target
     if not eligible:
         return None, None, None, eligible, target
@@ -1000,7 +1009,8 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
-               "action": None, "guard": None, "eligible": None}  # eligible stays None if act() fails
+               "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
+               "pinned": flagged(brief, "TW-Pin")}
         if via:
             row["via"] = via
         if r.get("errors"):

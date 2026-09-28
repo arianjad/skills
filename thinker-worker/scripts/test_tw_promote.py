@@ -85,6 +85,12 @@ if __name__ == "__main__":
                                                       "router_tier": "low", "coordinator_tier": "high",
                                                       "eligible": True, "agent_model": m})
                 tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"{m}c{i}", "accepted": i < 850})
+        for i in range(20):  # pinned by the user: the router never acted, so neither arm (else sol would promote)
+            tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"p{i}", "ticket": f"p{i}",
+                                                  "class": "C-coding", "action": "rewrite", "router_tier": "low",
+                                                  "coordinator_tier": "high", "agent_model": "gpt-6-sol", "pinned": True})
+            tw.append_receipt(home, "claude", S, {"kind": "race", "tool_use_id": f"p{i}", "lost": False})
+            tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"p{i}", "accepted": True})
         got = {(v["class"], v["model"]): (v["n_router"], v["verdict"]) for v in tw.promote(home, "claude")}
         assert got == {("C-coding", "opus"): (10, "promote"), ("C-coding", "gpt-6-sol"): (10, "demote")}, got
         assert [v["model"] for v in tw.promote(home, "claude", model="gpt-6-sol")] == ["gpt-6-sol"]
