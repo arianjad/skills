@@ -695,16 +695,21 @@ def child_files(dirs: list[Path], tool_use_id: str) -> tuple[dict, Path] | None:
     return None
 
 
-def race_check(home: Path, harness: str, session: str, transcript_path: str | None) -> None:
+def race_check(home: Path, harness: str, session: str, transcript_path: str | None,
+               rows: list[dict] | None = None) -> None:
     """For earlier rewrites not yet checked: the child's actual agent (meta.json, written at spawn) must be the
     router's pick; only when meta.json lacks agentType, its prompt must not carry context-mode's block instead.
     Otherwise the race was lost. Runs at each dispatch and at outcome.
-    Never raises: a failure becomes a race-error row, and the dispatch is decided normally."""
+    Never raises: a failure becomes a race-error row, and the dispatch is decided normally. rows: the session's
+    receipt rows if the caller already read them."""
     try:
-        path = receipts_path(home, harness, session)
-        if harness != "claude" or not path.exists():
+        if harness != "claude":
             return
-        rows = read_rows(path)
+        if rows is None:
+            path = receipts_path(home, harness, session)
+            rows = read_rows(path) if path.exists() else []
+        if not rows:
+            return
         checked = {r.get("tool_use_id") for r in rows if r.get("kind") == "race"}
         dirs = subagents_dirs(home, session, transcript_path)
         for r in rows:
@@ -957,8 +962,8 @@ def class_count(home: Path, harness: str, cls: str, routes: dict) -> int:
                if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
 
 
-def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | None:
-    for row in read_rows(receipts_path(home, harness, session)):
+def prior_route(home: Path, harness: str, session: str, tick: str, rows: list[dict] | None = None) -> dict | None:
+    for row in read_rows(receipts_path(home, harness, session)) if rows is None else rows:
         if (row.get("kind") == "route" and row.get("ticket") == tick
                 and row.get("source") not in ("coordinator", "cached:coordinator")):
             return row  # the first bayes or exploration decision for this brief; coordinator picks are recomputed
@@ -1259,7 +1264,11 @@ def hook(home: Path, harness: str, owner: str) -> None:
         receipt(home, harness, session, envelope, Decision(False, "resume-key-on-fresh-dispatch"))
         denial("resume fields are outside fresh dispatch; coordinator must verify child identity before native continuation")
         return
-    race_check(home, harness, session, envelope.get("transcript_path"))  # never raises; see its docstring
+    try:  # read once for race_check and prior_route; on failure each reads (and fails open) as before
+        rows = read_rows(receipts_path(home, harness, session))
+    except Exception:
+        rows = None
+    race_check(home, harness, session, envelope.get("transcript_path"), rows)  # never raises; see its docstring
     routes = load_routes()
     d = decide(harness, envelope, routes)
     receipt(home, harness, session, envelope, d)
@@ -1272,7 +1281,7 @@ def hook(home: Path, harness: str, owner: str) -> None:
         return
     if d.role is None or tool == "collaborationspawn_agent":
         return  # ponytail: Codex v2 ciphertext; the task_name join is phase 2
-    out, row = routed(home, harness, session, envelope, d, routes, record)
+    out, row = routed(home, harness, session, envelope, d, routes, record, rows=rows)
     if out:  # printed only after the route row is recorded; any earlier failure leaves the admit standing
         print(json.dumps(out))
     elif (row and harness == "claude" and d.tier != row["prior_tier"] and not row["pinned"]  # no router action:
@@ -1286,7 +1295,7 @@ def hook(home: Path, harness: str, owner: str) -> None:
 
 
 def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, routes: dict, record: dict,
-           via: str | None = None) -> tuple[dict | None, dict | None]:
+           via: str | None = None, rows: list[dict] | None = None) -> tuple[dict | None, dict | None]:
     """Post-admission routing shared by the hook and `tw.py codex` (via="codex-exec"): route(), act(), and the route
     row. Returns (hook output | None, row). Fails open: the dispatch receipt already says admit, so any failure
     writes an `error` row (where "route") and returns (None, None)."""
@@ -1294,7 +1303,7 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         inp = envelope["tool_input"]
         brief = inp.get("message" if harness == "codex" else "prompt")
         model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
-        cached = prior_route(home, harness, session, ticket(brief, model)[0])
+        cached = prior_route(home, harness, session, ticket(brief, model)[0], rows)
         r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, model,
                   1 + class_count(home, harness, d.fields["TW-Class"], routes))
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
