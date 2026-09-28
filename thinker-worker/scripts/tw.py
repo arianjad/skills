@@ -123,13 +123,24 @@ def check_routes(doc: object, path: Path) -> None:
     def good_class(name: object, entry: object) -> bool:
         return ((name == "*" or name in TASK_CLASSES) and isinstance(entry, dict) and entry.get("mode") in MODES
                 and good_explore(entry.get("explore", 0.0)))
+    def good_models(rt: dict) -> bool:  # decision-model blocks: jev backends, router.combine, router.options
+        jev = [v for v in rt.values() if isinstance(v, dict) and v.get("kind") == "jev"]
+        comb, opts = rt.get("combine", {"rule": "bayes", "margin": 0.2}), rt.get("options", {})
+        return (all(isinstance(n, str) for n in rt["backends"])
+                and all(isinstance(b.get("url"), str) and (isinstance(b.get("body_chars", 1), int)
+                        and not isinstance(b.get("body_chars", 1), bool) and b.get("body_chars", 1) > 0) for b in jev)
+                and isinstance(comb, dict) and comb.get("rule") == "bayes" and num(comb.get("margin"))
+                and 0 <= comb["margin"] <= 1 and isinstance(comb.get("weights", {}), dict)
+                and all(num(w) and w >= 0 for w in comb.get("weights", {}).values())
+                and isinstance(opts, dict) and set(opts) <= set(TIERS)
+                and all(isinstance(v, str) and v for v in opts.values()))
     rt = doc.get("router")
     budget = rt.get("budget_s") if isinstance(rt, dict) else None
     cutoff = rt.get("cutoff") if isinstance(rt, dict) else None
     classes = rt.get("classes") if isinstance(rt, dict) else None
     floors = rt.get("risk_floor") if isinstance(rt, dict) else None
     priors = rt.get("priors") if isinstance(rt, dict) else None
-    if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list)
+    if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list) or not good_models(rt)
             or isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0
             or isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)) or not 0 <= cutoff <= 1
             or not isinstance(classes, dict) or "*" not in classes or not all(good_class(k, v) for k, v in classes.items())
@@ -821,7 +832,45 @@ def backend_table(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
             "body_chars_sent": 0, "provenance": f"calibration {cal.get('model')} {cal.get('fitted_date')}"}
 
 
-BACKENDS = {"table": backend_table}  # phase 2 adds the resident HTTP scorers
+# The option wording sent to decision models is routes.json router.options (tier -> behavioral effort description):
+# provisional, from Astra ideation 2026-09-28, until candidate cards (design D5) replace it.
+JEV_INSTRUCTIONS = ("Pick the lowest reasoning-effort tier at which a capable model completes this delegated task "
+                    "correctly.")  # provisional, like router.options
+
+
+def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
+    """A decision model behind Jev/TypeSafe `POST /v1/systemone` (kev.serve, Laya). cfg is the router's block for
+    this backend plus `options` (router.options unless the block has its own) and `timeout` (the budget left), both
+    added by route(). state = TW-Role + routing header + the brief body (lines 2-12 starting `TW-` dropped) cut to
+    body_chars; probabilities renormalized over the role's tiers."""
+    import urllib.request
+    lines = brief.split("\n")
+    body = "\n".join(x for i, x in enumerate(lines) if i and not (i < 12 and x.startswith("TW-")))
+    body = body[:cfg.get("body_chars", 1500)]
+    req = {"state": f"{lines[0]}\n{header_text(fields)}\n\n{body}",
+           "questions": {"tier": {"type": "choice", "instructions": JEV_INSTRUCTIONS,
+                                  "criteria": {t: cfg["options"][t] for t in pol["tiers"]}}}}
+    http = urllib.request.Request(cfg["url"], data=json.dumps(req).encode("utf-8"),
+                                  headers={"Content-Type": "application/json"})
+    # ProxyHandler({}): a local server, never through a system proxy
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(http, timeout=cfg["timeout"]) as resp:
+        got = json.loads(resp.read().decode("utf-8"))["answers"]["tier"]["probabilities"]
+    raw = {t: float(got.get(t, 0.0)) for t in pol["tiers"]}
+    total = sum(raw.values())
+    if any(v < 0 for v in raw.values()) or not total > 0:
+        raise ValueError("no probability mass on the role's tiers")
+    probs = {t: v / total for t, v in raw.items()}
+    tier = max(pol["tiers"], key=probs.get)
+    return {"tier": tier, "probs": probs, "confidence": probs[tier], "body_chars_sent": len(body),
+            "provenance": f"jev {cfg['url']}"}
+
+
+BACKENDS = {"table": backend_table}  # a router name not here resolves to backend_jev if its block has kind "jev"
+
+
+def backend_fn(cfg: dict, name: str):
+    block = cfg.get(name)
+    return BACKENDS.get(name) or (backend_jev if isinstance(block, dict) and block.get("kind") == "jev" else None)
 
 
 def valid_route(out: object, tiers: list[str]) -> bool:
@@ -884,11 +933,12 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
 
     def work() -> None:
         for name in cfg["backends"]:
-            fn = BACKENDS.get(name)
+            fn = backend_fn(cfg, name)
             if fn is None:
                 continue
             try:
-                out = fn(cfg.get(name, {}), pol, fields, brief)
+                out = fn({"options": cfg.get("options", {}), **cfg.get(name, {}),
+                          "timeout": max(0.01, cfg["budget_s"] - (time.monotonic() - start))}, pol, fields, brief)
             except Exception as exc:
                 result.setdefault("errors", []).append(f"{name}: {type(exc).__name__}")
                 continue

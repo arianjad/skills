@@ -43,3 +43,11 @@ Baseline before C1: 16/16 test scripts exit 0 (183 s, 2026-09-28, Windows).
 
 TW-Check final: C1-C4 green; full suite 17/17 exit 0.
 C5 check shell green; full suite 17/17 exit 0.
+
+## Decision models (backend_jev, Bayesian combination, margin gate; design D11, D14)
+
+Baseline before D1: 17/17 test scripts exit 0 (196 s, 2026-09-28, Windows). Shipped `router.backends` stays `[]`.
+
+| Item | Test (seam) | Red evidence | Green |
+|---|---|---|---|
+| D1 backend_jev | test_tw_backends.py (backend_jev against a stdlib `ThreadingHTTPServer` stub on 127.0.0.1:0): POST path `/v1/systemone`; `questions.tier` choice with criteria = the role's tiers mapped to `router.options` (worker 4, leaf 2); state = `TW-Role` line + `header_text` + body cut to `body_chars` (40 sent, tail absent; TW-Check line absent; default 1500); a stray `max` probability dropped and the rest renormalized (medium 0.6/0.9), `valid_route` passes; zero mass on the role's tiers -> ValueError; 1.5 s server vs timeout 0.3 -> OSError in < 1.2 s; route() with `backends: ["kev"]` and a `kind: "jev"` block resolves to backend_jev. test_tw_routes.py: 13 new router-block cases (jev url/body_chars, backends of strings, combine rule/margin/weights, options keys/values) | `KeyError: 'options'` (shipped routes.json), then `AttributeError: module 'tw' has no attribute 'backend_jev'`; routes: `AssertionError` on `kev.url: 8766` accepted | `backend_jev`, `backend_fn` (BACKENDS[name], else kind "jev"), `JEV_INSTRUCTIONS` + provisional-wording comment; route() passes `{options, **block, timeout: budget left}`; `good_models` in check_routes; routes.json `kev`, `laya`, `combine {bayes, 0.2}`, `options` |
