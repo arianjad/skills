@@ -316,3 +316,34 @@ if __name__ == "__main__":
     finally:
         tw.load_routes = real_load
     print("PASS backends D4: combined_mean logged (gate pass and miss), None with no answer or cached")
+
+    # Astra round-3 R3: the shipped Laya adapter validates its predictor's probabilities before normalizing, so a
+    # malformed prediction reaches route() as a failed backend (HTTP 502), never as a confident pick. Composed path:
+    # laya_serve's real handler on an ephemeral loopback port -> backend_jev -> route() (no real server touched)
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "servers"))
+    import laya_serve
+
+    def laya(probs):
+        def predict(state, qs):
+            return {"answers": {"tier": {"type": "choice", "choice": "low", "confidence": 0.9, "probabilities": probs}}}
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), laya_serve.make_handler(predict, "stub", threading.Lock()))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            return tw.route(routes_with(backends=["laya"], classes={"*": {"mode": "active", "explore": 0.0}},
+                                        laya={"kind": "jev", "url": f"http://127.0.0.1:{srv.server_address[1]}"
+                                                                    "/v1/systemone"}),
+                            "claude", "worker", fields, BRIEF, "high")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+    r = laya({"low": 0.9, "medium": 0.05, "high": 0.05, "xhigh": 0.0})              # control: a valid prediction acts
+    assert (r["source"], r["tier"], r["gate"]) == ("bayes", "low", "pass"), r
+    for bad in ({"low": True, "medium": False, "high": False, "xhigh": False},
+                {"low": -4, "medium": -1, "high": 0, "xhigh": 0}, {"low": 0, "medium": 0, "high": 0, "xhigh": 0},
+                {"low": float("nan"), "medium": 0.5, "high": 0.5, "xhigh": 0}, {"low": "0.9", "medium": 0.1}):
+        r = laya(bad)
+        assert (r["source"], r["tier"], r["gate"]) == ("coordinator", "high", None), (bad, r)
+        assert "502" in r["backends"]["laya"]["error"], (bad, r["backends"])
+    print("PASS backends R3: Laya adapter answers 502 on malformed predictor probabilities; route() falls back")

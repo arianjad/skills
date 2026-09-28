@@ -3,19 +3,27 @@
 POST /v1/systemone {"state", "questions"} -> {"answers", "latency_ms", "usage"}; GET /v1/models.
 Run under Local-Agent/local_decisions/.venv python. `--selftest` checks the mapping with a stub, no weights.
 """
-import argparse, json, os, threading, time
+import argparse, json, math, os, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO, SUB = "convaiinnovations/laya", "typed-decisions"
 
 
+class BadPrediction(ValueError):
+    """The predictor's output is not a probability distribution: the server's fault, answered 502."""
+
+
 def map_answer(raw: dict, qdef: dict) -> dict:
-    """Map one Laya answer to the contract; choice probabilities renormalized over the given options."""
+    """Map one Laya answer to the contract; choice probabilities renormalized over the given options, after checking
+    every value is a finite, non-bool real >= 0 with some mass on an option (never coerced: Astra round-3 R3)."""
     if raw.get("type") != "choice":
         return raw
-    opts = list(qdef["criteria"])
-    p = {o: float(raw["probabilities"].get(o, 0.0)) for o in opts}
-    s = sum(p.values()) or 1.0
+    opts, got = list(qdef["criteria"]), raw.get("probabilities")
+    if not (isinstance(got, dict) and all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+                                          and v >= 0 for v in got.values()) and any(got.get(o, 0) > 0 for o in opts)):
+        raise BadPrediction(f"predictor probabilities are not a distribution: {got!r}"[:200])
+    p = {o: float(got.get(o, 0.0)) for o in opts}
+    s = sum(p.values())
     p = {o: v / s for o, v in p.items()}
     return {"type": "choice", "choice": max(p, key=p.get), "confidence": float(raw["confidence"]), "probabilities": p}
 
@@ -52,6 +60,8 @@ def make_handler(predict, model_id: str, lock: threading.Lock):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 with lock:  # ponytail: one global model lock; batch requests if throughput ever matters
                     self._send(200, handle(predict, body))
+            except BadPrediction as e:  # a bad upstream answer, not a bad request: the router logs a failed backend
+                self._send(502, {"error": f"BadPrediction: {e}"})
             except Exception as e:
                 self._send(400, {"error": f"{type(e).__name__}: {e}"})
 
@@ -82,6 +92,12 @@ def selftest():
         assert set(t) == {"type", "choice", "confidence", "probabilities"}, t
         assert t["choice"] == "high" and abs(sum(t["probabilities"].values()) - 1) < 1e-9, t
         assert abs(t["probabilities"]["high"] - 0.5 / 0.9) < 1e-9 and isinstance(a["latency_ms"], float), a
+        for bad in ({"low": True}, {"low": -4, "high": 0}, {"low": 0}, {"low": float("nan")}, {"low": "0.9"}, [0.9]):
+            try:
+                map_answer({"type": "choice", "confidence": 0.3, "probabilities": bad}, q["tier"])
+                raise AssertionError(f"accepted {bad!r}")
+            except BadPrediction:
+                pass
         try:  # malformed body -> 400, not a crash
             urllib.request.urlopen(urllib.request.Request(base + "/v1/systemone", b"{}"))
             raise AssertionError("expected 400")
