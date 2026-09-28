@@ -18,7 +18,7 @@
     "backends": [],
     "kev":  {"kind": "jev", "url": "http://127.0.0.1:8766/v1/systemone", "body_chars": 1500},
     "laya": {"kind": "jev", "url": "http://127.0.0.1:8767/v1/systemone", "body_chars": 1100},
-    "combine": {"rule": "bayes", "margin": 0.2},
+    "combine": {"margin": 0.2},
     "options": {"low": "Direct execution of a specified method; limited alternative search.",
                 "medium": "Work through dependent steps and perform ordinary verification.",
                 "high": "Compare plausible approaches, investigate failures, and check assumptions.",

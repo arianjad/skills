@@ -75,7 +75,7 @@ if __name__ == "__main__":
     from pathlib import Path
     good = {"backends": [], "budget_s": 2.0, "classes": {"*": {"mode": "shadow"}},
             "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"},
-            "priors": {"*": "medium"}}
+            "priors": {"*": "medium"}, "combine": {"margin": 0.2}}
     dec = {"c": 0.5, "power": 0.25, "floor": 0.05}
     with tempfile.TemporaryDirectory() as tmp:
         for router, ok in [(good, True), (None, False), ([], False), ({**good, "backends": "table"}, False),
@@ -99,18 +99,18 @@ if __name__ == "__main__":
                            ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "c": True}}}}, False),
                            ({**good, "classes": {"*": {"mode": "shadow", "explore": {"c": 0.5, "power": 0.25}}}}, False),
                            ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "x": 1}}}}, False),
-                           # decision-model blocks (design D11): jev backends, combine rule, option wording
+                           # decision-model blocks (design D11): jev backends, combine margin/weights, option wording
                            ({**good, "backends": ["kev"], "kev": {"kind": "jev", "url": "http://x/v1/systemone",
                                                                   "body_chars": 1500}}, True),
                            ({**good, "kev": {"kind": "jev", "url": 8766}}, False),
                            ({**good, "kev": {"kind": "jev", "url": "http://x", "body_chars": 0}}, False),
                            ({**good, "kev": {"kind": "jev", "url": "http://x", "body_chars": True}}, False),
                            ({**good, "backends": [1]}, False),
-                           ({**good, "combine": {"rule": "bayes", "margin": 0.2, "weights": {"kev": 0.5}}}, True),
-                           ({**good, "combine": {"rule": "mean", "margin": 0.2}}, False),
-                           ({**good, "combine": {"rule": "bayes", "margin": 1.5}}, False),
-                           ({**good, "combine": {"rule": "bayes"}}, False),
-                           ({**good, "combine": {"rule": "bayes", "margin": 0.2, "weights": {"kev": -1}}}, False),
+                           ({**good, "combine": {"margin": 0.2, "weights": {"kev": 0.5}}}, True),
+                           ({k: v for k, v in good.items() if k != "combine"}, False),                   # required
+                           ({**good, "combine": {"margin": 1.5}}, False),
+                           ({**good, "combine": {}}, False),
+                           ({**good, "combine": {"margin": 0.2, "weights": {"kev": -1}}}, False),
                            ({**good, "options": {"low": "l", "medium": "m"}}, True),
                            ({**good, "options": {"max": "m"}}, False),
                            ({**good, "options": {"low": ""}}, False)]:
@@ -189,7 +189,7 @@ if __name__ == "__main__":
             rt = doc["router"]
             assert "_override_error" not in doc and rt["backends"] == ["kev"], doc.get("_override_error")
             assert rt["kev"] == {**R["router"]["kev"], "url": "http://127.0.0.1:9/v1/systemone"}, rt["kev"]
-            assert rt["combine"] == {"rule": "bayes", "margin": 0.1} and rt["laya"] == R["router"]["laya"], rt
+            assert rt["combine"] == {"margin": 0.1} and rt["laya"] == R["router"]["laya"], rt
             assert rt["options"] == {**R["router"]["options"], "low": "terse"}, rt["options"]
             doc = loaded(json.dumps({"router": {"backends": ["mine"], "mine": {"kind": "jev", "url": "http://x"}}}))
             assert doc["router"]["mine"] == {"kind": "jev", "url": "http://x"} and "_override_error" not in doc, doc

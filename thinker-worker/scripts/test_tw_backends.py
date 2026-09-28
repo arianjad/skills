@@ -151,13 +151,13 @@ if __name__ == "__main__":
     r = tw.route(routes_with(backends=["c", "d"]), "claude", "worker", fields, BRIEF, "high")
     assert (r["source"], r["tier"], r["gate"]) == ("coordinator", "high", "margin"), r
     assert close(r["combined"], expect({"c": C, "d": D})) and set(r["backends"]) == {"c", "d"}, r
-    r = tw.route(routes_with(backends=["c", "d"], combine={"rule": "bayes", "margin": 0.05}),
+    r = tw.route(routes_with(backends=["c", "d"], combine={"margin": 0.05}),
                  "claude", "worker", fields, BRIEF, "high")
     assert (r["source"], r["tier"], r["gate"]) == ("bayes", "medium", "pass"), r   # the margin is the knob
     E, F = {"low": 0.9, "medium": 0.1}, {"medium": 1.0}
     tw.BACKENDS.update(e=stub(E), f=stub(F))
     assert tw.route(routes_with(backends=["e", "f"]), "claude", "worker", fields, BRIEF, "high")["tier"] == "medium"
-    r = tw.route(routes_with(backends=["e", "f"], combine={"rule": "bayes", "margin": 0.2, "weights": {"e": 1.0, "f": 0.0}}),
+    r = tw.route(routes_with(backends=["e", "f"], combine={"margin": 0.2, "weights": {"e": 1.0, "f": 0.0}}),
                  "claude", "worker", fields, BRIEF, "high")
     assert r["tier"] == "low" and close(r["combined"], expect({"e": E, "f": F}, {"e": 1.0, "f": 0.0})), r   # weights
     G, H = {"low": 1.0}, {"medium": 1.0}                                            # disjoint: floored, not log(0)

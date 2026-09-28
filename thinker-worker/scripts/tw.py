@@ -144,9 +144,9 @@ def check_routes(doc: object, path: Path) -> None:
         return isinstance(b.get("url"), str) and num(chars) and isinstance(chars, int) and chars > 0
 
     def good_models(rt: dict) -> bool:  # decision-model blocks: jev backends, router.combine, router.options
-        comb, opts = rt.get("combine", {"rule": "bayes", "margin": 0.2}), rt.get("options", {})
+        comb, opts = rt.get("combine"), rt.get("options", {})
         return (all(isinstance(n, str) for n in rt["backends"]) and all(good_jev(b) for b in rt.values() if is_jev(b))
-                and isinstance(comb, dict) and comb.get("rule") == "bayes" and num(comb.get("margin"))
+                and isinstance(comb, dict) and num(comb.get("margin"))
                 and 0 <= comb["margin"] <= 1 and isinstance(comb.get("weights", {}), dict)
                 and all(num(w) and w >= 0 for w in comb.get("weights", {}).values())
                 and isinstance(opts, dict) and set(opts) <= set(TIERS)
@@ -1068,7 +1068,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
              "body_chars_sent": 0}
     combined = mean = gate = None
     if ok:
-        comb = cfg.get("combine", {"margin": 0.2})
+        comb = cfg["combine"]
         combined = combine(ok, pol["tiers"], comb.get("weights", {}))
         # design D11: logged only, so other pooling rules can be scored offline against labels
         mean = {t: sum(b["probs"].get(t, 0.0) for b in ok.values()) / len(ok) for t in pol["tiers"]}
