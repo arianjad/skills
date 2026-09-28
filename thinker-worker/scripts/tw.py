@@ -60,7 +60,6 @@ def agent_name(role: str, tier: str) -> str:
 
 MODES = ("shadow", "advisory", "active")
 OVERRIDABLE = {"priors", "classes", "risk_floor", "defaults"}  # the only router keys the user override file may set
-ASTRA = "gpt-6-astra"  # Claude-coordinated review/ideation on Astra runs through `codex exec` (tw.py astra)
 
 
 def load_routes(path: Path | None = None) -> dict:
@@ -430,9 +429,9 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
 CODEX_USAGE = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
 
 
-def codex_cmd(exe: str, role: str, tier: str, cd: Path, out: Path) -> list[str]:
-    # Same reach as a Claude reviewer/ideator: may write (temp files, scripts) and search the web.
-    return [exe, "--search", "exec", "-m", ASTRA, "-c", f"model_reasoning_effort={tier}", "-s", "workspace-write",
+def codex_cmd(exe: str, model: str, tier: str, cd: Path, out: Path) -> list[str]:
+    # Same reach as a Claude child: may write (temp files, scripts) and search the web.
+    return [exe, "--search", "exec", "-m", model, "-c", f"model_reasoning_effort={tier}", "-s", "workspace-write",
             "--json", "--skip-git-repo-check", "-C", str(cd), "-o", str(out), "-"]
 
 
@@ -459,25 +458,30 @@ def codex_evidence(home: Path, events: str) -> dict:
     return ev
 
 
-def astra(home: Path, session: str, role: str, tier: str, brief_file: Path, cd: Path, out: Path | None) -> int:
-    """Claude coordinator -> Astra review/ideation via `codex exec`. Same gate as a native dispatch (decide() on a
-    synthetic Agent call with model gpt-6-astra); receipts get a dispatch row and a cost row with effective model/effort."""
+def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_file: Path, cd: Path,
+              out: Path | None) -> int:
+    """Claude coordinator -> a Codex model via `codex exec`. Same gate as a native dispatch (decide() on a synthetic
+    Agent call with the model), plus: the model must also be in some Codex role's models. Receipts get a dispatch row
+    and a cost row with effective model/effort."""
     if activation(home, "claude", session) is None:
         raise Conflict(f"claude session {session} is not activated for thinker-worker")
     brief = brief_file.read_text(encoding="utf-8")
-    tool_use_id = f"astra-{os.urandom(6).hex()}"
-    env = {"tool_name": "astra", "tool_use_id": tool_use_id,
-           "tool_input": {"subagent_type": agent_name(role, tier), "model": ASTRA, "prompt": brief}}
-    d = decide("claude", env, load_routes())
+    tool_use_id = f"codex-{os.urandom(6).hex()}"
+    env = {"tool_name": "codex", "tool_use_id": tool_use_id,
+           "tool_input": {"subagent_type": agent_name(role, tier), "model": model, "prompt": brief}}
+    routes = load_routes()
+    d = decide("claude", env, routes)
+    if d.admitted and not any(model in pol["models"] for pol in routes["harnesses"]["codex"]["roles"].values()):
+        d = d._replace(admitted=False, reason=f"model {model} is not a Codex model")
     receipt(home, "claude", session, env, d)
     if not d.admitted:
         raise Conflict(d.reason)
     exe = shutil.which("codex")
     if not exe:
         raise Conflict("codex CLI not found on PATH")
-    out = out or state_root(home) / "astra" / f"{tool_use_id}.md"
+    out = out or state_root(home) / "codex" / f"{tool_use_id}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(codex_cmd(exe, role, tier, cd, out), input=(AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
+    proc = subprocess.run(codex_cmd(exe, model, tier, cd, out), input=(AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
                           capture_output=True)
     ev = codex_evidence(home, proc.stdout.decode("utf-8", errors="replace"))
     append_receipt(home, "claude", session, {"kind": "cost", "at": now(), "harness": "claude", "session_id": session,
@@ -1453,16 +1457,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "route", "promote", "astra"):
+                 "route", "promote", "codex"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
-        if name == "astra":  # Claude harness only; Codex dispatches Astra natively
+        if name == "codex":  # Claude harness only; Codex dispatches its models natively
             p.add_argument("--session", required=True)
-            p.add_argument("--role", choices=("independent-review", "ideation"), required=True)
+            p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
             p.add_argument("--tier", choices=TIERS, required=True)
+            p.add_argument("--model", required=True)
             p.add_argument("--brief-file", type=Path, required=True)
-            p.add_argument("--cd", type=Path, default=Path.cwd(), help="Astra's working root (default: cwd)")
-            p.add_argument("--out", type=Path, help="report path (default ~/.thinker-worker/astra/<tool_use_id>.md)")
+            p.add_argument("--cd", type=Path, default=Path.cwd(), help="the child's working root (default: cwd)")
+            p.add_argument("--out", type=Path, help="report path (default ~/.thinker-worker/codex/<tool_use_id>.md)")
         if name in {"activate", "deactivate", "status", "hook", "outcome", "route", "promote"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
         if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
@@ -1520,9 +1525,9 @@ def main() -> int:
                     args.cause)
         elif args.command == "promote":
             print(json.dumps(promote(home, args.harness, args.cls)))
-        elif args.command == "astra":
-            return astra(home, session_value(args.session), args.role, args.tier, args.brief_file,
-                         args.cd.expanduser().resolve(), args.out.expanduser().resolve() if args.out else None)
+        elif args.command == "codex":
+            return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
+                             args.cd.expanduser().resolve(), args.out.expanduser().resolve() if args.out else None)
         elif args.command == "route":
             routes = load_routes()
             brief = args.brief_file.read_text(encoding="utf-8")

@@ -2,9 +2,9 @@
   "schema": 1,
   "harnesses": {
     "claude": {"roles": {
-      "worker":             {"models": ["opus", "claude-opus-5", "claude-opus-5-5"], "tiers": ["low", "medium", "high", "xhigh"], "tools": null},
-      "leaf":               {"models": ["sonnet", "claude-sonnet-5"],               "tiers": ["low", "medium"],  "tools": null},
-      "independent-review": {"models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra"], "tiers": ["medium", "high", "xhigh"], "tools": null},
+      "worker":             {"models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol"], "tiers": ["low", "medium", "high", "xhigh"], "tools": null},
+      "leaf":               {"models": ["sonnet", "claude-sonnet-5", "gpt-6-luna"],               "tiers": ["low", "medium"],  "tools": null},
+      "independent-review": {"models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol"], "tiers": ["medium", "high", "xhigh"], "tools": null},
       "ideation":           {"models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-astra"], "tiers": ["medium", "high", "xhigh"], "tools": null}
     }},
     "codex": {"roles": {
