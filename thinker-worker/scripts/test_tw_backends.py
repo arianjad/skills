@@ -114,7 +114,21 @@ if __name__ == "__main__":
         assert r["tier"] == "low" and r["source"] != "coordinator" and s.seen, r
     finally:
         s.close()
-    print("PASS backends D1: backend_jev request/renormalize/timeout, jev block resolution")
+    # review 2 F4: probabilities that are not finite reals in [0, 1] (booleans, scores) make the answer invalid:
+    # the backend is logged with an error and route() falls back to the coordinator (fail open)
+    for bad in ({"low": True, "medium": False, "high": False, "xhigh": False},
+                {"low": 4, "medium": 0, "high": 0, "xhigh": 0}, {"low": 0.5, "medium": "0.5"}):
+        s = Stub(answer(bad))
+        try:
+            r = tw.route(routes_with(backends=["kev"], kev={"kind": "jev", "url": s.url}),
+                         "claude", "worker", fields, BRIEF, "high")
+            assert s.seen and (r["source"], r["tier"], r["gate"]) == ("coordinator", "high", None), (bad, r)
+            assert r["backends"]["kev"]["error"].startswith("ValueError"), (bad, r["backends"])
+        finally:
+            s.close()
+    for probs in ({"low": True}, {"low": float("inf")}, {"low": float("nan")}):   # the generic answer check too
+        assert not tw.valid_route({"tier": "low", "probs": probs, "confidence": 1.0}, worker["tiers"]), probs
+    print("PASS backends D1: backend_jev request/renormalize/timeout, jev block resolution, malformed probabilities")
 
     # D2: every configured backend in parallel within budget_s; weighted geometric mean (w = 1/n unless
     # router.combine.weights; zeros floored at 1e-6); acts (source "bayes") only if top1 - top2 >= margin

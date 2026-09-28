@@ -943,6 +943,8 @@ def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
     # ProxyHandler({}): a local server, never through a system proxy
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(http, timeout=cfg["timeout"]) as resp:
         got = json.loads(resp.read().decode("utf-8"))["answers"]["tier"]["probabilities"]
+    if not isinstance(got, dict) or not all(prob(v) and v <= 1 for v in got.values()):
+        raise ValueError("probabilities must be finite numbers in [0, 1]")  # never coerce flags or scores
     raw = {t: float(got.get(t, 0.0)) for t in pol["tiers"]}
     total = sum(raw.values())
     if any(v < 0 for v in raw.values()) or not total > 0:
@@ -960,13 +962,18 @@ def backend_fn(cfg: dict, name: str):
     return BACKENDS.get(name) or (backend_jev if is_jev(cfg.get(name)) else None)
 
 
+def prob(v: object) -> bool:
+    """A finite, non-negative real number (bool excluded)."""
+    return not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0
+
+
 def valid_route(out: object, tiers: list[str]) -> bool:
     if not isinstance(out, dict) or out.get("tier") not in tiers or not isinstance(out.get("probs"), dict):
         return False
     probs = out["probs"]
-    return (set(probs) <= set(tiers) and all(isinstance(v, (int, float)) and v >= 0 for v in probs.values())
+    return (set(probs) <= set(tiers) and all(prob(v) for v in probs.values())
             and abs(sum(probs.values()) - 1) < 1e-6
-            and isinstance(out.get("confidence"), (int, float)) and 0 <= out["confidence"] <= 1)
+            and prob(out.get("confidence")) and out["confidence"] <= 1)
 
 
 def class_mode(routes: dict, cls: str | None) -> tuple[str, float | dict]:
