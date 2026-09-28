@@ -186,7 +186,7 @@ if __name__ == "__main__":
     decay = {"c": 0.5, "power": 0.25, "floor": 0.05}
     r1 = json.loads(json.dumps(REAL_LOAD()))
     r1["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": decay}})
-    coin = lambda b: int(tw.ticket(b, "opus")[0], 16) / 16 ** 12
+    coin = lambda b: tw.coin(tw.ticket(b, "opus")[0])
     mid = next(b for b in (BRIEF + f" d{i}" for i in range(500)) if 0.3 < coin(b) < 0.5)   # explored iff eps > coin
     r = tw.route(r1, "claude", "worker", fields, mid, "high", t=1)
     assert (r["source"], r["eps"], r["explore"]) == ("explore", 0.5, decay), r
@@ -226,7 +226,7 @@ if __name__ == "__main__":
     os.environ["TW_ROUTES"] = str(tw.source_root() / "routes.json")  # a real-home override file is never read
     shipped = tw.load_routes()  # no backend, every class advisory with decaying exploration (eps 0.5 at t=1)
     assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": decay}
-    coin = lambda b: int(tw.ticket(b, "opus")[0], 16) / 16 ** 12      # the draw route() and act() use
+    coin = lambda b: tw.coin(tw.ticket(b, "opus")[0])      # the draw route() and act() use
     briefs = ["TW-Role: worker\n" + HDR.replace("destructive", "none") + f"shipped {i}" for i in range(200)]
     under, over = next(b for b in briefs if coin(b) < 0.2), next(b for b in briefs if coin(b) >= 0.5)  # t=1, t=2
     with tempfile.TemporaryDirectory() as home:

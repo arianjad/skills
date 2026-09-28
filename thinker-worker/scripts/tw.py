@@ -90,9 +90,8 @@ def merge_override(doc: dict, ov_path: Path) -> dict:
     "jev"); a class entry inherits the merged "*" entry. The merged doc is validated like the installed one."""
     ov = read_json(ov_path, None)
     rt = ov.get("router") if isinstance(ov, dict) else None
-    jev = lambda v: isinstance(v, dict) and v.get("kind") == "jev"
     if (not isinstance(ov, dict) or set(ov) != {"router"} or not isinstance(rt, dict)
-            or not all(k in OVERRIDABLE or jev(v) or jev(doc["router"].get(k)) for k, v in rt.items())
+            or not all(k in OVERRIDABLE or is_jev(v) or is_jev(doc["router"].get(k)) for k, v in rt.items())
             or not all(isinstance(v, list if k == "backends" else dict) for k, v in rt.items())
             or not all(isinstance(v, dict) for v in rt.get("classes", {}).values())):
         raise Conflict("may set only router.priors, classes, risk_floor, defaults, combine, options and jev backend "
@@ -108,6 +107,16 @@ def merge_override(doc: dict, ov_path: Path) -> dict:
     check_routes(merged, ov_path)
     merged["_override"] = str(ov_path)
     return merged
+
+
+def is_jev(block: object) -> bool:
+    """A router block for a decision model behind /v1/systemone (backend_jev)."""
+    return isinstance(block, dict) and block.get("kind") == "jev"
+
+
+def is_codex_model(routes: dict, model: object) -> bool:
+    """The model is in some Codex role's models: from Claude it runs only through `tw.py codex`."""
+    return any(model in p["models"] for p in routes["harnesses"]["codex"]["roles"].values())
 
 
 def check_routes(doc: object, path: Path) -> None:
@@ -130,12 +139,13 @@ def check_routes(doc: object, path: Path) -> None:
     def good_class(name: object, entry: object) -> bool:
         return ((name == "*" or name in TASK_CLASSES) and isinstance(entry, dict) and entry.get("mode") in MODES
                 and good_explore(entry.get("explore", 0.0)))
+    def good_jev(b: dict) -> bool:
+        chars = b.get("body_chars", 1)
+        return isinstance(b.get("url"), str) and num(chars) and isinstance(chars, int) and chars > 0
+
     def good_models(rt: dict) -> bool:  # decision-model blocks: jev backends, router.combine, router.options
-        jev = [v for v in rt.values() if isinstance(v, dict) and v.get("kind") == "jev"]
         comb, opts = rt.get("combine", {"rule": "bayes", "margin": 0.2}), rt.get("options", {})
-        return (all(isinstance(n, str) for n in rt["backends"])
-                and all(isinstance(b.get("url"), str) and (isinstance(b.get("body_chars", 1), int)
-                        and not isinstance(b.get("body_chars", 1), bool) and b.get("body_chars", 1) > 0) for b in jev)
+        return (all(isinstance(n, str) for n in rt["backends"]) and all(good_jev(b) for b in rt.values() if is_jev(b))
                 and isinstance(comb, dict) and comb.get("rule") == "bayes" and num(comb.get("margin"))
                 and 0 <= comb["margin"] <= 1 and isinstance(comb.get("weights", {}), dict)
                 and all(num(w) and w >= 0 for w in comb.get("weights", {}).values())
@@ -147,7 +157,7 @@ def check_routes(doc: object, path: Path) -> None:
     floors = rt.get("risk_floor") if isinstance(rt, dict) else None
     priors = rt.get("priors") if isinstance(rt, dict) else None
     if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list) or not good_models(rt)
-            or isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0
+            or not num(budget) or budget <= 0
             or not isinstance(classes, dict) or "*" not in classes or not all(good_class(k, v) for k, v in classes.items())
             or not isinstance(floors, dict) or set(floors) != RISKS or any(v not in TIERS for v in floors.values())
             or not isinstance(priors, dict) or "*" not in priors or not set(priors) <= TASK_CLASSES | {"*"}
@@ -284,9 +294,7 @@ def first_role(brief: object) -> tuple[str | None, str]:
 
 
 def review_details(brief: str) -> bool:
-    lines = brief.split("\n")[1:12]
-    return (any(x.startswith("TW-Authorization: ") and x[18:].strip() for x in lines) and
-            any(x.startswith("TW-Scope: ") and x[10:].strip() for x in lines))
+    return flagged(brief, "TW-Authorization") and flagged(brief, "TW-Scope")
 
 
 def header_fields(brief: str) -> tuple[dict | None, str]:
@@ -377,8 +385,7 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
             return Decision(False, f"tier {tier} is outside {role}'s tiers {pol['tiers']}", role, model, fields=fields)
         if model is not None and model not in pol["models"]:
             return Decision(False, f"model {model} is not allowed for {role}", role, model, fields=fields)
-        if (envelope.get("tool_name") != "codex"  # the Codex pipeline's own synthetic call
-                and any(model in p["models"] for p in routes["harnesses"]["codex"]["roles"].values())):
+        if envelope.get("tool_name") != "codex" and is_codex_model(routes, model):  # not the pipeline's own call
             return Decision(False, f"model {model} is a Codex model; dispatch it with `tw.py codex --model {model}`",
                             role, model, fields=fields)
         if inp.get("fork_context") or inp.get("fork"):
@@ -651,7 +658,7 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
            "tool_input": {"subagent_type": agent_name(role, tier), "model": model, "prompt": brief}}
     routes = load_routes()
     d = decide("claude", env, routes)
-    if d.admitted and not any(model in pol["models"] for pol in routes["harnesses"]["codex"]["roles"].values()):
+    if d.admitted and not is_codex_model(routes, model):
         d = d._replace(admitted=False, reason=f"model {model} is not a Codex model")
     receipt(home, "claude", session, env, d)
     if not d.admitted:
@@ -895,6 +902,11 @@ def ticket(brief: str, model: str) -> tuple[str, str]:
     return digest[:12], digest
 
 
+def coin(tick: str) -> float:
+    """A ticket's exploration draw in [0, 1): the dispatch is explored when it falls below eps."""
+    return int(tick, 16) / 16 ** 12
+
+
 def clamp(tier: str, tiers: list[str]) -> str:
     i = TIERS.index(tier)
     return min(tiers, key=lambda t: (abs(TIERS.index(t) - i), TIERS.index(t)))
@@ -944,8 +956,7 @@ BACKENDS = {"table": backend_table}  # a router name not here resolves to backen
 
 
 def backend_fn(cfg: dict, name: str):
-    block = cfg.get(name)
-    return BACKENDS.get(name) or (backend_jev if isinstance(block, dict) and block.get("kind") == "jev" else None)
+    return BACKENDS.get(name) or (backend_jev if is_jev(cfg.get(name)) else None)
 
 
 def valid_route(out: object, tiers: list[str]) -> bool:
@@ -1030,18 +1041,19 @@ def combine(answers: dict, tiers: list[str], weights: dict) -> dict:
 
 
 def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
-          prior: dict | None = None, model: str | None = None, t: int = 1) -> dict:
+          prior: dict | None = None, model: str | None = None, t: int = 1, pinned: bool | None = None) -> dict:
     """Fail-open router (design D11, D14): every backend is asked in parallel (ask_backends); the valid answers are
     combined (combine) and the combined pick decides (source "bayes") if its top1 - top2 >= router.combine.margin
     (gate "pass"), else the coordinator's tier stands (gate "margin"; None when no backend answered). A ticket whose
     coin falls below eps goes one tier below that pick (source "explore"). eps is the class's explore at the class's
     t-th routed dispatch (epsilon), 0 when cached or pinned. model: the requested model (default the role's
-    models[0]); it keys the ticket."""
+    models[0]); it keys the ticket. pinned: the brief's TW-Pin flag, computed here unless the caller passes it."""
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
     tick, digest = ticket(brief, model or pol["models"][0])
     mode, explore = class_mode(routes, fields["TW-Class"])
-    eps = 0.0 if flagged(brief, "TW-Pin") else epsilon(explore, t)  # a user pin is never explored
+    pinned = flagged(brief, "TW-Pin") if pinned is None else pinned
+    eps = 0.0 if pinned else epsilon(explore, t)  # a user pin is never explored
     if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
         return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
                 "provenance": prior.get("provenance"),
@@ -1073,7 +1085,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     # if explored, 1 - eps if not, 1.0 with no draw.
     ladder = pol["tiers"]
     drawn = eps > 0 and found["tier"] in ladder and ladder.index(found["tier"]) > 0
-    explored = drawn and int(tick, 16) / 16 ** 12 < eps
+    explored = drawn and coin(tick) < eps
     if explored:
         below = ladder[ladder.index(found["tier"]) - 1]  # one tier below the pick, on the role's own ladder
         found = {**found, "tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
@@ -1191,10 +1203,11 @@ def advisory_flag(home: Path, harness: str, session: str) -> Path:
     return state_root(home) / "state" / harness / f"{sha(session.encode('utf-8'))}.advisory"
 
 
-def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: dict, routes: dict,
+def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: dict, routes: dict, pinned: bool,
         via: str | None = None):
     """(hook output | None, action None/"advise"/"rewrite", guard | None, eligible, target) for an admitted,
-    routed dispatch; via (the `tw.py codex` path) skips the competing-writer/race guard and names picks as --tier.
+    routed dispatch; pinned: the brief's TW-Pin flag; via (the `tw.py codex` path) skips the competing-writer/race
+    guard, names picks as --tier, and its rewrite output carries only additionalContext (no updatedInput).
     target: the router's pick raised to the highest routes.json risk_floor among the brief's
     TW-Risk flags (the coordinator's tier on a coordinator-source row). eligible: the router's pick differs from the
     coordinator's tier (a gated `bayes` pick or an explored one, fresh or a cached bayes decision), whatever the
@@ -1211,17 +1224,12 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     # A re-dispatch of an explored brief is not re-advised.
     disagree = target != d.tier and r["source"] in ("bayes", "cached:bayes", "explore")
     eligible = r["source"] != "coordinator" and disagree and not (floored and not lower)
-    if floored and not lower:
-        return None, None, None, eligible, target
-    if r["mode"] == "shadow" or r["source"] == "coordinator":
-        return None, None, None, eligible, target
     inp = envelope["tool_input"]
     brief = inp.get("message" if harness == "codex" else "prompt")
-    # Checked before the cached decision is used: the ticket ignores TW-Override, so an override
-    # re-dispatch of an advised brief reuses the decision that advised it. TW-Pin: the user asked for this tier.
-    if flagged(brief, "TW-Override") or flagged(brief, "TW-Pin"):
-        return None, None, None, eligible, target
-    if not eligible:
+    # No action when ineligible (a coordinator row, agreement, or a floor lifted the pick), in shadow, or kept by
+    # the user: TW-Override is checked before the cached decision is used (the ticket ignores it, so an override
+    # re-dispatch of an advised brief reuses the decision that advised it); TW-Pin: the user asked for this tier.
+    if not eligible or r["mode"] == "shadow" or pinned or flagged(brief, "TW-Override"):
         return None, None, None, eligible, target
     guard = None
     pick = ("--tier " + target if via else agent_name(d.role, target) if harness == "claude"
@@ -1232,12 +1240,13 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
             if guard is None and advisory_flag(home, harness, session).exists():
                 guard = "lost race recorded earlier this session"
         if guard is None:
-            new = {**inp, "subagent_type": agent_name(d.role, target)}  # whole tool_input, one key changed
             note = (f"thinker-worker: dispatched as {pick} instead of {'--tier ' + d.tier if via else inp['subagent_type']} "
                     f"(router p={r['confidence']:.2f}); judge the result at that tier")
-            return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
-                                            "updatedInput": new, "additionalContext": note}}, "rewrite", None, eligible,
-                    target)
+            out = {"hookEventName": "PreToolUse", "permissionDecision": "allow"}
+            if not via:  # the whole tool_input, one key changed
+                out["updatedInput"] = {**inp, "subagent_type": agent_name(d.role, target)}
+            out["additionalContext"] = note
+            return {"hookSpecificOutput": out}, "rewrite", None, eligible, target
     why = "exploration" if r["source"] == "explore" else f"p={r['confidence']:.2f}"
     reason = (f"router picks {target} ({why}); dispatch {pick} or add `TW-Override: <reason>` to keep {d.tier}"
               + (f" [active held: {guard}]" if guard else ""))
@@ -1323,9 +1332,10 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         inp = envelope["tool_input"]
         brief = inp.get("message" if harness == "codex" else "prompt")
         model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
+        pinned = flagged(brief, "TW-Pin")
         cached = prior_route(home, harness, session, ticket(brief, model)[0], rows)
         r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, model,
-                  1 + class_count(home, harness, d.fields["TW-Class"], routes))
+                  1 + class_count(home, harness, d.fields["TW-Class"], routes), pinned)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
@@ -1337,7 +1347,7 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
-               "pinned": flagged(brief, "TW-Pin"),
+               "pinned": pinned,
                # every configured backend's answer ({tier, probs, ms}) or {error}, logged whether or not the gate
                # passed; {} on a cached row
                "backends": r["backends"], "combined": r["combined"], "combined_mean": r["combined_mean"],
@@ -1346,7 +1356,7 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
             row["via"] = via
         try:  # an act() bug still records the router's decision
             out, row["action"], row["guard"], row["eligible"], target = act(home, harness, session, envelope, d, r,
-                                                                            routes, via)
+                                                                            routes, pinned, via)
         except Exception as exc:
             out, row["action"], row["guard"] = None, None, f"act error: {type(exc).__name__}"
             target = r["tier"]
