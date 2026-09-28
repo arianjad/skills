@@ -75,8 +75,7 @@ def seam_b_machines_flags_stale():
         assert set(lines) == {"pc-a", "pc-b"}, r.stdout
         assert lines["pc-b"].startswith("*") and not lines["pc-a"].startswith("*"), r.stdout
         assert "STALE" not in lines["pc-b"], r.stdout
-        want = ("python thinker-worker/scripts/tw.py uninstall && "
-                "python thinker-worker/scripts/tw.py install --portable --harness claude --python-cmd python3")
+        want = "python thinker-worker/scripts/tw.py upgrade"   # in place: keeps its flags, hooks and activations
         assert "STALE" in lines["pc-a"] and lines["pc-a"].endswith(want), r.stdout
         assert sorted((p.name, p.read_bytes()) for p in led.iterdir()) == before, "machines must be read-only"
         print(r.stdout)

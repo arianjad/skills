@@ -1713,17 +1713,7 @@ def read_ledgers(ledger_dir: Path) -> list[dict]:
     return [d for d in docs if isinstance(d, dict) and d.get("machine_id")]
 
 
-def install_command(flags: dict) -> str:
-    tw_cmd = "python thinker-worker/scripts/tw.py"
-    args = [tw_cmd, "install"]
-    if flags.get("portable"):
-        args.append("--portable")
-    if flags.get("harness") and len(flags["harness"]) == 1:
-        args += ["--harness", flags["harness"][0]]
-    if flags.get("python_cmd"):
-        args += ["--python-cmd", shlex.quote(flags["python_cmd"])]
-    # A changed tw.py makes install refuse an existing install, so the fix is uninstall then install.
-    return f"{tw_cmd} uninstall && " + " ".join(args)
+UPGRADE_COMMAND = "python thinker-worker/scripts/tw.py upgrade"  # in place; the machine's manifest keeps its flags
 
 
 def machines(home: Path, ledger_dir: Path | None) -> None:
@@ -1738,7 +1728,7 @@ def machines(home: Path, ledger_dir: Path | None) -> None:
         print(f"No install ledgers in {ledger_dir}")
     for d in docs:
         stale = newest is not None and d in live and d.get("tw_sha256") != newest.get("tw_sha256")
-        note = ("STALE (newest tw.py is on " + newest["machine_id"] + ") -> run: " + install_command(d.get("flags", {}))
+        note = ("STALE (newest tw.py is on " + newest["machine_id"] + ") -> run: " + UPGRADE_COMMAND
                 if stale else "current" if d in live else "")
         print(" ".join(["*" if d["machine_id"] == me else " ", d["machine_id"], str(d.get("os")),
                         str(d.get("status")), "updated", str(d.get("updated_at")),
@@ -1785,7 +1775,8 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
     if manifest_file.exists():
         manifest = load_manifest(home)
         if manifest["source"] != {rel: sha(data) for rel, data in items.items()}:
-            raise Conflict("Source changed since installation; uninstall and reinstall after reviewing changes")
+            raise Conflict("Source changed since installation; after reviewing the changes run `tw.py upgrade` "
+                           "(in place, keeps hooks and activations)")
         state = check(home, quiet=True)
         if state["problems"]:
             raise Conflict("Existing installation conflict: " + "; ".join(state["problems"]))
@@ -1866,6 +1857,50 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
     write_ledger(ledger_dir, mid, "installed", flags,
                  {h: {"entry": entries[h], "mode": "adopted" if h in adopted else "written"} for h in harnesses})
     print("Installed owned skill copies, Claude agents, and one guard entry per harness. Review Codex /hooks trust; activation and live verification are separate.")
+
+
+def upgrade(home: Path) -> None:
+    """Bring an installation to the current source in place: every owned file is replaced (or removed, if the source
+    no longer produces it) when it still matches the manifest or already matches the new source; any other state (a
+    hand edit, an unowned file in the way, a changed hook entry) refuses before the first write. Hook entries,
+    activation records and receipts are kept, unlike uninstall + install."""
+    manifest = load_manifest(home)
+    if manifest.get("uninstalling"):
+        raise Conflict("uninstall incomplete; rerun uninstall")
+    for harness in installed_harnesses(manifest):
+        doc, _ = config_doc(config_path(home, harness))
+        if owned_entries(doc) != [manifest["hooks"][harness]]:
+            raise Conflict(f"owned {harness} hook changed, missing, or duplicated; upgrade keeps hooks, fix that first")
+    items = source_items(tuple(installed_harnesses(manifest)))
+    problems, plan = [], []
+    for rel in sorted(set(manifest["files"]) | set(items)):
+        path = home / rel
+        have = sha(path.read_bytes()) if path.is_file() else None
+        new = sha(items[rel]) if rel in items else None
+        if have == new:
+            continue
+        if have is None or have == manifest["files"].get(rel):
+            plan.append(rel)
+        else:
+            problems.append(f"owned file changed by hand: {path}" if rel in manifest["files"]
+                            else f"unowned file in the way: {path}")
+    if problems:
+        raise Conflict("Upgrade conflict; nothing written: " + "; ".join(problems))
+    for rel in plan:
+        path = home / rel
+        if rel in items:
+            atomic_write(path, items[rel], path.read_bytes() if path.is_file() else None)
+        elif path.is_file():
+            path.unlink()
+    manifest = {**manifest, "source": {rel: sha(d) for rel, d in items.items()},
+                "files": {rel: sha(d) for rel, d in items.items()}, "upgraded_at": now()}
+    atomic_write(manifest_path(home), canonical_json(manifest), manifest_path(home).read_bytes())
+    adopted = manifest.get("adopted", [])
+    write_ledger(Path(manifest.get("ledger_dir") or default_ledger_dir(home)), manifest.get("machine_id", machine_id()),
+                 "installed", manifest.get("flags", {}),
+                 {h: {"entry": manifest["hooks"][h], "mode": "adopted" if h in adopted else "written"}
+                  for h in installed_harnesses(manifest)})
+    print(f"Upgraded {len(plan)} owned file(s) in place; hook entries and activation records kept.")
 
 
 def uninstall(home: Path) -> None:
@@ -1964,7 +1999,7 @@ def uninstall(home: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("install", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
+    for name in ("install", "upgrade", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
                  "route", "promote", "codex"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
@@ -2015,6 +2050,8 @@ def main() -> int:
             install(home, args.python.expanduser().resolve(), args.portable, args.python_cmd,
                     HARNESSES if args.harness == "both" else (args.harness,),
                     args.ledger_dir.expanduser().resolve() if args.ledger_dir else None)
+        elif args.command == "upgrade":
+            upgrade(home)
         elif args.command == "uninstall":
             uninstall(home)
         elif args.command == "machines":
