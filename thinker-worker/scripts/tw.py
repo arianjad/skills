@@ -458,11 +458,11 @@ def codex_evidence(home: Path, events: str) -> dict:
     return ev
 
 
-def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_file: Path, cd: Path,
-              out: Path | None) -> int:
+def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_file: Path, cd: Path) -> int:
     """Claude coordinator -> a Codex model via `codex exec`. Same gate as a native dispatch (decide() on a synthetic
     Agent call with the model), plus: the model must also be in some Codex role's models. Receipts get a dispatch row
-    and a cost row with effective model/effort."""
+    and a cost row with effective model/effort. `-o` (Codex's closing message) always goes to state, never to a
+    caller path: pointed at the brief's deliverable it overwrote the child's report at exit (incident 2026-09-28)."""
     record = activation(home, "claude", session)
     if record is None:
         raise Conflict(f"claude session {session} is not activated for thinker-worker")
@@ -486,7 +486,7 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     exe = shutil.which("codex")
     if not exe:
         raise Conflict("codex CLI not found on PATH")
-    out = out or state_root(home) / "codex" / f"{tool_use_id}.md"
+    out = state_root(home) / "codex" / f"{tool_use_id}.last.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(codex_cmd(exe, model, tier, cd, out), input=(AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
                           capture_output=True)
@@ -494,7 +494,7 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     append_receipt(home, "claude", session, {"kind": "cost", "at": now(), "harness": "claude", "session_id": session,
                                              "tool_use_id": tool_use_id, "via": "codex-exec", "exit_code": proc.returncode,
                                              "requested_effort": tier, **ev})
-    print(json.dumps({"tool_use_id": tool_use_id, "report": str(out), "exit_code": proc.returncode,
+    print(json.dumps({"tool_use_id": tool_use_id, "last_message": str(out), "exit_code": proc.returncode,
                       "effective_model": ev["model"], "effective_effort": ev["effort"], "thread_id": ev["thread_id"]}))
     if proc.returncode:
         print(proc.stderr.decode("utf-8", errors="replace")[-2000:], file=sys.stderr)
@@ -1493,7 +1493,6 @@ def main() -> int:
             p.add_argument("--model", required=True)
             p.add_argument("--brief-file", type=Path, required=True)
             p.add_argument("--cd", type=Path, default=Path.cwd(), help="the child's working root (default: cwd)")
-            p.add_argument("--out", type=Path, help="report path (default ~/.thinker-worker/codex/<tool_use_id>.md)")
         if name in {"activate", "deactivate", "status", "hook", "outcome", "route", "promote"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
         if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
@@ -1553,7 +1552,7 @@ def main() -> int:
             print(json.dumps(promote(home, args.harness, args.cls)))
         elif args.command == "codex":
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
-                             args.cd.expanduser().resolve(), args.out.expanduser().resolve() if args.out else None)
+                             args.cd.expanduser().resolve())
         elif args.command == "route":
             routes = load_routes()
             brief = args.brief_file.read_text(encoding="utf-8")

@@ -76,9 +76,15 @@ if __name__ == "__main__":
         out = json.loads(r.stdout.splitlines()[-1])
         assert out["tool_use_id"].startswith("codex-"), out
         assert (out["effective_model"], out["effective_effort"]) == ("gpt-6-astra", "xhigh"), out
-        assert Path(out["report"]).read_text(encoding="utf-8") == "REPORT"
         call = json.loads((home / "call.json").read_text(encoding="utf-8"))
         a = call["args"]
+        # -o is Codex's closing message only, always in state: a brief's deliverable path can never be clobbered
+        last = Path(a[a.index("-o") + 1])
+        assert last == home / ".thinker-worker" / "codex" / f"{out['tool_use_id']}.last.md", last
+        assert "report" not in out and Path(out["last_message"]) == last and last.read_text(encoding="utf-8") == "REPORT"
+        r = run(home, env, "codex", "--session", "s1", "--role", "independent-review", "--tier", "high", "--model",
+                "gpt-6-astra", "--brief-file", str(brief), "--cd", tmp, "--out", str(home / "x.md"))
+        assert r.returncode != 0 and "--out" in r.stderr, r                               # no --out option
         assert a[:2] == ["--search", "exec"] and a[a.index("-m") + 1] == "gpt-6-astra", a
         assert "model_reasoning_effort=medium" in a and a[a.index("-s") + 1] == "workspace-write", a
         assert call["stdin"].startswith("Review the assigned artifact") and call["stdin"].endswith(REV), call["stdin"][:80]
