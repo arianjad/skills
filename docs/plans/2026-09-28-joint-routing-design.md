@@ -26,6 +26,9 @@ Sources: `2026-09-28-router-ensemble-joint-routing-survey.md` (prior art, arXiv 
 | D14 | Decision models decide; the coordinator is the fallback. The combined (D11) pick acts whenever it clears the margin gate; otherwise the coordinator's pick stands (`source: coordinator`). No shadow stage for the first backend. Exploration (D9, D10) runs around the final pick, whichever source produced it. Classes run `active` (rewrite) once the enable override sets them: the one documented override (`SKILL.md`) lists the backend in `router.backends` and sets `router.classes` `*` to `active`, keeping its `explore`; `active` is required for the decision models to rewrite, and the existing competing-writer guard can still hold a Claude class advisory. | agreed 2026-09-28 |
 | D15 | Transcript-mining pilot (`thinker-worker/bench/mine_labels.py`, commit 06193fd; outputs untracked in `scratchpad/labels/`): 800 joinable dispatches → 81 pass / 1 fail / 718 unknown; reviews and ideation 0 of 46 labelable; only 8 of 149 recent briefs name a runnable check. Mined labels are one-sided upper bounds, not the main label source. A check the child ran after its last write counts as evidence, tagged by source so it can be down-weighted; fix-dispatch and re-dispatch signals stay unknown. | agreed 2026-09-28 |
 | D16 | Next label sources: `TW-Check:` executed by `tw.py outcome` (automatic pass/fail/unknown, outranks coordinator accept), and controlled runs (OptimalThinkingBench verified half + anchor battery at several (model, effort) pairs) for two-sided labels; full-run parameters need Arian's yes. A review-effort metric (planted defects) is deferred. | agreed 2026-09-28 |
+| D17 | The ticket (cache key and exploration coin) is the brief only, not the requested model: one decision per brief, so a coordinator following model-step advice reuses it instead of being routed again. Reverses build item B2 (progress log). Ideation: `scratchpad/ideation/opus-2026-09-28-joint-routing-drift.md` A1. | agreed 2026-09-28 (Arian) |
+| D18 | No offline replay spend. Two-sided (Opus, Sol) pairs for per-model frontiers (D4) come from live model-step exploration (D10) on real tasks, which gets the task done while it measures. | agreed 2026-09-28 (Arian) |
+| D19 | "Cheapest" across harnesses is priced in tokens per $200 subscription (Claude Max, Codex): published or community estimates as the prior, corrected by our own measurements (`cost` row token sums against each plan's usage meter). Tokens/s is latency, tracked separately. | agreed 2026-09-28 (Arian) |
 
 ## 2. Decision models decide, exploration continues (D14)
 
@@ -47,7 +50,8 @@ threads. Same answers at both thread counts (short brief low p=.57; long medium 
 ## 4. Drift and nondeterminism (agreed 2026-09-28)
 
 1. Every estimate is keyed by the executed model id (Claude `message.model`, Codex rollout `turn_context.model`),
-   never an alias. A new version is a new arm whose prior is the previous version's posterior with inflated variance.
+   never an alias. A new version is a new arm whose prior is the previous version's posterior with inflated variance;
+   the old arm keeps its data (no reset). A Claude Code version change is not a new arm (Arian, 2026-09-28).
 2. Per (model, effort, task family) a Beta posterior on pass rate; decisions use the posterior with a margin and the
    existing promote hold band; anchor tasks repeat K = 3 with an M-of-K sufficiency rule (Ares 2603.07915).
 3. Exponential forgetting of old labels even for a fixed id: discounted Thompson sampling (Raj & Kalyani,
@@ -61,7 +65,7 @@ threads. Same answers at both thread counts (short brief low p=.57; long medium 
 ## 5. Build order
 
 1. Slices 1–2 (in progress): Codex models callable from Claude (`tw.py codex`, which also fixes the `--out`
-   last-message collision), router on the Codex path, model in ticket and `promote`, `TW-Pin`, decaying ε,
+   last-message collision), router on the Codex path, model in `promote` (in the ticket until D17), `TW-Pin`, decaying ε,
    propensity. Progress: `2026-09-28-joint-routing-progress.md`.
 2. Transcript-mining pilot (in progress): `thinker-worker/bench/mine_labels.py`, outputs untracked under
    `scratchpad/labels/`.

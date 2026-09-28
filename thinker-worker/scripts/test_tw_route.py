@@ -45,8 +45,8 @@ if __name__ == "__main__":
         t0 = time.monotonic()
         r = tw.route(routes_with(cal, ("slow",), budget=0.2), "claude", "worker", fields, BRIEF, "high")
         assert r["source"] == "coordinator" and time.monotonic() - t0 < 1.0, r
-    assert tw.ticket(BRIEF, "opus") == tw.ticket(BRIEF.replace(HDR, HDR + "TW-Route: abc\n"), "opus")
-    assert tw.ticket(BRIEF, "opus") == tw.ticket(BRIEF.replace(HDR, HDR + "TW-Override: keep high\n"), "opus")
+    assert tw.ticket(BRIEF) == tw.ticket(BRIEF.replace(HDR, HDR + "TW-Route: abc\n"))
+    assert tw.ticket(BRIEF) == tw.ticket(BRIEF.replace(HDR, HDR + "TW-Override: keep high\n"))
 
     with tempfile.TemporaryDirectory() as tmp:
         cal = Path(tmp) / "calibration.json"
@@ -109,7 +109,7 @@ if __name__ == "__main__":
         code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF + " v2"})
         assert code == 0 and out == "", out
         last = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])  # the torn fragment swallows the next row
-        assert last["kind"] == "route" and last["ticket"] == tw.ticket(BRIEF + " v2", "opus")[0], last
+        assert last["kind"] == "route" and last["ticket"] == tw.ticket(BRIEF + " v2")[0], last
 
     with tempfile.TemporaryDirectory() as home:  # post-admission failure: admit stands, error row logged
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION, "--store-bodies"])
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         f = Path(home) / "b.md"
         f.write_text(BRIEF, encoding="utf-8")
         code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f)])
-        assert code == 0 and json.loads(out)["ticket"] == tw.ticket(BRIEF, "opus")[0], out
+        assert code == 0 and json.loads(out)["ticket"] == tw.ticket(BRIEF)[0], out
         # `route` shows why: each backend's answer or error, the combined probabilities, the gate, and eps
         rs = json.loads(json.dumps(tw.load_routes()))
         rs["router"].update(backends=["s", "gone"], classes={"*": {"mode": "advisory", "explore": 0.0}})
@@ -158,7 +158,8 @@ if __name__ == "__main__":
     r0["router"]["classes"]["*"]["explore"] = 0.0
     assert tw.route(r0, "claude", "worker", f, "x", "high")["source"] == "coordinator"
 
-    # the ticket includes the model (per-call, else the role's models[0]): cached decisions are per (brief, model)
+    # the ticket is the brief only (B2 reversed 2026-09-28, Arian): a re-dispatch of the same brief on another model
+    # reuses the brief's decision, so a coordinator following model-step advice is not routed again
     tw.load_routes = lambda path=None: r0
     r0["router"]["classes"]["*"]["explore"] = 1.0
     try:
@@ -167,11 +168,12 @@ if __name__ == "__main__":
             deny = lambda o: json.loads(o)["hookSpecificOutput"]["permissionDecision"] == "deny"
             assert deny(hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})[1])
             assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF,
-                                                  "model": "opus"}) == (0, "")          # = the default: cached
-            assert deny(hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF,
-                                                       "model": "claude-opus-5-5"})[1])  # another model: fresh decision
+                                                  "model": "opus"}) == (0, "")            # cached
+            assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF,
+                                                  "model": "claude-opus-5-5"}) == (0, "")  # another model: cached too
             a, b, c = [x for x in receipts(home, "claude") if x["kind"] == "route"]
-            assert a["ticket"] == b["ticket"] != c["ticket"] and b["source"] == "cached:explore", (a, b, c)
+            assert a["ticket"] == b["ticket"] == c["ticket"] and b["source"] == c["source"] == "cached:explore", (a, b, c)
+            assert c["agent_model"] == "claude-opus-5-5", c                                   # the request is still logged
         pinned = BRIEF.replace(HDR, HDR + "TW-Pin: user asked for Opus high\n")
         for mode in ("advisory", "active"):  # TW-Pin: the router never advises, rewrites, or explores
             r0["router"]["classes"]["*"]["mode"] = mode
@@ -201,7 +203,7 @@ if __name__ == "__main__":
     decay = {"c": 0.5, "power": 0.25, "floor": 0.05}
     r1 = json.loads(json.dumps(REAL_LOAD()))
     r1["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": decay}})
-    coin = lambda b: tw.coin(tw.ticket(b, "opus")[0])
+    coin = lambda b: tw.coin(tw.ticket(b)[0])
     mid = next(b for b in (BRIEF + f" d{i}" for i in range(500)) if 0.3 < coin(b) < 0.5)   # explored iff eps > coin
     r = tw.route(r1, "claude", "worker", fields, mid, "high", t=1)
     assert (r["source"], r["eps"], r["explore"]) == ("explore", 0.5, decay), r
@@ -242,7 +244,7 @@ if __name__ == "__main__":
     os.environ["TW_ROUTES"] = str(tw.source_root() / "routes.json")  # a real-home override file is never read
     shipped = tw.load_routes()  # no backend, every class advisory with decaying exploration (eps 0.5 at t=1)
     assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": decay}
-    coin = lambda b: tw.coin(tw.ticket(b, "opus")[0])      # the draw route() and act() use
+    coin = lambda b: tw.coin(tw.ticket(b)[0])      # the draw route() and act() use
     briefs = ["TW-Role: worker\n" + HDR.replace("destructive", "none") + f"shipped {i}" for i in range(200)]
     under, over = next(b for b in briefs if coin(b) < 0.2), next(b for b in briefs if coin(b) >= 0.5)  # t=1, t=2
     with tempfile.TemporaryDirectory() as home:

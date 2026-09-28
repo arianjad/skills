@@ -211,7 +211,7 @@ if __name__ == "__main__":
             (home / "enable.json").write_text(json.dumps(ov), encoding="utf-8")
             env2 = {k: v for k, v in env.items() if k != "TW_ROUTES"}
             env2["TW_ROUTES_OVERRIDE"] = str(home / "enable.json")
-            coin = lambda b: tw.coin(tw.ticket(b, "gpt-6-sol")[0])
+            coin = lambda b: tw.coin(tw.ticket(b)[0])
             text = next(b for b in (WORK + f" enabled {i}" for i in range(200)) if coin(b) >= 0.5)   # not explored
             brief.write_text(text, encoding="utf-8")
             (home / "call.json").unlink(missing_ok=True)

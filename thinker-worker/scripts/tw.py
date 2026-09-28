@@ -902,11 +902,12 @@ def arms(maps: dict, group: list[dict], margin: float, draws: int, seed: int) ->
             "n_advisor_excluded": n_adv, "n_excluded_identity": n_id, "n_check": src["check"], "n_coordinator": src["coordinator"], "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
 
 
-def ticket(brief: str, model: str) -> tuple[str, str]:
-    """(12-hex ticket, full digest) of the brief without TW-Route/TW-Override lines, keyed by the requested model."""
+def ticket(brief: str) -> tuple[str, str]:
+    """(12-hex ticket, full digest) of the brief without TW-Route/TW-Override lines. The brief only, not the model
+    (B2 reversed 2026-09-28): one decision per brief, so following model-step advice reuses it."""
     norm = "\n".join(x.rstrip() for x in brief.split("\n")
                      if not x.startswith(("TW-Route:", "TW-Override:"))).strip()
-    digest = sha(f"{model}\n{norm}".encode("utf-8"))
+    digest = sha(norm.encode("utf-8"))
     return digest[:12], digest
 
 
@@ -1077,16 +1078,16 @@ def combine(answers: dict, tiers: list[str], weights: dict) -> dict:
 
 
 def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
-          prior: dict | None = None, model: str | None = None, t: int = 1, pinned: bool | None = None) -> dict:
+          prior: dict | None = None, t: int = 1, pinned: bool | None = None) -> dict:
     """Fail-open router (design D11, D14): every backend is asked in parallel (ask_backends); the valid answers are
     combined (combine) and the combined pick decides (source "bayes") if its top1 - top2 >= router.combine.margin
     (gate "pass"), else the coordinator's tier stands (gate "margin"; None when no backend answered). A ticket whose
     coin falls below eps goes one tier below that pick (source "explore"). eps is the class's explore at the class's
-    t-th routed dispatch (epsilon), 0 when cached or pinned. model: the requested model (default the role's
-    models[0]); it keys the ticket. pinned: the brief's TW-Pin flag, computed here unless the caller passes it."""
+    t-th routed dispatch (epsilon), 0 when cached or pinned. pinned: the brief's TW-Pin flag, computed here unless
+    the caller passes it."""
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
-    tick, digest = ticket(brief, model or pol["models"][0])
+    tick, digest = ticket(brief)
     mode, explore = class_mode(routes, fields["TW-Class"])
     pinned = flagged(brief, "TW-Pin") if pinned is None else pinned
     eps = 0.0 if pinned else epsilon(explore, t)  # a user pin is never explored
@@ -1377,8 +1378,8 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         brief = inp.get("message" if harness == "codex" else "prompt")
         model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
         pinned = flagged(brief, "TW-Pin")
-        cached = prior_route(home, harness, session, ticket(brief, model)[0], rows)
-        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, model,
+        cached = prior_route(home, harness, session, ticket(brief)[0], rows)
+        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached,
                   1 + class_count(home, harness, d.fields["TW-Class"], routes), pinned)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],

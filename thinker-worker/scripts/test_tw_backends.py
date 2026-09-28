@@ -263,7 +263,7 @@ if __name__ == "__main__":
     # D3 (design D14): exploration applies to the final pick, whichever source produced it: one tier below it on the
     # role's ladder (never below the cheapest), draw_propensity eps / 1 - eps / 1.0 as before
     decay = {"c": 0.5, "power": 0.25, "floor": 0.05}
-    coin = lambda b: tw.coin(tw.ticket(b, "opus")[0])
+    coin = lambda b: tw.coin(tw.ticket(b)[0])
     mid = next(b for b in (plain + f" d{i}" for i in range(500)) if 0.3 < coin(b) < 0.5)   # explored iff eps > coin
     tw.BACKENDS.update(med=stub({"low": 0.05, "medium": 0.9, "high": 0.05}), lo=stub({"low": 0.9, "medium": 0.1}),
                        top=stub({"high": 0.05, "xhigh": 0.95}))
