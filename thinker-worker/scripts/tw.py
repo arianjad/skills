@@ -581,11 +581,7 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
         try:
             code, timed_out = proc.wait(timeout), False
         except subprocess.TimeoutExpired:
-            if os.name == "nt":  # codex.CMD -> node -> codex.exe -> sandbox helpers: kill the whole tree
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
-            else:
-                os.killpg(proc.pid, 9)
-            proc.wait()
+            kill_tree(proc)  # codex.CMD -> node -> codex.exe -> sandbox helpers
             code, timed_out = None, True
         fout.seek(0), ferr.seek(0)
         stdout, stderr = (f.read().decode("utf-8", errors="replace") for f in (fout, ferr))
