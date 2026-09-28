@@ -8,6 +8,7 @@ native fresh dispatch; it cannot establish effective child model or permissions.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import math
@@ -484,8 +485,12 @@ def run_bounded(argv: list[str], cwd: object, stdin_bytes: bytes | None, timeout
 def check_shell() -> tuple[str | None, str | None]:
     """(shell path, None) or (None, unknown_reason). Modeled on GitHub Actions `shell: bash`: TW_CHECK_BASH if set;
     on Windows the bash of git's own install (never a PATH bash: WSL's bash.exe, or anything planted first);
-    elsewhere bash, else sh, from PATH."""
-    override = os.environ.get("TW_CHECK_BASH")
+    elsewhere bash, else sh, from PATH. Resolved once per process for each (TW_CHECK_BASH, PATH)."""
+    return _check_shell(os.environ.get("TW_CHECK_BASH"), os.environ.get("PATH"))
+
+
+@functools.lru_cache(maxsize=None)
+def _check_shell(override: str | None, _path: str | None) -> tuple[str | None, str | None]:
     if override:
         return (override, None) if Path(override).is_file() else (None, f"TW_CHECK_BASH not a file: {override}"[:200])
     if os.name != "nt":
@@ -501,25 +506,32 @@ def check_shell() -> tuple[str | None, str | None]:
     return None, "no git bash"
 
 
+@functools.lru_cache(maxsize=None)
+def shell_version(shell: str) -> str | None:
+    """First line of `<shell> --version`, else None; once per process per shell."""
+    try:
+        ver = subprocess.run([shell, "--version"], capture_output=True, text=True, errors="replace", timeout=30,
+                             stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (ver.splitlines() or [None])[0]
+
+
 def run_check(cmd: str, cwd: object, timeout: float) -> dict:
     """Run a TW-Check once in cwd under `bash --noprofile --norc -eo pipefail -c` (check_shell): label pass (exit 0) /
     fail (nonzero) / unknown (timeout, cwd missing, no shell, a shell whose `--version` is not GNU bash ("no pipefail
     shell": it is not run), launch error; unknown_reason says which), exit_code,
-    seconds, tail (last 400 chars of stdout + stderr), shell, shell_version (first line of `--version`), kill_failed
+    seconds, tail (last 400 chars of stdout + stderr), shell, shell_version (first line of `--version`; shell and
+    shell_version stay None when the cwd is missing: no shell is resolved), kill_failed
     (a timed-out check's tree was not verifiably killed; see kill_tree)."""
     start = time.monotonic()
     res: dict = {"label": "unknown", "exit_code": None, "unknown_reason": None, "tail": "", "shell": None,
                  "shell_version": None, "kill_failed": False}
-    shell, why = check_shell()
+    cwd_ok = isinstance(cwd, str) and Path(cwd).is_dir()
+    shell, why = check_shell() if cwd_ok else (None, None)  # a check that cannot run resolves no shell
     if shell:
-        res["shell"] = shell
-        try:
-            ver = subprocess.run([shell, "--version"], capture_output=True, text=True, errors="replace", timeout=30,
-                                 stdin=subprocess.DEVNULL).stdout
-            res["shell_version"] = (ver.splitlines() or [None])[0]
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    if not isinstance(cwd, str) or not Path(cwd).is_dir():
+        res["shell"], res["shell_version"] = shell, shell_version(shell)
+    if not cwd_ok:
         res["unknown_reason"] = "cwd missing"
     elif not shell:
         res["unknown_reason"] = why or "no shell"
