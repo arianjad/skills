@@ -147,6 +147,37 @@ if __name__ == "__main__":
         assert got["gate"] == "margin" and got["source"] == "coordinator" and got["eps"] == 0.0, got
         assert abs(got["combined"]["low"] - 0.55) < 1e-5, got   # absent tiers floored at 1e-6
 
+    # D19: every route row carries a snapshot of both plan meters, read locally (Claude: the status-line log; Codex: the
+    # newest rollout's `limit_id: codex` rate_limits); a missing or unreadable meter is None and routing is unaffected
+    with tempfile.TemporaryDirectory() as home:
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
+        assert receipts(home, "claude")[-1]["quota"] == {"claude": None, "codex": None}, receipts(home, "claude")[-1]
+        h = Path(home)
+        (h / ".claude").mkdir()
+        meter = lambda pct, at: json.dumps({"at": at, "model": "m", "five_hour": {"used_percentage": 30, "resets_at": 1},
+                                            "seven_day": {"used_percentage": pct, "resets_at": 2}})
+        (h / ".claude" / "usage-meter.jsonl").write_text(meter(24, "t1") + "\n" + meter(25, "t2") + "\n")
+        old, new = h / ".codex/sessions/2026/09/27", h / ".codex/sessions/2026/09/28"
+        for d in (old, new):
+            d.mkdir(parents=True)
+        tl = lambda lid, pct, ts: json.dumps({"timestamp": ts, "type": "event_msg", "payload": {"type": "token_count",
+                                              "rate_limits": {"limit_id": lid, "primary": {"used_percent": pct,
+                                              "window_minutes": 10080, "resets_at": 9}, "secondary": None}}})
+        (old / "rollout-old.jsonl").write_text(tl("codex", 5.0, "t0") + "\n")
+        (new / "rollout-new.jsonl").write_text(tl("codex", 21.0, "t3") + "\n" + tl("codex_bengalfox", 50.0, "t4") + "\n"
+                                               + '{"type": "other"}\n')
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF + " q"})
+        q = receipts(home, "claude")[-1]["quota"]
+        assert q["claude"] == {"at": "t2", "five_hour": {"used_percentage": 30, "resets_at": 1},
+                               "seven_day": {"used_percentage": 25, "resets_at": 2}}, q
+        assert q["codex"] == {"at": "t3", "primary": {"used_percent": 21.0, "window_minutes": 10080, "resets_at": 9},
+                              "secondary": None}, q
+        (h / ".claude" / "usage-meter.jsonl").write_text("not json\n")
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF + " r"})
+        row = receipts(home, "claude")[-1]
+        assert row["kind"] == "route" and row["quota"]["claude"] is None and row["quota"]["codex"]["at"] == "t3", row
+
     r0 = json.loads(json.dumps(tw.load_routes()))  # no backend: explore one tier below the coordinator
     r0["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": 1.0}})
     f = {"TW-Class": "C-coding", "TW-Deliverable": "d", "TW-Accept": "a", "TW-Risk": "none"}

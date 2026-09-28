@@ -1368,6 +1368,40 @@ def hook(home: Path, harness: str, owner: str) -> None:
                           f"you dispatched {d.tier} (fine if deliberate)"}}))
 
 
+def quota(home: Path) -> dict:
+    """Both plan meters as last seen locally (design D19), raw: Claude from the status line's log
+    (~/.claude/usage-meter.jsonl, last line), Codex from the newest rollout line whose rate_limits has limit_id
+    "codex". A meter that is missing or unreadable is None; this never raises."""
+    out = {"claude": None, "codex": None}
+    try:
+        r = json.loads((home / ".claude" / "usage-meter.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        out["claude"] = {"at": r["at"], "five_hour": r.get("five_hour"), "seven_day": r.get("seven_day")}
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        pass
+    try:
+        # ponytail: newest 3 day folders, newest 5 files each, last 256 KiB of each; widen if Codex idles longer
+        days = sorted((home / ".codex" / "sessions").glob("*/*/*"), reverse=True)[:3]
+        for f in (f for d in days for f in sorted(d.glob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime,
+                                                   reverse=True)[:5]):
+            with open(f, "rb") as fh:
+                fh.seek(max(0, f.stat().st_size - 256 * 1024))
+                tail = fh.read().decode("utf-8", "replace").splitlines()
+            for line in reversed(tail):
+                if '"limit_id": "codex"' not in line and '"limit_id":"codex"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                rl = (r.get("payload") or {}).get("rate_limits") or {}
+                if rl.get("limit_id") == "codex":
+                    out["codex"] = {"at": r.get("timestamp"), "primary": rl.get("primary"), "secondary": rl.get("secondary")}
+                    return out
+    except (OSError, ValueError, TypeError):
+        pass
+    return out
+
+
 def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, routes: dict, record: dict,
            via: str | None = None, rows: list[dict] | None = None) -> tuple[dict | None, dict | None]:
     """Post-admission routing shared by the hook and `tw.py codex` (via="codex-exec"): route(), act(), and the route
@@ -1385,7 +1419,7 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
                "prior_tier": prior(routes, harness, d.role, d.fields["TW-Class"]),
-               "agent_model": model,
+               "agent_model": model, "quota": quota(home),
                "probs": r["probs"],
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "eps": r["eps"],
                "propensity": None, "draw_propensity": r["draw_propensity"], "ms": r["ms"],
