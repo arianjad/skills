@@ -426,17 +426,67 @@ def read_rows(path: Path) -> list[dict]:
     return rows
 
 
-def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: bool,
-            cause: str | None = None) -> None:
-    """Label a guarded dispatch; the last outcome for a tool_use_id wins. Claude: one cost row, written once."""
+def kill_tree(proc: subprocess.Popen) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(proc.pid, 9)  # SIGKILL; the check runs in its own session
+        except OSError:
+            proc.kill()
+    proc.wait()
+
+
+def run_check(cmd: str, cwd: object, timeout: float) -> dict:
+    """Run a TW-Check once in cwd: label pass (exit 0) / fail (nonzero) / unknown (timeout, cwd missing, launch
+    error; unknown_reason says which), exit_code, seconds, tail (last 400 chars of stdout + stderr)."""
+    start = time.monotonic()
+    res: dict = {"label": "unknown", "exit_code": None, "unknown_reason": None, "tail": ""}
+    if not isinstance(cwd, str) or not Path(cwd).is_dir():
+        res["unknown_reason"] = "cwd missing"
+    else:
+        # Coordinators write checks in bash (Claude's Bash tool); on Windows shell=True is cmd.exe, which fails
+        # bash syntax (a for loop exits 1: a false fail). ponytail: first bash on PATH; WSL's bash.exe there would
+        # run the check in Linux.
+        bash = shutil.which("bash") if os.name == "nt" else None
+        with tempfile.TemporaryFile() as out:  # a file, not a pipe: a surviving grandchild cannot hang the read
+            try:
+                proc = subprocess.Popen([bash, "-c", cmd] if bash else cmd, shell=not bash, cwd=cwd,
+                                        stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                        start_new_session=os.name != "nt")
+            except OSError as exc:
+                res["unknown_reason"] = f"launch error: {type(exc).__name__}: {exc}"[:200]
+            else:
+                try:
+                    res["exit_code"] = proc.wait(timeout)
+                    res["label"] = "pass" if res["exit_code"] == 0 else "fail"
+                except subprocess.TimeoutExpired:
+                    kill_tree(proc)
+                    res["unknown_reason"] = "timeout"
+                out.seek(0)
+                res["tail"] = out.read().decode("utf-8", errors="replace")[-400:]
+    res["seconds"] = round(time.monotonic() - start, 3)
+    return res
+
+
+def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: bool | None,
+            cause: str | None = None, run: bool = True, timeout: float = 900) -> None:
+    """Label a guarded dispatch; the last outcome for a tool_use_id wins. accepted is the coordinator's (weak) label;
+    the dispatch's TW-Check, unless run is False, is executed and writes a `check` row. Claude: one cost row."""
     if harness == "claude":
         race_check(home, harness, session, None)  # verify the session's last rewrite before it is labeled; never raises
     rows = read_rows(receipts_path(home, harness, session))
     if not any(r.get("tool_use_id") == tool_use_id for r in rows):
         raise Conflict(f"no receipt for tool_use_id {tool_use_id} in {harness} session {session}")
-    append_receipt(home, harness, session, {"kind": "outcome", "at": now(), "harness": harness,
-                                            "session_id": session, "tool_use_id": tool_use_id,
-                                            "accepted": accepted, "cause": cause})
+    disp = [r for r in rows if r.get("kind") == "dispatch" and r.get("tool_use_id") == tool_use_id]
+    check = disp[-1].get("check") if disp and run else None
+    if accepted is None and not check:
+        raise Conflict("nothing to record: pass --accepted yes|no, or dispatch with a TW-Check line (without "
+                       "--no-check)")
+    if accepted is not None:
+        append_receipt(home, harness, session, {"kind": "outcome", "at": now(), "harness": harness,
+                                                "session_id": session, "tool_use_id": tool_use_id,
+                                                "accepted": accepted, "cause": cause})
     if harness == "claude" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id for r in rows):
         try:  # the label above stands even if the child's files are unreadable
             row = cost_row(home, harness, session, tool_use_id)
@@ -445,7 +495,14 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
                    "tool_use_id": tool_use_id, "error": f"{type(exc).__name__}: {exc}"[:200]}
         if row is not None:
             append_receipt(home, harness, session, row)
-    print(f"Recorded {'accepted' if accepted else 'rejected'} for {tool_use_id}.")
+    if accepted is not None:
+        print(f"Recorded {'accepted' if accepted else 'rejected'} for {tool_use_id}.")
+    if check:
+        res = run_check(check, disp[-1].get("cwd"), timeout)
+        append_receipt(home, harness, session, {"kind": "check", "at": now(), "harness": harness,
+                                                "session_id": session, "tool_use_id": tool_use_id, **res})
+        why = f" (exit {res['exit_code']})" if res["label"] != "unknown" else f" ({res['unknown_reason']})"
+        print(f"Check {res['label']}{why} for {tool_use_id}.")
 
 
 CODEX_USAGE = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
@@ -1578,7 +1635,10 @@ def main() -> int:
             p.add_argument("--session", required=True)
         if name == "outcome":
             p.add_argument("--tool-use-id", required=True)
-            p.add_argument("--accepted", choices=("yes", "no"), required=True)
+            p.add_argument("--accepted", choices=("yes", "no"), help="the coordinator's label (weak; a TW-Check "
+                           "label outranks it); optional when the dispatch has a TW-Check")
+            p.add_argument("--no-check", action="store_true", help="do not run the dispatch's TW-Check")
+            p.add_argument("--check-timeout", type=float, default=900, help="seconds (default 900)")
             # No argparse `choices`: its SystemExit(2) escapes run_main, so main checks the closed vocabulary.
             p.add_argument("--cause", help="why a rejection happened: tier, brief or other (only with --accepted no)")
         if name == "activate":
@@ -1618,10 +1678,11 @@ def main() -> int:
         elif args.command == "outcome":
             if args.cause is not None and args.cause not in ("tier", "brief", "other"):
                 raise Conflict(f"--cause must be tier, brief or other, not {args.cause!r}")
-            if args.cause and args.accepted == "yes":
+            if args.cause and args.accepted != "no":
                 raise Conflict("--cause explains a rejection; use it only with --accepted no")
-            outcome(home, args.harness, session_value(args.session), args.tool_use_id, args.accepted == "yes",
-                    args.cause)
+            outcome(home, args.harness, session_value(args.session), args.tool_use_id,
+                    None if args.accepted is None else args.accepted == "yes", args.cause, not args.no_check,
+                    args.check_timeout)
         elif args.command == "promote":
             for v in promote(home, args.harness, args.cls, args.model):  # one JSON line per (class, model)
                 print(json.dumps(v))

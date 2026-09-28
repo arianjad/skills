@@ -116,6 +116,16 @@ if __name__ == "__main__":
             assert call["args"][call["args"].index("-m") + 1] == model and out["effective_model"] == model, call
             assert f"model_reasoning_effort={tier}" in call["args"] and call["stdin"].startswith(head), call
 
+        # TW-Check: stored on the dispatch row with --cd as its cwd; `outcome` alone runs it there
+        r = codex(WORK.replace(HDR, HDR + "TW-Check: test -f call.json\n"), "high", "gpt-6-sol", "worker")
+        assert r.returncode == 0, r.stderr
+        disp = [x for x in rows_of(home) if x["kind"] == "dispatch"][-1]
+        assert (disp["check"], disp["cwd"]) == ("test -f call.json", str(Path(tmp).resolve())), disp
+        lab = run(home, env, "outcome", "--harness", "claude", "--session", "s1", "--tool-use-id",
+                  json.loads(r.stdout.splitlines()[-1])["tool_use_id"])
+        assert lab.returncode == 0 and "pass" in lab.stdout, lab
+        assert [x["label"] for x in rows_of(home) if x["kind"] == "check"] == ["pass"], rows_of(home)
+
         (home / "call.json").unlink()
         for text, tier, model, role, why in (
                 (REV, "low", "gpt-6-astra", "independent-review", "outside"),
