@@ -474,16 +474,25 @@ def kill_tree(proc: subprocess.Popen, wait: float = 10) -> bool:
 
 
 def run_bounded(argv: list[str], cwd: object, stdin_bytes: bytes | None, timeout: float, merge: bool = False) -> dict:
-    """Run argv once for at most `timeout` s. stdio are temp files, not pipes (a surviving grandchild cannot hang the
-    read); on POSIX the child gets its own session so kill_tree kills the group. On timeout the tree is killed
-    (kill_tree). Returns code (None on timeout), out, err ("" with merge: stderr goes to out, in order), timed_out,
-    kill_failed, pid, exited (the process was gone at return). Popen's OSError propagates. stdin_bytes None: DEVNULL."""
-    with tempfile.TemporaryFile() as fin, tempfile.TemporaryFile() as fout, tempfile.TemporaryFile() as ferr:
+    """Run argv once for at most `timeout` s. stdout/stderr are temp files, not pipes (a surviving grandchild cannot
+    hang the read); stdin is a pipe fed by a writer thread (Windows lost a temp-file stdin handle through npm's
+    codex.CMD -> node shim, "No prompt provided via stdin", 2026-09-28; a pipe survived; the thread keeps a prompt
+    larger than the pipe buffer from blocking before the child reads). On POSIX the child gets its own session so
+    kill_tree kills the group. On timeout the tree is killed (kill_tree). Returns code (None on timeout), out, err
+    ("" with merge: stderr goes to out, in order), timed_out, kill_failed, pid, exited (the process was gone at
+    return). Popen's OSError propagates. stdin_bytes None: DEVNULL."""
+    with tempfile.TemporaryFile() as fout, tempfile.TemporaryFile() as ferr:
+        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL if stdin_bytes is None else subprocess.PIPE,
+                                stdout=fout, stderr=subprocess.STDOUT if merge else ferr,
+                                start_new_session=os.name != "nt")
         if stdin_bytes is not None:
-            fin.write(stdin_bytes)
-            fin.seek(0)
-        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL if stdin_bytes is None else fin, stdout=fout,
-                                stderr=subprocess.STDOUT if merge else ferr, start_new_session=os.name != "nt")
+            def feed() -> None:
+                try:
+                    proc.stdin.write(stdin_bytes)
+                    proc.stdin.close()
+                except OSError:  # the child exited or was killed before reading everything
+                    pass
+            threading.Thread(target=feed, daemon=True).start()
         code, timed_out, kill_failed = None, False, False
         try:
             code = proc.wait(timeout)
