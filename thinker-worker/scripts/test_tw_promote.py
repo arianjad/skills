@@ -47,7 +47,8 @@ def verdict(k, n=10, lost=0, advised=0):
                                                   "router_tier": "high" if i % 2 else "low",
                                                   "coordinator_tier": "high"})
             tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"a{i}", "accepted": False})
-        return tw.promote(home, "claude")
+        [v] = tw.promote(home, "claude")   # one (class, model) group
+        return v
 
 
 if __name__ == "__main__":
@@ -66,7 +67,26 @@ if __name__ == "__main__":
         tw.append_receipt(home, "claude", S, {**base, "tool_use_id": "f1", "action": None, "source": "cached:table",
                                               "coordinator_tier": "medium", "eligible": False})
         tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": "f1", "accepted": True})
-        v = tw.promote(home, "claude")
+        [v] = tw.promote(home, "claude")
         assert (v["n_router"], v["n_coord"]) == (1, 0), v    # complied at the floored tier: router arm
+    with tempfile.TemporaryDirectory() as tmp:           # one verdict per (class, model); --model filters
+        home = Path(tmp)
+        for m, k in (("opus", 9), ("gpt-6-sol", 5)):
+            for i in range(10):  # router arm; half the opus rows predate agent_model: the role default (opus) counts
+                own = {"agent_model": m} if m != "opus" or i % 2 else {"router_agent": "tw-worker-low"}
+                tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"{m}r{i}", "ticket": f"{m}t{i}",
+                                                      "class": "C-coding", "action": "rewrite", "router_tier": "low",
+                                                      "coordinator_tier": "high", **own})
+                tw.append_receipt(home, "claude", S, {"kind": "race", "tool_use_id": f"{m}r{i}", "lost": False})
+                tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"{m}r{i}", "accepted": i < k})
+            for i in range(1000):
+                tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"{m}c{i}", "ticket": f"{m}u{i}",
+                                                      "class": "C-coding", "action": None, "source": "table",
+                                                      "router_tier": "low", "coordinator_tier": "high",
+                                                      "eligible": True, "agent_model": m})
+                tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"{m}c{i}", "accepted": i < 850})
+        got = {(v["class"], v["model"]): (v["n_router"], v["verdict"]) for v in tw.promote(home, "claude")}
+        assert got == {("C-coding", "opus"): (10, "promote"), ("C-coding", "gpt-6-sol"): (10, "demote")}, got
+        assert [v["model"] for v in tw.promote(home, "claude", model="gpt-6-sol")] == ["gpt-6-sol"]
     print("PASS promotion rule matches design §5 table at n=10 (promote k>=9, demote k<=5); lost races, "
           "ineligible and advisor-assisted rows excluded")

@@ -601,9 +601,11 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
             "advisor_output_tokens": sum(it.get("output_tokens", 0) for it in adv)}
 
 
-def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.15,
-            draws: int = 200_000, seed: int = 7) -> dict:
-    """Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
+def promote(home: Path, harness: str, cls: str | None = None, model: str | None = None, margin: float = 0.15,
+            draws: int = 200_000, seed: int = 7) -> list[dict]:
+    """One verdict per (class, model) group of route rows, filtered by cls/model. The model is the row's
+    `agent_model`, else its role's default (models[0], role from `router_agent`), else None.
+    Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
     (backend wanted lower and the row is `eligible`, child ran at the coordinator tier); promote/demote/hold on
     P(diff >= -margin). "Lower" and "complied" compare the floored `target_tier` (`router_tier` on rows written
     before it existed). A dispatch whose cost row shows advisor calls measured tier + advisor, not the tier: it
@@ -611,15 +613,30 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
     rows = []
     for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
         rows += read_rows(path)  # skips torn lines
+    roles = load_routes()["harnesses"][harness]["roles"]
+
+    def model_of(r: dict) -> str | None:
+        m = AGENT_NAME.fullmatch(r.get("router_agent") or "")
+        return r.get("agent_model") or (roles[m.group(1)]["models"][0] if m and m.group(1) in roles else None)
+    routes = [r for r in rows if r.get("kind") == "route"]
+    groups = {}
+    for r in routes:
+        key = (r.get("class"), model_of(r))
+        if (cls is None or key[0] == cls) and (model is None or key[1] == model):
+            groups.setdefault(key, []).append(r)
+    return [{"class": c, "model": m, **arms(rows, routes, g, margin, draws, seed)} for (c, m), g in groups.items()]
+
+
+def arms(rows: list[dict], routes: list[dict], group: list[dict], margin: float, draws: int, seed: int) -> dict:
+    """The promote verdict for one group of route rows (see promote)."""
     label = {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"}
     race = {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"}  # outcome runs race_check
     advised_by = {r["tool_use_id"] for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")}
-    routes =[r for r in rows if r.get("kind") == "route" and (cls is None or r.get("class") == cls)]
     tgt = lambda r: r.get("target_tier") or r["router_tier"]  # floored pick; rows before switch-on T3 lack it
     advised = {r["ticket"]: tgt(r) for r in routes if r.get("action") == "advise"
                and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])}
     router, coord, n_adv = [], [], 0
-    for r in routes:
+    for r in group:
         if r.get("tool_use_id") in advised_by:
             n_adv += 1
             continue
@@ -640,7 +657,7 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
     hit = sum(rng.betavariate(1 + k, 1 + n - k) - rng.betavariate(1 + kc, 1 + nc - kc) >= -margin
               for _ in range(draws))
     p = hit / draws
-    return {"class": cls, "k_router": k, "n_router": n, "k_coord": kc, "n_coord": nc, "p": round(p, 3),
+    return {"k_router": k, "n_router": n, "k_coord": kc, "n_coord": nc, "p": round(p, 3),
             "n_advisor_excluded": n_adv, "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
 
 
@@ -1500,6 +1517,7 @@ def main() -> int:
             p.add_argument("--brief-file", type=Path, required=True)
         if name == "promote":  # read-only over receipts
             p.add_argument("--class", dest="cls")
+            p.add_argument("--model")
         if name in {"activate", "deactivate", "status", "outcome"}:
             p.add_argument("--session", required=True)
         if name == "outcome":
@@ -1549,7 +1567,8 @@ def main() -> int:
             outcome(home, args.harness, session_value(args.session), args.tool_use_id, args.accepted == "yes",
                     args.cause)
         elif args.command == "promote":
-            print(json.dumps(promote(home, args.harness, args.cls)))
+            for v in promote(home, args.harness, args.cls, args.model):  # one JSON line per (class, model)
+                print(json.dumps(v))
         elif args.command == "codex":
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
                              args.cd.expanduser().resolve())
