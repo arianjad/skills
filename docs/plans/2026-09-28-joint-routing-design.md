@@ -21,15 +21,20 @@ Sources: `2026-09-28-router-ensemble-joint-routing-survey.md` (prior art, arXiv 
 | D9 | Exploration per the literature: decaying forced exploration ε_t = max(floor, min(1, c/t^¼)) (SLARouter 2606.19376), shipped c = 0.5, floor = 0.05, t counted per TW-Class; propensity logged on every row. | agreed 2026-09-28 (floor is ours) |
 | D10 | Two exploration channels: one effort step down (current) and one model step down at the same effort (Opus→Sol, Sonnet→Luna), separate ε. The model order is a provisional prior until D4 frontiers exist. Model-step ε has its own schedule with floor 0.02 (a model step is a bigger jump). | agreed 2026-09-28 |
 | D11 | Multiple decision models: every model's raw probabilities logged per dispatch; the acting rule is a Bayesian product of experts p ∝ prior · Π pᵢ^wᵢ with wᵢ = 1/n until fitted (correlated Qwen-based arms would double-count at wᵢ = 1), gated by a top-1/top-2 margin (DART 2606.23181, CoMed 2609.26913). Ranked-choice and mean pooling are scored offline from the same logs. No source shows pooling beats the best single router, so this is our experiment. | agreed 2026-09-28 |
-| D12 | Kev-0.8B is the first backend: `kev.serve` on CPU (`CUDA_VISIBLE_DEVICES=""`), 6 threads (4 acceptable), shadow only. Brief prefix ~1,500 chars to fit the 2 s budget at 6 threads. | agreed 2026-09-28 |
+| D12 | Kev-0.8B is the first backend: `kev.serve` on CPU (`CUDA_VISIBLE_DEVICES=""`), 6 threads (4 acceptable), deciding from the start under D14. Brief prefix ~1,500 chars to fit the 2 s budget at 6 threads. | agreed 2026-09-28 |
 | D13 | Drift handling, items 1–5 of §4. | agreed 2026-09-28 |
+| D14 | Decision models decide; the coordinator is the fallback. The combined (D11) pick acts whenever it clears the margin gate; otherwise the coordinator's pick stands (`source: coordinator`). No shadow stage for the first backend. Exploration (D9, D10) runs around the final pick, whichever source produced it. Classes run `active` (rewrite) once a backend is configured, except where the existing competing-writer guard holds a Claude class advisory. | agreed 2026-09-28 |
 
-## 2. Why shadow first
+## 2. Decision models decide, exploration continues (D14)
 
-`route()` explores only when no deciding backend answers (`source == "coordinator"`). A deciding Kev would end
-exploration, the only source of lower-bound labels. So decision models first run in a `router.shadow` list: each
-scores every dispatch in parallel, its probabilities go on the route row, it steers nothing. A model moves into the
-deciding set only after its shadow scores are calibrated against labels (older design §5 Stages 3–4).
+Today `route()` explores only when no backend answers (`source == "coordinator"`), so a deciding Kev would end
+exploration, the only source of lower-bound labels. D14 changes that: exploration applies to the final pick,
+backend or coordinator, one effort step (or, on its own ε, one model step) below it. Each backend's raw
+probabilities are logged on the route row whether or not the gate passes, so calibration against labels and the
+offline comparison of combination rules need no separate shadow run. Expected early behavior: Kev's probabilities
+are near-flat (p = .43–.57 on the probes), so the margin gate will mostly fall back to the coordinator until
+labels calibrate it. A later candidate backend may still enter an optional `router.shadow` list before it joins
+the combination, so it cannot move live routing untested.
 
 ## 3. Measured
 
@@ -60,7 +65,8 @@ threads. Same answers at both thread counts (short brief low p=.57; long medium 
    `scratchpad/labels/`.
 3. `TW-Check:` header, then `tw.py outcome` runs it and records pass/fail/unknown; coordinator accept becomes a
    separate weak field.
-4. `router.shadow` + `backend_jev` (POST `/v1/systemone`) + Kev in shadow; candidate-card A/B (D5) on mined labels.
+4. `backend_jev` (POST `/v1/systemone`) + Kev deciding behind the margin gate (D14), exploration around the final
+   pick, per-backend probabilities on route rows; candidate-card A/B (D5) on mined labels.
 5. Joint action space in routes/route rows (D1), model-step channel (D10), combination rule (D11) offline first.
 6. Anchor battery, per-arm posteriors with forgetting, change detector (§4); then frontiers / IRT (D4).
 
