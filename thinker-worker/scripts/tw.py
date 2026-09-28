@@ -61,7 +61,8 @@ def agent_name(role: str, tier: str) -> str:
 
 
 MODES = ("shadow", "advisory", "active")
-OVERRIDABLE = {"priors", "classes", "risk_floor", "defaults"}  # the only router keys the user override file may set
+# The router keys the user override file may set, plus any per-backend block of kind "jev" (see merge_override)
+OVERRIDABLE = {"priors", "classes", "risk_floor", "defaults", "backends", "combine", "options"}
 
 
 def load_routes(path: Path | None = None) -> dict:
@@ -83,19 +84,23 @@ def load_routes(path: Path | None = None) -> dict:
 
 
 def merge_override(doc: dict, ov_path: Path) -> dict:
-    """Key by key over the installed router block; a class entry inherits the merged "*" entry. The merged doc is
-    validated like the installed one."""
+    """Key by key over the installed router block: `backends` (a list) replaces; every other key is an object merged
+    over the installed one (a per-backend block is allowed if it, or the installed block of that name, has kind
+    "jev"); a class entry inherits the merged "*" entry. The merged doc is validated like the installed one."""
     ov = read_json(ov_path, None)
     rt = ov.get("router") if isinstance(ov, dict) else None
-    if (not isinstance(ov, dict) or set(ov) != {"router"} or not isinstance(rt, dict) or not set(rt) <= OVERRIDABLE
-            or not all(isinstance(v, dict) for v in rt.values())
+    jev = lambda v: isinstance(v, dict) and v.get("kind") == "jev"
+    if (not isinstance(ov, dict) or set(ov) != {"router"} or not isinstance(rt, dict)
+            or not all(k in OVERRIDABLE or jev(v) or jev(doc["router"].get(k)) for k, v in rt.items())
+            or not all(isinstance(v, list if k == "backends" else dict) for k, v in rt.items())
             or not all(isinstance(v, dict) for v in rt.get("classes", {}).values())):
-        raise Conflict("may set only router.priors, router.classes, router.risk_floor and router.defaults, each an object")
+        raise Conflict("may set only router.priors, classes, risk_floor, defaults, combine, options and jev backend "
+                       "blocks (each an object) and router.backends (a list)")
     merged = json.loads(json.dumps(doc))
     mr = merged["router"]
-    mr["priors"].update(rt.get("priors", {}))
-    mr.setdefault("defaults", {}).update(rt.get("defaults", {}))
-    mr["risk_floor"].update(rt.get("risk_floor", {}))
+    for k, v in rt.items():
+        if k != "classes":
+            mr[k] = v if k == "backends" else {**mr.get(k, {}), **v}
     star = {**mr["classes"]["*"], **rt.get("classes", {}).get("*", {})}
     for cls, entry in rt.get("classes", {}).items():
         mr["classes"][cls] = star if cls == "*" else {**star, **mr["classes"].get(cls, {}), **entry}
@@ -970,17 +975,19 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
                 "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
                 "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "propensity": 1.0,
-                "backends": {}, "combined": None, "gate": None}
+                "backends": {}, "combined": None, "combined_mean": None, "gate": None}
     start = time.monotonic()
     backends = ask_backends(cfg, pol, fields, brief)
     ok = {n: b for n, b in backends.items() if "tier" in b}
     backends = {n: ({k: b[k] for k in ("tier", "probs", "ms")} if n in ok else b) for n, b in backends.items()}
     found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator",
              "body_chars_sent": 0}
-    combined = gate = None
+    combined = mean = gate = None
     if ok:
         comb = cfg.get("combine", {"margin": 0.2})
         combined = combine(ok, pol["tiers"], comb.get("weights", {}))
+        # design D11: logged only, so other pooling rules can be scored offline against labels
+        mean = {t: sum(b["probs"].get(t, 0.0) for b in ok.values()) / len(ok) for t in pol["tiers"]}
         pick = max(pol["tiers"], key=combined.get)  # a tie goes to the cheaper tier (and fails any margin > 0)
         top = sorted(combined.values(), reverse=True) + [0.0]
         gate = "pass" if top[0] - top[1] >= comb["margin"] else "margin"
@@ -1001,7 +1008,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
             "mode": mode, "explore": explore, "eps": eps,
             "propensity": eps if explored else 1 - eps if drawn else 1.0,
-            "backends": backends, "combined": combined, "gate": gate}
+            "backends": backends, "combined": combined, "combined_mean": mean, "gate": gate}
 
 
 def _win_claude_start() -> float | None:
@@ -1259,7 +1266,8 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "pinned": flagged(brief, "TW-Pin"),
                # every configured backend's answer ({tier, probs, ms}) or {error}, logged whether or not the gate
                # passed; {} on a cached row
-               "backends": r["backends"], "combined": r["combined"], "gate": r["gate"]}
+               "backends": r["backends"], "combined": r["combined"], "combined_mean": r["combined_mean"],
+               "gate": r["gate"]}
         if via:
             row["via"] = via
         try:  # an act() bug still records the router's decision

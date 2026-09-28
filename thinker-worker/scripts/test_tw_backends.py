@@ -266,3 +266,23 @@ if __name__ == "__main__":
     finally:
         tw.load_routes = real_load
     print("PASS backends D3: exploration around the final pick (bayes or coordinator), ladder floor, propensity, hook")
+
+    # D4: the arithmetic mean of the valid answers is logged next to the acting (bayes) combination, never acted on
+    mean = lambda *ps: {t: sum(p.get(t, 0.0) for p in ps) / len(ps) for t in ("low", "medium", "high", "xhigh")}
+    r = tw.route(routes_with(backends=["a", "b", "nope"]), "claude", "worker", fields, BRIEF, "high")
+    assert close(r["combined_mean"], mean(A, B)) and r["source"] == "bayes", r
+    r = tw.route(routes_with(backends=["c", "d"]), "claude", "worker", fields, BRIEF, "high")   # margin miss: logged too
+    assert close(r["combined_mean"], mean(C, D)) and r["source"] == "coordinator", r
+    assert tw.route(routes_with(backends=[]), "claude", "worker", fields, BRIEF, "high")["combined_mean"] is None
+    try:
+        rr = routes_with(backends=["a", "b"])
+        tw.load_routes = lambda path=None: rr
+        with tempfile.TemporaryDirectory() as home:
+            run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+            hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": plain})
+            hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": plain})
+            first, again = [x for x in receipts(home, "claude") if x["kind"] == "route"]
+            assert close(first["combined_mean"], mean(A, B)) and again["combined_mean"] is None, (first, again)
+    finally:
+        tw.load_routes = real_load
+    print("PASS backends D4: combined_mean logged (gate pass and miss), None with no answer or cached")

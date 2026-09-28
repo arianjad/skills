@@ -186,8 +186,21 @@ if __name__ == "__main__":
             assert tw.class_mode(doc, "C-coding") == ("shadow", 0.5), doc["router"]["classes"]
             doc = loaded(json.dumps({"router": {"risk_floor": {"physics": "xhigh"}}}))
             assert doc["router"]["risk_floor"] == {"physics": "xhigh", "destructive": "medium", "external": "medium"}
+            # decision models (design D11): router.backends replaces; per-backend jev blocks, combine, options merge
+            doc = loaded(json.dumps({"router": {"backends": ["kev"], "kev": {"url": "http://127.0.0.1:9/v1/systemone"},
+                                                "combine": {"margin": 0.1}, "options": {"low": "terse"}}}))
+            rt = doc["router"]
+            assert "_override_error" not in doc and rt["backends"] == ["kev"], doc.get("_override_error")
+            assert rt["kev"] == {**R["router"]["kev"], "url": "http://127.0.0.1:9/v1/systemone"}, rt["kev"]
+            assert rt["combine"] == {"rule": "bayes", "margin": 0.1} and rt["laya"] == R["router"]["laya"], rt
+            assert rt["options"] == {**R["router"]["options"], "low": "terse"}, rt["options"]
+            doc = loaded(json.dumps({"router": {"backends": ["mine"], "mine": {"kind": "jev", "url": "http://x"}}}))
+            assert doc["router"]["mine"] == {"kind": "jev", "url": "http://x"} and "_override_error" not in doc, doc
             # fails open: any bad override leaves the installed doc unchanged and says why
-            for bad in (json.dumps({"harnesses": {}}), json.dumps({"router": {"backends": ["table"]}}), "{not json",
+            for bad in (json.dumps({"harnesses": {}}), json.dumps({"router": {"backends": "kev"}}), "{not json",
+                        json.dumps({"router": {"table": {"path": "x"}}}), json.dumps({"router": {"budget_s": 5}}),
+                        json.dumps({"router": {"cutoff": 0.5}}), json.dumps({"router": {"mine": {"url": "http://x"}}}),
+                        json.dumps({"router": {"combine": {"margin": 2}}}), json.dumps({"router": {"kev": {"url": 1}}}),
                         json.dumps({"router": {"priors": {"C-coding": "max"}}}),
                         json.dumps({"router": {"classes": {"C-coding": {"mode": "bogus"}}}}), "[]"):
                 doc = loaded(bad)
