@@ -19,6 +19,7 @@ from pathlib import Path
 args = sys.argv[1:]
 home = Path(os.environ["FAKE_HOME"])
 (home / "call.json").write_text(json.dumps({"args": args, "stdin": sys.stdin.read()}), encoding="utf-8")
+(home / "codex.pid").write_text(str(os.getpid()), encoding="utf-8")
 import time; time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))  # a wedged codex (sandbox setup spinning)
 tid = "0000-thread-1"
 d = home / ".codex" / "sessions" / "2026" / "09" / "27"
@@ -207,6 +208,53 @@ if __name__ == "__main__":
         env.pop("FAKE_SLEEP"); env.pop("TW_CODEX_TIMEOUT")
         assert took < 30 and r.returncode != 0 and "timed out" in r.stderr, (took, r)
         cost = [x for x in rows_of(home) if x["kind"] == "cost"][-1]
-        assert cost["timed_out"] is True and cost["exit_code"] is None, cost
+        assert cost["timed_out"] is True and cost["exit_code"] is None and cost["kill_failed"] is False, cost
+
+        # R6 (Astra review finding 6): the kill fails (taskkill exit 1, as under Access denied). In process, so the
+        # kill can be patched: bounded return, cost row kill_failed, and no "process tree killed" claim
+        import contextlib
+        import io
+        import tw
+        from test_tw_hook import run_main
+        real_run, real_killpg = tw.subprocess.run, getattr(tw.os, "killpg", None)
+
+        def no_taskkill(argv, *a, **k):
+            if argv[0] == "taskkill":
+                return tw.subprocess.CompletedProcess(argv, 1, b"", b"ERROR: Access denied")
+            return real_run(argv, *a, **k)
+        saved = dict(os.environ)
+        os.environ.update({k: env[k] for k in ("PATH", "FAKE_HOME", "TW_ROUTES")}, FAKE_SLEEP="60",
+                          TW_CODEX_TIMEOUT="3")
+        brief.write_text(REV + " wedged, kill denied", encoding="utf-8")
+        tw.subprocess.run = no_taskkill
+        if real_killpg:
+            tw.os.killpg = lambda *_a: None
+        err = io.StringIO()
+        t0 = time.monotonic()
+        try:
+            with contextlib.redirect_stderr(err):
+                code, _ = run_main(["codex", "--home", str(home), "--session", "s1", "--role", "independent-review",
+                                    "--tier", "high", "--model", "gpt-6-astra", "--brief-file", str(brief),
+                                    "--cd", tmp])
+        finally:
+            took = time.monotonic() - t0
+            tw.subprocess.run = real_run
+            if real_killpg:
+                tw.os.killpg = real_killpg
+            os.environ.clear()
+            os.environ.update(saved)
+            pid = int((home / "codex.pid").read_text())  # the fake codex this test launched
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+            else:
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+        cost = [x for x in rows_of(home) if x["kind"] == "cost"][-1]
+        assert took < 30 and code != 0, (took, code)
+        assert cost["timed_out"] is True and cost["kill_failed"] is True, cost
+        assert "timed out" in err.getvalue() and "process tree killed" not in err.getvalue(), err.getvalue()
+    print("PASS R6 codex: a failed kill returns within the bound, cost row kill_failed, no 'process tree killed'")
     print("PASS codex: activation gate, decide() reuse (tier/role/scope), Codex-model admission per Claude role "
           "(Sol worker/review, Luna leaf; Luna worker and Sonnet denied), codex flags + stdin, receipts, outcome label")

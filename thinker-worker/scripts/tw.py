@@ -443,15 +443,22 @@ def read_rows(path: Path) -> list[dict]:
     return rows
 
 
-def kill_tree(proc: subprocess.Popen) -> None:
+def kill_tree(proc: subprocess.Popen, wait: float = 10) -> bool:
+    """Kill proc and its descendants; True only if the kill command succeeded and proc exited within `wait` s.
+    Never blocks longer than that: a denied kill (taskkill exit 1, Access denied) returns False, proc may live on."""
+    ok = True
     if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        ok = subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True).returncode == 0
     else:
         try:
             os.killpg(proc.pid, 9)  # SIGKILL; the check runs in its own session
         except OSError:
             proc.kill()
-    proc.wait()
+    try:
+        proc.wait(wait)
+    except subprocess.TimeoutExpired:
+        return False
+    return ok
 
 
 def check_shell() -> tuple[str | None, str | None]:
@@ -477,10 +484,11 @@ def check_shell() -> tuple[str | None, str | None]:
 def run_check(cmd: str, cwd: object, timeout: float) -> dict:
     """Run a TW-Check once in cwd under `bash --noprofile --norc -eo pipefail -c` (check_shell): label pass (exit 0) /
     fail (nonzero) / unknown (timeout, cwd missing, no shell, launch error; unknown_reason says which), exit_code,
-    seconds, tail (last 400 chars of stdout + stderr), shell, shell_version (first line of `--version`)."""
+    seconds, tail (last 400 chars of stdout + stderr), shell, shell_version (first line of `--version`), kill_failed
+    (a timed-out check's tree was not verifiably killed; see kill_tree)."""
     start = time.monotonic()
     res: dict = {"label": "unknown", "exit_code": None, "unknown_reason": None, "tail": "", "shell": None,
-                 "shell_version": None}
+                 "shell_version": None, "kill_failed": False}
     shell, why = check_shell()
     if shell:
         res["shell"] = shell
@@ -508,7 +516,7 @@ def run_check(cmd: str, cwd: object, timeout: float) -> dict:
                     res["exit_code"] = proc.wait(timeout)
                     res["label"] = "pass" if res["exit_code"] == 0 else "fail"
                 except subprocess.TimeoutExpired:
-                    kill_tree(proc)
+                    res["kill_failed"] = not kill_tree(proc)
                     res["unknown_reason"] = "timeout"
                 out.seek(0)
                 res["tail"] = out.read().decode("utf-8", errors="replace")[-400:]
@@ -635,19 +643,24 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
         fin.seek(0)
         proc = subprocess.Popen(codex_cmd(exe, model, tier, cd, out), stdin=fin, stdout=fout, stderr=ferr,
                                 start_new_session=os.name != "nt")
+        kill_failed = False
         try:
             code, timed_out = proc.wait(timeout), False
         except subprocess.TimeoutExpired:
-            kill_tree(proc)  # codex.CMD -> node -> codex.exe -> sandbox helpers
+            kill_failed = not kill_tree(proc)  # codex.CMD -> node -> codex.exe -> sandbox helpers
             code, timed_out = None, True
         fout.seek(0), ferr.seek(0)
         stdout, stderr = (f.read().decode("utf-8", errors="replace") for f in (fout, ferr))
     if timed_out:
-        stderr += f"\ncodex timed out after {timeout:g} s (TW_CODEX_TIMEOUT); process tree killed"
+        stderr += (f"\ncodex timed out after {timeout:g} s (TW_CODEX_TIMEOUT); "
+                   + (f"killing its process tree failed; pid {proc.pid} "
+                      + ("exited" if proc.poll() is not None else "may still be running") if kill_failed
+                      else "process tree killed"))
     ev = codex_evidence(home, stdout)
     append_receipt(home, "claude", session, {"kind": "cost", "at": now(), "harness": "claude", "session_id": session,
                                              "tool_use_id": tool_use_id, "via": "codex-exec", "exit_code": code,
-                                             "timed_out": timed_out, "requested_effort": tier, **ev})
+                                             "timed_out": timed_out, "kill_failed": kill_failed,
+                                             "requested_effort": tier, **ev})
     if row and row["action"] == "rewrite":  # verified like race_check: did the child run the router's pick?
         append_receipt(home, "claude", session, {"kind": "race", "at": now(), "harness": "claude",
                                                  "session_id": session, "tool_use_id": tool_use_id,

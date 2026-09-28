@@ -114,6 +114,7 @@ if __name__ == "__main__":
             except OSError:
                 alive = False
         assert not alive, f"timed-out check process {pid} survived"
+        assert c.get("kill_failed") is False, c
         dispatch(home, brief("true"), str(Path(home) / "gone"), "t_gone")
         dispatch(home, brief("true"), None, "t_nocwd")
         for tid in ("t_gone", "t_nocwd"):
@@ -190,3 +191,40 @@ if __name__ == "__main__":
         assert c["label"] == "unknown" and "TW_CHECK_BASH" in c["unknown_reason"], c
     print("PASS C5 check shell: -eo pipefail (piped exit 3 fails), git's bash not a PATH bash (Windows), "
           "no git -> unknown, TW_CHECK_BASH missing -> unknown, row shell + shell_version")
+
+    # R6 (Astra review finding 6): a failed kill (taskkill exit 1, as under Access denied) still returns within the
+    # bound, and the row says kill_failed instead of implying the tree died
+    import tw
+    with tempfile.TemporaryDirectory() as work:
+        pidf = (Path(work) / "pid.txt").as_posix()
+        real_run, real_killpg = tw.subprocess.run, getattr(tw.os, "killpg", None)
+
+        def no_taskkill(argv, *a, **k):
+            if argv[0] == "taskkill":
+                return tw.subprocess.CompletedProcess(argv, 1, b"", b"ERROR: Access denied")
+            return real_run(argv, *a, **k)
+        tw.subprocess.run = no_taskkill
+        if real_killpg:
+            tw.os.killpg = lambda *_a: None
+        t0 = time.monotonic()
+        try:
+            c = tw.run_check(f"{PY} -c \"import os, time; open('{pidf}', 'w').write(str(os.getpid())); "
+                             f"time.sleep(60)\"", work, 1)
+        finally:
+            tw.subprocess.run = real_run
+            if real_killpg:
+                tw.os.killpg = real_killpg
+            took = time.monotonic() - t0
+            if Path(pidf).exists():  # the sleeper this test launched
+                pid = int(Path(pidf).read_text())
+                if os.name == "nt":
+                    import subprocess
+                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+                else:
+                    try:
+                        os.kill(pid, 9)
+                    except OSError:
+                        pass
+        assert took < 30, took
+        assert (c["label"], c["unknown_reason"], c.get("kill_failed")) == ("unknown", "timeout", True), c
+    print("PASS R6 failed kill: bounded return, kill_failed true")
