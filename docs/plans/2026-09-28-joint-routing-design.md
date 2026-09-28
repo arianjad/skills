@@ -43,9 +43,26 @@ the combination, so it cannot move live routing untested.
 
 ## 3. Measured
 
-Kev via `kev.serve`, CPU, prefix cache off (`scratchpad/kev_threads_probe.py`, 2026-09-28): 6 threads 597 ms at
-164 tokens, 4,334 ms at 1,210 tokens, ready 13.6 s; 12 threads 371 / 2,656 ms, ready 10.6 s; ~3.6 ms/token at 6
-threads. Same answers at both thread counts (short brief low p=.57; long medium p=.48).
+Every number the router design uses, with its spread and where it came from. "Range" = min–max over the runs named;
+"one-sided" = a bias with known sign, unknown size. Update a row in place when a new run supersedes it.
+
+| Quantity | Value | Uncertainty | Run / source | Date |
+|---|---|---|---|---|
+| Codex Pro $200: API-list $ per week | ~$970 | range $606–1,328 (SD $316, n = 4 weekly windows); ±1 % meter quantization (±5 % on the partial window); one-sided low (meter is account-wide, only this machine's rollouts counted) | `codex_calib.py` over `~/.codex/sessions` rollouts, credits/% = 279, 209, 151, 332; 1 credit = $0.04 of API list (credit card ×25, [O] tables) | 2026-09-28 |
+| Codex weekly cap reached | 3 of 3 complete windows hit 100 % before reset; fastest 0→100 % in ~24 h (09-23 21:36 → 09-24 21:13 UTC) | n = 3 | same | 2026-09-28 |
+| Claude Max 20x: API-list $ per week | ~$2,600–4,400 | range from the unknown reset time (Arian: "last night", 09-27 18:00–24:00 EDT); ±2 % meter quantization; one-sided low (Mac, cloud, claude.ai use not in these transcripts) | `claude_calib.py` over `~/.claude/projects` transcripts, 7d meter 24 % at 17:54 UTC; supersede with Δtokens/Δ% from `~/.claude/usage-meter.jsonl` ticks | 2026-09-28 |
+| Claude Max 20x: API-list $ per 5 h window | ~$460 | ±3 % (meter 32 %, integer); n = 1 window; one-sided low as above | same, 5h window 14:00–19:00 UTC | 2026-09-28 |
+| Claude plan / Codex plan, API-list $ per plan $ | 2.0–7.3× | propagated from the two weekly ranges; assumes both meters track API list across models (neither vendor promises it) | rows above | 2026-09-28 |
+| Sol token cost / Opus token cost, in plan $ | 1.0–3.6× | as above × Sol/Opus list ratio 0.5 (exact) | rows above + list prices | 2026-09-28 |
+| API list per MTok, input / cached read / output | Opus 5.5 $4 / $0.20 / $20; Fable 5.1 $10 / $0.25 / $50; Sonnet 5 $2 / $0.20 / $10; Astra $10 / $1 / $50; Sol $2 / $0.20 / $10; Luna $0.10 / $0.01 / $0.50 | exact, as published | docs.claude.com pricing, platform.openai.com pricing (fetched and checked) | 2026-09-28 |
+| Output throughput, tokens/s (vendor API, max effort) | Luna 166, Opus 5.5 95, Sol 90, Sonnet 5 79, Fable 5.1 71, Astra 64 | ±15–25 % across effort levels, not monotone; third-party benchmark, API not subscription clients | Artificial Analysis via research report `scratchpad/research/2026-09-28-plan-token-allowances.md` §4 | 2026-09-28 |
+| TW-Check pass rate (all live check labels) | 0.90 | 95 % CI 0.75–0.99 (Beta(19, 2), uniform prior; 18 pass / 1 fail, all Opus 5.5 workers) | `~/.thinker-worker/receipts` `check` rows | 2026-09-28 |
+| Mined transcript labels | 2 pass / 1 fail / 837 unknown of 840 | counts, no model | `scratchpad/labels/all-v3` | 2026-09-28 |
+| Opus alias → executed id | `claude-opus-5` through 2026-09-22, `claude-opus-5-5` from 2026-09-23 | day resolution | `all-v3/labels.jsonl` `model`, `ts` | 2026-09-28 |
+| Kev latency (`kev.serve`, CPU, prefix cache off) | 6 threads: 597 ms at 164 tokens, 4,334 ms at 1,210, ready 13.6 s; 12 threads: 371 / 2,656 ms, ready 10.6 s (~3.6 ms/token at 6) | n = 1 per cell, no error bar | `scratchpad/kev_threads_probe.py` | 2026-09-28 |
+| Kev / Laya live answers | near-flat: top p = 0.40 (Kev), 0.36 (Laya) on a T3 probe brief; margin gate passed 3 of 55 live route rows with a backend (5 %), all three agreeing with the coordinator (`medium`), so no tier changed | n = 1 probe; n = 55 route rows (50 margin, 3 pass, 2 no valid answer) | `tw.py route` on the probe brief; all `~/.thinker-worker/receipts` route rows | 2026-09-28 |
+| Loopback connect to live Kev/Laya | median 0.8 ms, max 27 ms (idle and 4/16 concurrent requests); 0 drops | n = 200 per condition, 6 conditions | `connect_latency.py` (session scratchpad) | 2026-09-28 |
+| Down-server cost per dispatch | ~0.53 s (`JEV_CONNECT_S` 0.5 s); was 2.0 s (Windows refuses a closed loopback port after 2.03 s) | n = 1 each | `probe_down.py`, socket probe | 2026-09-28 |
 
 ## 4. Drift and nondeterminism (agreed 2026-09-28)
 
