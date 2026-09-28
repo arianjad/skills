@@ -483,7 +483,8 @@ def check_shell() -> tuple[str | None, str | None]:
 
 def run_check(cmd: str, cwd: object, timeout: float) -> dict:
     """Run a TW-Check once in cwd under `bash --noprofile --norc -eo pipefail -c` (check_shell): label pass (exit 0) /
-    fail (nonzero) / unknown (timeout, cwd missing, no shell, launch error; unknown_reason says which), exit_code,
+    fail (nonzero) / unknown (timeout, cwd missing, no shell, a shell whose `--version` is not GNU bash ("no pipefail
+    shell": it is not run), launch error; unknown_reason says which), exit_code,
     seconds, tail (last 400 chars of stdout + stderr), shell, shell_version (first line of `--version`), kill_failed
     (a timed-out check's tree was not verifiably killed; see kill_tree)."""
     start = time.monotonic()
@@ -502,11 +503,13 @@ def run_check(cmd: str, cwd: object, timeout: float) -> dict:
         res["unknown_reason"] = "cwd missing"
     elif not shell:
         res["unknown_reason"] = why or "no shell"
+    elif not (res["shell_version"] or "").startswith("GNU bash"):
+        # without pipefail `failing | cat` exits 0 and would label pass; Git's sh.exe and macOS /bin/sh are bash
+        res["unknown_reason"] = "no pipefail shell"
     else:
-        flags = ["-e"] if Path(shell).stem == "sh" else ["--noprofile", "--norc", "-eo", "pipefail"]
         with tempfile.TemporaryFile() as out:  # a file, not a pipe: a surviving grandchild cannot hang the read
             try:
-                proc = subprocess.Popen([shell, *flags, "-c", cmd], cwd=cwd,
+                proc = subprocess.Popen([shell, "--noprofile", "--norc", "-eo", "pipefail", "-c", cmd], cwd=cwd,
                                         stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                         start_new_session=os.name != "nt")
             except OSError as exc:

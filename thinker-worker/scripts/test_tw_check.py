@@ -123,8 +123,10 @@ if __name__ == "__main__":
             assert (c["tool_use_id"], c["label"], c["unknown_reason"]) == (tid, "unknown", "cwd missing"), c
         import tw
 
-        def boom(*_a, **_k):
-            raise OSError("no shell")
+        def boom(argv, *a, **k):  # only the check's own launch fails; the --version probe runs
+            if "-c" in argv:
+                raise OSError("no shell")
+            return real(argv, *a, **k)
         os.environ["TW_CHECK_BASH"] = tw.check_shell()[0]  # resolved before Popen breaks (git lookup uses it too)
         real, tw.subprocess.Popen = tw.subprocess.Popen, boom
         try:
@@ -228,3 +230,35 @@ if __name__ == "__main__":
         assert took < 30, took
         assert (c["label"], c["unknown_reason"], c.get("kill_failed")) == ("unknown", "timeout", True), c
     print("PASS R6 failed kill: bounded return, kill_failed true")
+
+    # R7 (Astra review finding 7): a shell without verified pipefail never labels. Git's sh.exe (Astra's
+    # counterexample: `false | cat` recorded pass under `sh -e`) and a non-bash shell named sh
+    bash = tw.check_shell()[0]
+    with tempfile.TemporaryDirectory() as work:
+        cases = []
+        sibling = Path(bash).with_name("sh.exe" if os.name == "nt" else "sh")
+        if sibling.is_file():
+            cases.append(("git sh", str(sibling)))
+        fake = Path(work) / "fakebin"
+        (fake / "src").mkdir(parents=True)
+        marker = Path(work) / "fake_sh_ran.txt"
+        (fake / "src" / "sh").write_text("#!python\nimport sys\nif '-c' in sys.argv:\n    open(" + repr(str(marker))
+                                         + ", 'w').write(' '.join(sys.argv))\nelse:\n    print('fake sh 0.1')\n",
+                                         encoding="utf-8")
+        from pip._vendor.distlib.scripts import ScriptMaker
+        maker = ScriptMaker(str(fake / "src"), str(fake))
+        maker.executable = sys.executable
+        made = maker.make("sh")
+        cases.append(("non-bash sh", made[0]))
+        for name, shell in cases:
+            os.environ["TW_CHECK_BASH"] = shell
+            try:
+                c = tw.run_check("false | cat", work, 30)
+            finally:
+                del os.environ["TW_CHECK_BASH"]
+            assert c["label"] != "pass", (name, c)
+            if name == "non-bash sh":
+                assert (c["label"], c["unknown_reason"]) == ("unknown", "no pipefail shell"), (name, c)
+                assert not marker.exists(), "the non-bash shell was run"
+        assert len(cases) == 2 or os.name != "nt", cases   # Git for Windows ships usr/bin/sh.exe beside bash.exe
+    print("PASS R7 no verified pipefail shell -> never pass; a non-bash shell -> unknown, not run")
