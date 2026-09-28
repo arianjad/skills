@@ -788,37 +788,46 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
     before it existed). A dispatch whose cost row shows advisor calls measured tier + advisor, not the tier: it
     leaves both arms and is counted in n_advisor_excluded. A dispatch's label is its latest `check` row (pass accepted,
     fail rejected, unknown excluded), else the coordinator's `outcome`; n_check / n_coordinator count each source."""
-    rows = []
-    for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
-        rows += read_rows(path)  # skips torn lines
-    cost = {r.get("tool_use_id"): r for r in rows if r.get("kind") == "cost"}  # the latest wins
+    rows = harness_rows(home, harness)
     routes = [r for r in rows if r.get("kind") == "route"]
+    maps = {"cost": {r.get("tool_use_id"): r for r in rows if r.get("kind") == "cost"},  # the latest wins
+            "label": {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"},
+            "checked": {r["tool_use_id"]: r.get("label") for r in rows if r.get("kind") == "check"},  # latest wins
+            "race": {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"},  # outcome runs race_check
+            "advisor": {r["tool_use_id"] for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")},
+            "advised": {r["ticket"]: tgt(r) for r in routes if r.get("action") == "advise"
+                        and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])}}
     groups = {}
     for r in routes:
         if r.get("pinned"):
             continue  # the user pinned model/effort: the router never acted, so neither arm
-        key = (r.get("class"), (cost.get(r.get("tool_use_id")) or {}).get("model"))
+        key = (r.get("class"), (maps["cost"].get(r.get("tool_use_id")) or {}).get("model"))
         if (cls is None or key[0] == cls) and (model is None or key[1] == model):
             groups.setdefault(key, []).append(r)
-    return [{"class": c, "model": m, **arms(rows, routes, g, margin, draws, seed)} for (c, m), g in groups.items()]
+    return [{"class": c, "model": m, **arms(maps, g, margin, draws, seed)} for (c, m), g in groups.items()]
 
 
-def arms(rows: list[dict], routes: list[dict], group: list[dict], margin: float, draws: int, seed: int) -> dict:
-    """The promote verdict for one group of route rows (see promote)."""
-    cost = {r.get("tool_use_id"): r for r in rows if r.get("kind") == "cost"}
+def harness_rows(home: Path, harness: str) -> list[dict]:
+    """Every receipt row of the harness, across all session files (torn lines skipped)."""
+    return [r for p in (state_root(home) / "receipts" / harness).glob("*.jsonl") for r in read_rows(p)]
+
+
+def tgt(r: dict) -> str:
+    """A route row's floored pick; rows before switch-on T3 lack target_tier."""
+    return r.get("target_tier") or r["router_tier"]
+
+
+def arms(maps: dict, group: list[dict], margin: float, draws: int, seed: int) -> dict:
+    """The promote verdict for one group of route rows (see promote); maps: the per-tool_use_id indexes promote
+    builds once over every row."""
+    cost, label, checked, race = maps["cost"], maps["label"], maps["checked"], maps["race"]
+    advised_by, advised = maps["advisor"], maps["advised"]
 
     def ran_as(tid: str | None, tier: str) -> bool:  # executed identity agrees with the arm's tier (see promote)
         c = cost.get(tid) or {}
         m = AGENT_NAME.fullmatch(c.get("agent_type") or "")
         eff = c.get("effort") if "effort" in c else m.group(2) if m else None
         return bool(c.get("model")) and not ("effort" in c and eff is None) and (eff is None or eff == tier)
-    label = {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"}
-    checked = {r["tool_use_id"]: r.get("label") for r in rows if r.get("kind") == "check"}  # the latest wins
-    race = {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"}  # outcome runs race_check
-    advised_by = {r["tool_use_id"] for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")}
-    tgt = lambda r: r.get("target_tier") or r["router_tier"]  # floored pick; rows before switch-on T3 lack it
-    advised = {r["ticket"]: tgt(r) for r in routes if r.get("action") == "advise"
-               and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])}
     router, coord, n_adv, n_id, src = [], [], 0, 0, {"check": 0, "coordinator": 0}
     for r in group:
         if r.get("tool_use_id") in advised_by:
@@ -941,7 +950,7 @@ def epsilon(explore: float | dict, t: int) -> float:
 def class_count(home: Path, harness: str, cls: str) -> int:
     """Non-pinned route rows of a class across every receipt file of the harness."""
     # ponytail: rereads all receipts per dispatch; a per-class counter file if this ever gets slow
-    return sum(1 for p in (state_root(home) / "receipts" / harness).glob("*.jsonl") for r in read_rows(p)
+    return sum(1 for r in harness_rows(home, harness)
                if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
 
 

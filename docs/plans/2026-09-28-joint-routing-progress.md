@@ -72,3 +72,11 @@ Baseline before R2: 18/18 test scripts exit 0 (202 s, 2026-09-28, Windows).
 | R8 docs + sweep | none (prose); sweep `grep "role's default\|sh -e\|process tree killed\|requested model"` over SKILL.md and references/ returns only the ticket and route-row `agent_model` descriptions, which are still accurate | n/a | SKILL.md, claude.md, codex.md: a TW-Check runs in the dispatch's recorded working directory, so `cd` into the repository by absolute path first (example `cd /c/Users/Arian/Code/skills && python thinker-worker/scripts/test_tw_check.py`). Swept facts changed by R2/R3/R6/R7: outcome refuses never-run dispatches (SKILL.md, claude.md, codex.md); promote's `model` is the executed cost-row model and `n_excluded_identity` (claude.md), native Codex promote has no executed identity so its arms stay empty (codex.md); `no pipefail shell` replaces the `sh -e` fallback (claude.md, codex.md); check row `kill_failed` and the codex cost row's (claude.md). ruff F on tw.py + tests: 2 pre-existing F401 in untouched test_tw_guard.py / test_tw_portable.py, none from this work |
 
 Review fixes final: R2, R3, R6, R7, R8 green; the brief's TW-Check (every `test_tw_*.py`, stop at first failure) exit 0, 18/18 (258 s, 2026-09-28, Windows).
+
+## Simplify (behavior-preserving cleanup, deduped /simplify list S1-S11)
+
+Baseline before S1: TW-Check (18 `test_tw_*.py` + mine_labels, controlled_runs, laya_serve, decision_servers selftests) exit 0 (253 s, 2026-09-28, Windows). Suite result per row is that same check, run on the tree at the commit.
+
+| Item | Commit | Suite result |
+|---|---|---|
+| S1 dead `router.cutoff` removed; act() `disagree` from the source (bayes / cached:bayes / explore); a legacy `cached:table` row no longer advises; routes.json key, check_routes, claude.md parenthetical, test_tw_routes cutoff cases and test_tw_backends cutoff comparison dropped | accf003 | exit 0 (247 s) |
