@@ -987,14 +987,16 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         if gate == "pass":
             found = {"tier": pick, "probs": combined, "confidence": combined[pick], "source": "bayes",
                      "body_chars_sent": max(b.get("body_chars_sent", 0) for b in ok.values()),
-                     "provenance": "; ".join(f"{n}: {b.get('provenance')}" for n, b in ok.items())}
-    # Eligible for exploration: no backend answered, eps > 0, a tier below exists. The coin decides, and the row's
-    # propensity is the probability of the logged action: eps if explored, 1 - eps if not, 1.0 with no draw.
-    drawn = (found["source"] == "coordinator" and eps > 0 and coord_tier in pol["tiers"]
-             and pol["tiers"].index(coord_tier) > 0)
+                     "provenance": "; ".join(f"{n}: {b['provenance']}" for n, b in ok.items()
+                                             if b.get("provenance")) or None}
+    # Exploration around the final pick, bayes or coordinator (design D14): eligible when eps > 0 and the role has a
+    # tier below the pick. The coin decides, and the row's propensity is the probability of the logged action: eps
+    # if explored, 1 - eps if not, 1.0 with no draw.
+    ladder = pol["tiers"]
+    drawn = eps > 0 and found["tier"] in ladder and ladder.index(found["tier"]) > 0
     explored = drawn and int(tick, 16) / 16 ** 12 < eps
     if explored:
-        below = pol["tiers"][pol["tiers"].index(coord_tier) - 1]  # design §5 Stage 2: one tier below, no backend
+        below = ladder[ladder.index(found["tier"]) - 1]  # one tier below the pick, on the role's own ladder
         found = {**found, "tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
     return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
             "mode": mode, "explore": explore, "eps": eps,
@@ -1115,8 +1117,9 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     """(hook output | None, action None/"advise"/"rewrite", guard | None, eligible, target) for an admitted,
     routed dispatch; via (the `tw.py codex` path) skips the competing-writer/race guard and names picks as --tier.
     target: the router's pick raised to the highest routes.json risk_floor among the brief's
-    TW-Risk flags (the coordinator's tier on a coordinator-source row). eligible: a backend disagrees at the
-    cutoff or explores lower, whatever the mode, and the floor did not lift the pick to the coordinator's tier or
+    TW-Risk flags (the coordinator's tier on a coordinator-source row). eligible: the router's pick differs from the
+    coordinator's tier (a gated `bayes` pick or an explored one, fresh or a cached bayes decision; another source at
+    router.cutoff), whatever the mode, and the floor did not lift a pick below the coordinator's tier to it or
     above; promote's coordinator arm keeps only such rows so it matches the dispatches the router would have
     acted on."""
     raw = r["tier"]
@@ -1126,11 +1129,11 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     target = TIERS[max(TIERS.index(raw), floor)]
     floored = target != raw
     lower = TIERS.index(target) < TIERS.index(d.tier)
-    # a combined pick already cleared the margin gate (design D14); router.cutoff applies to other sources only
-    disagree = target != d.tier and (r["source"].split(":")[-1] == "bayes"
-                                     or r["confidence"] >= routes["router"]["cutoff"])
-    explored = lower and r["eps"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["eps"]
-    eligible = r["source"] != "coordinator" and (disagree or explored) and not (floored and not lower)
+    # A combined pick already cleared the margin gate and an explored pick is the exploration itself (design D14);
+    # router.cutoff applies to other sources only. A re-dispatch of an explored brief is not re-advised.
+    decided = r["source"] in ("bayes", "cached:bayes", "explore")
+    disagree = target != d.tier and (decided or r["confidence"] >= routes["router"]["cutoff"])
+    eligible = r["source"] != "coordinator" and disagree and not (floored and not lower)
     if floored and not lower:
         return None, None, None, eligible, target
     if r["mode"] == "shadow" or r["source"] == "coordinator":
@@ -1158,7 +1161,7 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
             return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
                                             "updatedInput": new, "additionalContext": note}}, "rewrite", None, eligible,
                     target)
-    why = "exploration" if explored and not disagree else f"p={r['confidence']:.2f}"
+    why = "exploration" if r["source"] == "explore" else f"p={r['confidence']:.2f}"
     reason = (f"router picks {target} ({why}); dispatch {pick} or add `TW-Override: <reason>` to keep {d.tier}"
               + (f" [active held: {guard}]" if guard else ""))
     return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",

@@ -96,6 +96,9 @@ if __name__ == "__main__":
     assert out["permissionDecision"] == "deny" and "lost race" in row["guard"]
     assert run("advisory", probs=FLAT, explore=1.0)[0]["permissionDecisionReason"].count("exploration") == 1
     assert run("advisory", probs=FLAT, explore=0.0)[0] is None
+    assert run("advisory", pick="xhigh", explore=1.0)[0] is None   # explored one below xhigh = the coordinator's high
+    out, row = run("advisory", pick="medium", explore=1.0)          # a gated pick is explored too (design D14)
+    assert "router picks low (exploration)" in out["permissionDecisionReason"] and row["source"] == "explore", out
     out, row = run("active", guard=boom)          # act() raises: fail open, the route row is kept, no error row
     assert out is None and row["kind"] == "route" and row["action"] is None, row
     assert row["guard"] == "act error: RuntimeError" and row["router_tier"] == "low" and row["target_tier"] == "low", row

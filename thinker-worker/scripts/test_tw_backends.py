@@ -53,7 +53,7 @@ def answer(probs, choice="low"):
 
 def routes_with(**router):
     r = json.loads(json.dumps(SHIPPED))
-    r["router"].update(classes={"*": {"mode": "shadow", "explore": 0.0}}, **router)
+    r["router"].update({"classes": {"*": {"mode": "shadow", "explore": 0.0}}, **router})
     return r
 
 
@@ -216,3 +216,53 @@ if __name__ == "__main__":
         tw.load_routes = real_load
     print("PASS backends D2: parallel backends, Bayesian combination, weights, zero floor, margin gate, per-backend "
           "errors/timeout, hook row, cached decision")
+
+    # D3 (design D14): exploration applies to the final pick, whichever source produced it: one tier below it on the
+    # role's ladder (never below the cheapest), propensity eps / 1 - eps / 1.0 as before
+    decay = {"c": 0.5, "power": 0.25, "floor": 0.05}
+    coin = lambda b: int(tw.ticket(b, "opus")[0], 16) / 16 ** 12
+    mid = next(b for b in (plain + f" d{i}" for i in range(500)) if 0.3 < coin(b) < 0.5)   # explored iff eps > coin
+    tw.BACKENDS.update(med=stub({"low": 0.05, "medium": 0.9, "high": 0.05}), lo=stub({"low": 0.9, "medium": 0.1}),
+                       top=stub({"high": 0.05, "xhigh": 0.95}))
+    rx = lambda names, explore=decay: tw.route(routes_with(backends=names, classes={"*": {"mode": "advisory",
+                                                                                         "explore": explore}}),
+                                               "claude", "worker", fields, mid, "high", t=1)
+    r = rx(["med"])                                             # eps 0.5 at t=1 > coin: one tier below the bayes pick
+    assert (r["source"], r["tier"], r["eps"], r["propensity"], r["gate"]) == ("explore", "low", 0.5, 0.5, "pass"), r
+    assert r["combined"] and r["combined"]["medium"] > 0.8, r                     # what the models said is kept
+    r = tw.route(routes_with(backends=["med"], classes={"*": {"mode": "advisory", "explore": decay}}),
+                 "claude", "worker", fields, mid, "high", t=16)                    # eps 0.25 < coin
+    assert (r["source"], r["tier"], r["propensity"]) == ("bayes", "medium", 0.75), r
+    r = rx(["lo"], 1.0)                                          # the pick is the cheapest tier: no draw
+    assert (r["source"], r["tier"], r["propensity"]) == ("bayes", "low", 1.0), r
+    r = rx(["top"], 1.0)                                         # above the coordinator: explored to xhigh - 1 = high
+    assert (r["source"], r["tier"]) == ("explore", "high"), r
+    tw.BACKENDS["rev"] = stub({"medium": 0.9, "high": 0.1})
+    r = tw.route(routes_with(backends=["rev"], classes={"*": {"mode": "advisory", "explore": 1.0}}),
+                 "claude", "independent-review", fields, mid, "high")   # medium is review's cheapest tier
+    assert (r["source"], r["tier"]) == ("bayes", "medium"), r
+    try:  # through the hook: an explored bayes pick is advised as exploration; a re-dispatch reuses it
+        rr = routes_with(backends=["med"], classes={"*": {"mode": "advisory", "explore": decay}})
+        tw.load_routes = lambda path=None: rr
+        with tempfile.TemporaryDirectory() as home:
+            run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+            code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": mid})
+            why = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+            assert "router picks low (exploration)" in why and "dispatch tw-worker-low " in why, why
+            row = receipts(home, "claude")[-1]
+            assert (row["source"], row["router_tier"], row["propensity"], row["eligible"]) == ("explore", "low", 0.5, True), row
+            assert row["gate"] == "pass" and row["backends"]["med"]["tier"] == "medium", row
+            hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": mid})   # rejected: no re-advice
+            again = receipts(home, "claude")[-1]
+            assert (again["source"], again["action"], again["eps"]) == ("cached:explore", None, 0.0), again
+        rr["router"]["classes"]["*"]["explore"] = 1.0             # explored above the coordinator: acted on as picked
+        rr["router"]["backends"] = ["top"]
+        with tempfile.TemporaryDirectory() as home:
+            run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+            code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-medium", "prompt": mid})
+            why = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+            assert "router picks high (exploration)" in why, why
+            assert receipts(home, "claude")[-1]["propensity"] == 1.0
+    finally:
+        tw.load_routes = real_load
+    print("PASS backends D3: exploration around the final pick (bayes or coordinator), ladder floor, propensity, hook")

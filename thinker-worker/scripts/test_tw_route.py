@@ -203,7 +203,7 @@ if __name__ == "__main__":
     assert prop(prior=cached) == 1.0                                                  # cached: no draw
     tw.BACKENDS["stub"] = lambda *a: {"tier": "low", "probs": {"low": 1.0}, "confidence": 1.0}
     r1["router"]["backends"] = ["stub"]
-    assert prop() == 1.0                                                              # a backend answered: no draw
+    assert prop() == 1.0                                              # the backend's pick is the cheapest tier: no draw
     r1["router"]["backends"] = []
     tw.load_routes = lambda path=None: r1
     try:
