@@ -164,14 +164,21 @@ def after_check(rows, c):
     return mutating(rows, c["line"], float("inf"), c["id"], edits=False)
 
 
-FILE_REDIRECT = re.compile(r">>?\s*(?!&|/dev/null\b|nul\b|\$null\b)", re.I)
+# an output redirect to anything but an fd dup (`2>&1`) or the null device; one match per `>`/`>>` run
+FILE_REDIRECT = re.compile(r">>?(?!>)(?!\s*(?:&\d|/dev/null\b|nul\b|\$null\b))", re.I)
+# read-only filters a check may pipe into; `cat` only bare, `sort` without -o, `uniq` without an output file
+PIPE_FILTER = re.compile(r"(?:tail|head|grep|findstr|wc)(?:\s.*)?|cat|sort(?!.*\s(?:-[a-z]*o|--output))(?:\s.*)?"
+                         r"|uniq(?:\s+-\S+)*", re.I | re.S)
 
 
 def compound(cmd):
-    """The call may have left a state other than the one its check tested (Astra re-review F1a): chained statements
-    (`;`, `&&`, `||`, newline), or a file redirect in a pipe stage other than the check itself (`2>&1` is not one).
-    ponytail: no shell parsing; quoted `;`/`>` also count (conservative, D15). A bare `| xargs rm` stage is not caught."""
-    return bool(re.search(r"&&|\|\||;|\n", cmd.strip())) or any(FILE_REDIRECT.search(s) for s in cmd.split("|") if not check_segs(s))
+    """The call may have left a state other than the one its check tested (Astra re-review F1a, round-3 R1): chained
+    statements (`;`, `&&`, `||`, newline), an output redirect anywhere other than `2>&1` or to the null device, or a
+    pipe stage after the first that is not a PIPE_FILTER (`| tee f`, `| xargs rm`).
+    ponytail: no shell parsing; quoted `;`/`>`/`|` also count (conservative, D15), so `grep "a|b"` reads as compound."""
+    cmd = cmd.strip()
+    return (bool(re.search(r"&&|\|\||;|\n", cmd)) or bool(FILE_REDIRECT.search(cmd))
+            or not all(PIPE_FILTER.fullmatch(s.strip()) for s in cmd.split("|")[1:]))
 
 
 def writes(rows, lo=0, hi=None):
@@ -520,6 +527,13 @@ def selftest():
         ("F1a redirect in pipe", W + bash("k4", T + " | python -c \"import sys; print(sys.stdin.read())\" > module_impl.py"), (),
          ("unknown", "compound-check")),
         ("F1a control 2>&1 | tail", W + bash("k5", T + " 2>&1 | tail -5"), (), ("pass", "child-final-check")),
+        # Astra round-3 R1: a redirect or an unlisted pipe stage after the check can overwrite what it tested
+        ("R1 | tee artifact", W + bash("k6", T + " | tee module_impl.py"), (), ("unknown", "compound-check")),
+        ("R1 > artifact", W + bash("k7", T + " > module_impl.py"), (), ("unknown", "compound-check")),
+        ("R1 >> artifact", W + bash("k8", T + " >> module_impl.py"), (), ("unknown", "compound-check")),
+        ("R1 control > /dev/null", W + bash("k9", T + " 2>&1 > /dev/null | grep passed"), (), ("pass", "child-final-check")),
+        ("R1 sort -o artifact", W + bash("ka", T + " | sort -o module_impl.py"), (), ("unknown", "compound-check")),
+        ("R1 cat with args", W + bash("kb", T + " | cat - module_impl.py"), (), ("unknown", "compound-check")),
         ("F1b parent shell repair", W, bash("p1", PYFIX, "") + PCHK, ("unknown", "parent-possible-rescue")),
         ("F1b parent compound check", W, bash("p2", "sed -i s/0/1/ module_impl.py && python tests/test_module_impl.py", "1 passed"),
          ("unknown", "parent-possible-rescue")),
