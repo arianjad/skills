@@ -7,7 +7,9 @@ Rule (Astra review, agreed by Arian): only hard evidence counts; missing evidenc
         child's files; or a near-identical brief was re-dispatched after a completed result.
   unknown: everything else, with a category (usage-limit, api-error, cancelled, no-result, no-check, ...). A child
         check followed by any tool call that may mutate files (shell, REPL, script, patch, agent) is void
-        (post-check-shell-activity); a parent pass after the parent edited the child's files is parent-rescued.
+        (post-check-shell-activity), as is a decisive child check whose own command is compound (compound-check); a
+        parent pass after the parent edited the child's files is parent-rescued, and after any other parent call that
+        may mutate files (or from a compound check call) is parent-possible-rescue.
 
     python mine_labels.py [--n 150] [--out DIR]     # writes labels.jsonl + summary.json into DIR
     python mine_labels.py selftest
@@ -142,17 +144,34 @@ def checks(rows, lo=0, hi=None):
             if b.get("type") == "tool_use" and b.get("name") in ("Bash", "PowerShell"):
                 cmd = (b.get("input") or {}).get("command") or ""
                 if check_segs(cmd):
-                    res[b["id"]] = {"id": b["id"], "line": n, "command": cmd[:2000], "check": check_segs(cmd)[:400], "verdict": "no-result"}
+                    res[b["id"]] = {"id": b["id"], "line": n, "command": cmd[:2000], "check": check_segs(cmd)[:400], "verdict": "no-result",
+                                    "compound": compound(cmd)}
     return list(res.values())
+
+
+def mutating(rows, lo, hi, skip, edits=True):
+    """Tool uses on rows with lo <= line <= hi, other than id `skip`, that may mutate files (anything off the read-only
+    lists); edits=False drops Edit/Write-family uses."""
+    return [(n, b.get("name"), str((b.get("input") or {}).get("command") or (b.get("input") or {}).get("file_path") or "")[:200])
+            for n, d in rows if lo <= n <= hi for b in blocks(d)
+            if b.get("type") == "tool_use" and b.get("id") != skip and b.get("name") not in READ_ONLY | (set() if edits else MUTATE)
+            and not READ_ONLY_MCP.match(b.get("name") or "")]
 
 
 def after_check(rows, c):
     """Tool uses that may mutate files, issued after check c (or beside it in the same message); Edit/Write-family
     uses are excluded because they already move the last-write line."""
-    return [(n, b.get("name"), str((b.get("input") or {}).get("command") or "")[:200])
-            for n, d in rows if n >= c["line"] for b in blocks(d)
-            if b.get("type") == "tool_use" and b.get("id") != c["id"] and b.get("name") not in MUTATE | READ_ONLY
-            and not READ_ONLY_MCP.match(b.get("name") or "")]
+    return mutating(rows, c["line"], float("inf"), c["id"], edits=False)
+
+
+FILE_REDIRECT = re.compile(r">>?\s*(?!&|/dev/null\b|nul\b|\$null\b)", re.I)
+
+
+def compound(cmd):
+    """The call may have left a state other than the one its check tested (Astra re-review F1a): chained statements
+    (`;`, `&&`, `||`, newline), or a file redirect in a pipe stage other than the check itself (`2>&1` is not one).
+    ponytail: no shell parsing; quoted `;`/`>` also count (conservative, D15). A bare `| xargs rm` stage is not caught."""
+    return bool(re.search(r"&&|\|\||;|\n", cmd.strip())) or any(FILE_REDIRECT.search(s) for s in cmd.split("|") if not check_segs(s))
 
 
 def writes(rows, lo=0, hi=None):
@@ -365,7 +384,8 @@ def label(disp, prow, sess_disps):
     # the checked state may not be the delivered one; only a decisive (ok/bad) check has a verdict to void
     post = after_check(crow, cchecks[-1]) if cchecks and cchecks[-1]["verdict"] in ("ok", "bad") else []
     flags["post_check_calls"] = len(post)
-    if cchecks and cchecks[-1]["verdict"] == "bad" and not post:
+    ccomp = bool(cchecks) and cchecks[-1]["verdict"] in ("ok", "bad") and cchecks[-1]["compound"]
+    if cchecks and cchecks[-1]["verdict"] == "bad" and not post and not ccomp:
         cev("child-final-check", disp["child"], cchecks[-1])
         if flags["brief_stop"]:   # the child reports a brief-sanctioned stop: an honest halt, not a capability signal
             ev.append({"src": "child-report", "file": disp["parent"], "line": prow[ri][0], "text": STOP_RX.search(rtext).group(0)})
@@ -378,7 +398,20 @@ def label(disp, prow, sess_disps):
         if rescue:   # the parent's check tested the parent's edit of the child's file, not the child's delivery
             ev.append({"src": "parent-edit-child-file", "file": disp["parent"], "line": rescue[0][0], "text": rescue[0][1]})
             return done("unknown", "parent-rescued")
+        # F1b: any parent call that may mutate files between the child's result and this check, or the check's own
+        # call being compound, may have repaired what it then tested
+        pmut = mutating(prow, prow[first_ok][0], pok[0]["line"], pok[0]["id"]) + \
+            ([(pok[0]["line"], "Bash", pok[0]["command"][:200])] if pok[0]["compound"] else [])
+        flags["parent_pre_check_calls"] = len(pmut)
+        if pmut:
+            n, name, cmd = pmut[0]
+            ev.append({"src": "parent-pre-check-call", "file": disp["parent"], "line": n, "text": f"{name}: {cmd}"})
+            return done("unknown", "parent-possible-rescue")
         return done("pass", "parent-post-check")
+    if ccomp:
+        cev("child-final-check", disp["child"], cchecks[-1])
+        ev.append({"src": "child-compound-check", "file": disp["child"], "line": cchecks[-1]["line"], "text": cchecks[-1]["command"][:400]})
+        return done("unknown", "compound-check")
     if post:
         cev("child-final-check", disp["child"], cchecks[-1])
         n, name, cmd = post[0]
@@ -475,6 +508,26 @@ def selftest():
     assert got(r) == ("unknown", "parent-rescued") and r["flags"].get("parent_edited_child_files") == 1, (got(r), r["flags"])
     r = _label(W, PCHK + FIX)                                                                # control: the child's state was tested
     assert got(r) == ("pass", "parent-post-check") and r["flags"].get("parent_edited_child_files") == 1, (got(r), r["flags"])
+    # Astra re-review 2026-09-28 F1: (a) compound decisive child check, (b) parent non-Edit mutation before its pass
+    bash = lambda i, cmd, out="1 passed in 0.1s": [_a(_tu(i, "Bash", command=cmd)), _u(_tr(i, out))]
+    T = "python -m pytest tests/test_module_impl.py"
+    PYFIX = "python -c \"from pathlib import Path; Path('module_impl.py').write_text('fixed')\""
+    cases = [  # (name, child rows, parent rows after the result, expected (label, category))
+        ("F1a trailing write", W + bash("k1", T + "; echo broken > module_impl.py"), (), ("unknown", "compound-check")),
+        ("F1a && chain", W + bash("k2", T + " && git commit -am x"), (), ("unknown", "compound-check")),
+        ("F1a failing compound", W + bash("k3", T + "; echo fixed > module_impl.py", "1 failed in 0.1s"), (),
+         ("unknown", "compound-check")),
+        ("F1a redirect in pipe", W + bash("k4", T + " | python -c \"import sys; print(sys.stdin.read())\" > module_impl.py"), (),
+         ("unknown", "compound-check")),
+        ("F1a control 2>&1 | tail", W + bash("k5", T + " 2>&1 | tail -5"), (), ("pass", "child-final-check")),
+        ("F1b parent shell repair", W, bash("p1", PYFIX, "") + PCHK, ("unknown", "parent-possible-rescue")),
+        ("F1b parent compound check", W, bash("p2", "sed -i s/0/1/ module_impl.py && python tests/test_module_impl.py", "1 passed"),
+         ("unknown", "parent-possible-rescue")),
+        ("F1b control read-only first", W, [_a(_tu("r1", "Read", file_path="module_impl.py")), _u(_tr("r1", "x")),
+                                            _a(_tu("g1", "Grep", pattern="return")), _u(_tr("g1", "x"))] + PCHK,
+         ("pass", "parent-post-check"))]
+    bad = [(name, got(_label(c, p)), want) for name, c, p, want in cases if got(_label(c, p)) != want]
+    assert not bad, "\n".join(f"FAIL {n}: got {g}, want {w}" for n, g, w in bad)
     print("selftest ok")
 
 
