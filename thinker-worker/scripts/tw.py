@@ -519,17 +519,27 @@ def run_check(cmd: str, cwd: object, timeout: float) -> dict:
 def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: bool | None,
             cause: str | None = None, run: bool = True, timeout: float = 900) -> None:
     """Label a guarded dispatch; the last outcome for a tool_use_id wins. accepted is the coordinator's (weak) label;
-    the dispatch's TW-Check, unless run is False, is executed and writes a `check` row. Claude: one cost row."""
-    if harness == "claude":
-        race_check(home, harness, session, None)  # verify the session's last rewrite before it is labeled; never raises
+    the dispatch's TW-Check, unless run is False, is executed and writes a `check` row. Claude: one cost row.
+    Only a dispatch that ran is labeled: its dispatch row says admit, its route row (if any) is not an advise (a
+    denial), and a `tw.py codex` dispatch has a cost row (codex ran). Otherwise Conflict, before anything is written."""
     rows = read_rows(receipts_path(home, harness, session))
-    if not any(r.get("tool_use_id") == tool_use_id for r in rows):
-        raise Conflict(f"no receipt for tool_use_id {tool_use_id} in {harness} session {session}")
-    disp = [r for r in rows if r.get("kind") == "dispatch" and r.get("tool_use_id") == tool_use_id]
-    check = disp[-1].get("check") if disp and run else None
+    mine = [r for r in rows if r.get("tool_use_id") == tool_use_id]
+    disp = [r for r in mine if r.get("kind") == "dispatch"]
+    route_rows = [r for r in mine if r.get("kind") == "route"]
+    if not disp:
+        raise Conflict(f"no dispatch receipt for tool_use_id {tool_use_id} in {harness} session {session}")
+    if disp[-1].get("decision") != "admit":
+        raise Conflict(f"{tool_use_id} was denied at the gate ({disp[-1].get('reason')}); it never ran")
+    if route_rows and route_rows[-1].get("action") == "advise":
+        raise Conflict(f"{tool_use_id} was advised (denied) by the router; it never ran")
+    if disp[-1].get("tool_name") == "codex" and not any(r.get("kind") == "cost" for r in mine):
+        raise Conflict(f"{tool_use_id}: no cost row, so codex never ran for it")
+    check = disp[-1].get("check") if run else None
     if accepted is None and not check:
         raise Conflict("nothing to record: pass --accepted yes|no, or dispatch with a TW-Check line (without "
                        "--no-check)")
+    if harness == "claude":
+        race_check(home, harness, session, None)  # verify the session's last rewrite before it is labeled; never raises
     if accepted is not None:
         append_receipt(home, harness, session, {"kind": "outcome", "at": now(), "harness": harness,
                                                 "session_id": session, "tool_use_id": tool_use_id,

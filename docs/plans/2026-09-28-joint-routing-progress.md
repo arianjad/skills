@@ -58,3 +58,11 @@ Baseline before D1: 17/17 test scripts exit 0 (196 s, 2026-09-28, Windows). Ship
 | D5 docs | none (prose); sweep `rg -i "cutoff\|first backend\|backends.*in order\|errors. if any"` over thinker-worker/*.md returns only the new cutoff sentence and the historical ROUTING-PROGRESS.md | n/a | SKILL.md: decision models decide above the margin, coordinator fallback, enable via override, exploration below the final pick, override keys. claude.md: override keys; routing paragraph (parallel backends, jev blocks, geometric mean, margin gate, exploration around the final pick, cutoff now only for pre-gate cached rows, `cached:bayes` re-advises, `cached:explore` does not); route row `eligible`, `propensity`, `backends`, `combined`, `combined_mean`, `gate` (the `errors` list is gone). codex.md: same as Claude. tw.py prior_route comment. ruff F: clean. Suite 18/18 (243 s) |
 
 Decision models final: D1-D5 green; full suite 18/18 exit 0. Shipped `router.backends` stays `[]`.
+
+## Review fixes (Astra review of bb68813: `scratchpad/astra/review-2026-09-28-bb68813.md`, findings 2, 3, 6, 7)
+
+Baseline before R2: 18/18 test scripts exit 0 (202 s, 2026-09-28, Windows).
+
+| Item | Test (seam) | Red evidence | Green |
+|---|---|---|---|
+| R2 outcome only for dispatches that ran (finding 2) | test_tw_outcome.py R2 block (hook fed a JSON envelope, then the `tw.py outcome` CLI): Astra's counterexample, a `tw-worker-high` + `model: sonnet` dispatch denied at the gate with `TW-Check: echo review-marker > marker.txt`; a router-advised dispatch (advisory mode, explore 1.0 -> `action: advise`); a `tool_name: codex` admit row without a cost row. Each, with and without `--accepted yes`: exit 2, marker absent, receipt count unchanged. The codex row gains a cost row -> exit 0, check `pass` | `AssertionError: ('t_deny', [], 0)`: outcome exited 0 and ran the denied dispatch's check | `outcome()` validates before writing anything (race_check moved after): last dispatch row `admit`, last route row not `advise`, a codex-exec dispatch has a cost row; otherwise Conflict (exit 2). test_tw_settle.py fixtures that call `outcome` gain the admit dispatch row a real route row always follows. Suite 18/18 exit 0 |

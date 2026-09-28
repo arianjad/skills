@@ -87,6 +87,8 @@ if __name__ == "__main__":
     assert race("tw-worker-high", False, action=None) == (0, None, False)
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
+                                                          "decision": "admit"})  # outcome needs a dispatch that ran
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
         child(home, "tw-worker-high", False, sibling="{not json", offered=(False,))
         for verdict in ("yes", "no"):
@@ -102,6 +104,8 @@ if __name__ == "__main__":
         assert (c["model"], c["advisor_available"]) == ("opus", False), c   # no message.model: meta's; a removal is no offer
     with tempfile.TemporaryDirectory() as home:          # the model that ran comes from the transcript, not meta.json
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
+                                                          "decision": "admit"})  # outcome needs a dispatch that ran
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
         child(home, "tw-ideation-high", False, ran="claude-opus-5-5", offered=(True, False))
         assert run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
@@ -121,6 +125,8 @@ if __name__ == "__main__":
         assert (c["api_calls"], c["input_tokens"], c["output_tokens"]) == (1, 3, 9), c
     with tempfile.TemporaryDirectory() as home:          # an advisor call is counted once, tokens from iterations
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
+                                                          "decision": "admit"})  # outcome needs a dispatch that ran
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x", "action": None})
         child(home, "tw-worker-high", False, advisor=True)
         assert run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
@@ -131,6 +137,8 @@ if __name__ == "__main__":
         assert c["output_tokens"] == 50, c                               # top-level counts unchanged: 40 + 7 + 3
     with tempfile.TemporaryDirectory() as home:          # outcome verifies the last rewrite before labeling it
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
+                                                          "decision": "admit"})  # outcome needs a dispatch that ran
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
                                                           "action": "rewrite", "router_agent": "tw-worker-low"})
         child(home, "tw-worker-high", False)
@@ -155,7 +163,8 @@ if __name__ == "__main__":
         assert not tw.advisory_flag(Path(home), "claude", SESSION).exists()
     with tempfile.TemporaryDirectory() as home:          # torn last line (concurrent hook): readers skip it
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x"})
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
+                                                          "decision": "admit"})
         path = tw.receipts_path(Path(home), "claude", SESSION)
         with path.open("ab") as s:
             s.write(b'{"kind": "route", "tool_use_id": "toolu_x", "act')
