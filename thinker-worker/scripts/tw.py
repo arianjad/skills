@@ -947,8 +947,11 @@ def epsilon(explore: float | dict, t: int) -> float:
     return float(explore)
 
 
-def class_count(home: Path, harness: str, cls: str) -> int:
-    """Non-pinned route rows of a class across every receipt file of the harness."""
+def class_count(home: Path, harness: str, cls: str, routes: dict) -> int:
+    """Non-pinned route rows of a class across every receipt file of the harness; 0 without a scan when the class's
+    explore is a plain number (epsilon ignores t then)."""
+    if not isinstance(class_mode(routes, cls)[1], dict):
+        return 0
     # ponytail: rereads all receipts per dispatch; a per-class counter file if this ever gets slow
     return sum(1 for r in harness_rows(home, harness)
                if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
@@ -1293,7 +1296,7 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
         cached = prior_route(home, harness, session, ticket(brief, model)[0])
         r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, model,
-                  1 + class_count(home, harness, d.fields["TW-Class"]))
+                  1 + class_count(home, harness, d.fields["TW-Class"], routes))
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
@@ -1891,7 +1894,7 @@ def main() -> int:
                 raise Conflict(problem)
             r = route(routes, args.harness, args.role, fields, brief,
                       prior(routes, args.harness, args.role, fields["TW-Class"]),
-                      t=1 + class_count(home, args.harness, fields["TW-Class"]))
+                      t=1 + class_count(home, args.harness, fields["TW-Class"], routes))
             print(json.dumps({k: r[k] for k in ("tier", "probs", "confidence", "source", "ticket", "mode")}))
         else:
             try:
