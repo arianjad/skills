@@ -202,17 +202,21 @@ def same_model(req: str, exe: str) -> bool:
     return exe == req or ("-" not in req and req in exe.split("-"))
 
 
-def gate(rec: dict, m: str, e: str) -> tuple[str, str | None]:
-    """(label, reason). pass/fail only when the answer was produced by the requested pair under the no-tools protocol;
-    anything unverified is unknown with its reason (Astra 2026-09-28 F9, design D6)."""
+def gate(rec: dict, m: str, e: str) -> tuple[str, str | None, str]:
+    """(label, reason, model_label). label is pass/fail only when the answer was produced by the requested pair under
+    the no-tools protocol; anything unverified is unknown with its reason (Astra 2026-09-28 F9, re-review F3, design D6).
+    model_label keeps the model-only observation: pass/fail when the model is verified and the protocol clean."""
     ex = rec.get("executed") or {}
     models = [ex["model"]] if isinstance(ex.get("model"), str) else ex.get("model") or []
     reason = ("no-answer" if rec["score"] is None else f"rc={rec['rc']}" if rec["rc"] != 0
               else "is-error" if rec.get("is_error") else "tool-events" if rec.get("tool_events")
               else "executed-model-unknown" if not models
               else "executed-model-differs" if not all(same_model(m, x) for x in models)
-              else "executed-effort-differs" if ex.get("effort") not in (None, e) else None)
-    return ("unknown" if reason else "pass" if rec["score"] == 1.0 else "fail"), reason
+              else "executed-effort-unknown" if ex.get("effort") is None
+              else "executed-effort-differs" if ex["effort"] != e else None)
+    graded = "pass" if rec["score"] == 1.0 else "fail"
+    return ("unknown" if reason else graded), reason, \
+        graded if reason in (None, "executed-effort-unknown", "executed-effort-differs") else "unknown"
 
 
 def run(args) -> None:
@@ -252,7 +256,7 @@ def run(args) -> None:
                "otb_score": score(row, ev["text"], norm=False) if ev.get("text") else None,
                "extracted": extract(ev.get("text", ""), iid.split(":")[0], True)[:200], "gold": row["answer"][:200],
                "raw": str(raw), **{k: v for k, v in ev.items() if k != "text"}}
-        rec["label"], rec["reason"] = gate(rec, m, e)
+        rec["label"], rec["reason"], rec["model_label"] = gate(rec, m, e)
         with res.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
         shutil.rmtree(work, ignore_errors=True)
@@ -310,17 +314,21 @@ def _selftest_run(gold: str) -> None:
         ("claude:sonnet:low", claude({"claude-sonnet-5": {}}, True), None, "unknown"),
         ("claude:sonnet:low", claude(None), None, "unknown"),
         ("claude:sonnet:low", claude({"claude-sonnet-5": {}}, num_turns=3), None, "unknown"),
-        ("claude:sonnet:low", claude({"claude-sonnet-5": {}}), None, "pass"),
+        ("claude:sonnet:low", claude({"claude-sonnet-5": {}}), None, "unknown"),   # re-review F3: Claude effort is never reported
         ("codex:gpt-6-sol:low", codex(tool), {"model": "gpt-6-sol", "effort": "low"}, "unknown"),   # Astra's counterexample
         ("codex:gpt-6-sol:low", codex(), None, "unknown"),
         ("codex:gpt-6-sol:low", codex(), {"model": "gpt-5.6-terra", "effort": "low"}, "unknown"),
         ("codex:gpt-6-sol:low", codex(), {"model": "gpt-6-sol", "effort": "high"}, "unknown"),
+        ("codex:gpt-6-sol:low", codex(), {"model": "gpt-6-sol"}, "unknown"),   # re-review F3: rollout names no effort
         ("codex:gpt-6-sol:low", codex(), {"model": "gpt-6-sol", "effort": "low"}, "pass")]
-    reasons = ["is-error", "executed-model-differs", "is-error", "executed-model-unknown", "tool-events", None,
-               "tool-events", "executed-model-unknown", "executed-model-differs", "executed-effort-differs", None]
+    reasons = ["is-error", "executed-model-differs", "is-error", "executed-model-unknown", "tool-events", "executed-effort-unknown",
+               "tool-events", "executed-model-unknown", "executed-model-differs", "executed-effort-differs",
+               "executed-effort-unknown", None]
+    # model-only observation: kept when the model is verified and the protocol clean, whatever the effort evidence
+    model_labels = ["unknown"] * 5 + ["pass"] + ["unknown"] * 3 + ["pass"] * 3
     old = HOME
     try:
-        for (pair, stdout, ctx, want), why in zip(cases, reasons, strict=True):
+        for (pair, stdout, ctx, want), why, mwant in zip(cases, reasons, model_labels, strict=True):
             with tempfile.TemporaryDirectory() as td:
                 HOME = Path(td) / "home"
                 if ctx:
@@ -337,9 +345,11 @@ def _selftest_run(gold: str) -> None:
                 h, m, e = pair.split(":")
                 assert row["label"] == want and row["requested"] == {"model": m, "effort": e} and "executed" in row, (pair, want, row)
                 assert row["reason"] == why, (pair, why, row)
+                assert row.get("model_label") == mwant, (pair, mwant, row)
                 reparse(Path(args.out))
                 again = json.loads(res.read_text(encoding="utf-8"))
-                assert (again["label"], again.get("reason"), again["executed"]) == (row["label"], row.get("reason"), row["executed"]), (row, again)
+                keys = ("label", "reason", "model_label", "executed")
+                assert [again.get(k) for k in keys] == [row.get(k) for k in keys], (row, again)
     finally:
         HOME = old
     assert "--ephemeral" not in command("codex", "gpt-6-sol", "low", Path("w"))  # the rollout must exist to be read
@@ -360,7 +370,7 @@ def reparse(out: Path) -> None:
         d.update({k: v for k, v in ev.items() if k != "text"}, score=s, requested={"model": m, "effort": e},
                  otb_score=score(items[d["item"]], ev["text"], norm=False) if ev.get("text") else None,
                  extracted=extract(ev.get("text", ""), d["item"].split(":")[0], True)[:200])
-        d["label"], d["reason"] = gate(d, m, e)
+        d["label"], d["reason"], d["model_label"] = gate(d, m, e)
         new.append(d)
     (out / "results.jsonl").write_text("".join(json.dumps(d) + "\n" for d in new), encoding="utf-8")
     print(f"reparsed {len(new)} rows")
