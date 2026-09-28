@@ -188,6 +188,44 @@ if __name__ == "__main__":
         p = run(home, env, "promote", "--harness", "claude", "--model", "gpt-6-sol")
         assert p.returncode == 0 and [json.loads(x)["n_router"] for x in p.stdout.splitlines()] == [1], p
 
+        # review 2 F7 (design D14): the documented enable override (SKILL.md, verbatim; claude.md carries the same)
+        # over the shipped routes.json lists the backend AND runs classes active (explore kept), so a gated pick
+        # rewrites on the Codex path. The kev url is pointed at a local stub, never the real server.
+        import re
+        import tw
+        from test_tw_backends import Stub, answer
+        root = Path(TW).parent.parent
+        enable = re.search(r"enable one with the user override, e\.g\. `([^`]+)`",
+                           (root / "SKILL.md").read_text(encoding="utf-8")).group(1)
+        assert f"`{enable}`" in (root / "references" / "claude.md").read_text(encoding="utf-8"), enable
+        installed = tw.load_routes(root / "routes.json")
+        ov = json.loads(enable)
+        (home / "enable.json").write_text(enable, encoding="utf-8")
+        merged = tw.merge_override(installed, home / "enable.json")
+        assert merged["router"]["backends"] and tw.class_mode(merged, "C-coding") == \
+            ("active", installed["router"]["classes"]["*"]["explore"]), (enable, merged["router"]["classes"])
+        s = Stub(answer({"low": 0.05, "medium": 0.9, "high": 0.05, "xhigh": 0.0}, "medium"))
+        try:
+            for name in ov["router"]["backends"]:
+                ov["router"][name] = {"url": s.url}
+            (home / "enable.json").write_text(json.dumps(ov), encoding="utf-8")
+            env2 = {k: v for k, v in env.items() if k != "TW_ROUTES"}
+            env2["TW_ROUTES_OVERRIDE"] = str(home / "enable.json")
+            coin = lambda b: tw.coin(tw.ticket(b, "gpt-6-sol")[0])
+            text = next(b for b in (WORK + f" enabled {i}" for i in range(200)) if coin(b) >= 0.5)   # not explored
+            brief.write_text(text, encoding="utf-8")
+            (home / "call.json").unlink(missing_ok=True)
+            r = run(home, env2, "codex", "--session", "s1", "--role", "worker", "--tier", "high", "--model",
+                    "gpt-6-sol", "--brief-file", str(brief), "--cd", tmp)
+            call = json.loads((home / "call.json").read_text(encoding="utf-8"))
+            assert r.returncode == 0 and "model_reasoning_effort=medium" in call["args"], (r.stderr, call["args"])
+            row = last_route()
+            assert (row["source"], row["mode"], row["action"], row["target_tier"]) == \
+                ("bayes", "active", "rewrite", "medium"), row
+        finally:
+            s.close()
+        print("PASS F7 documented enable override: backend listed, classes active (explore kept), codex-path rewrite")
+
         # --cd at the user's home: Codex's Windows workspace-write sandbox ACL-walks every top-level home entry
         # (spun 90+ min, 2026-09-28). Refused before codex runs.
         (home / "call.json").unlink(missing_ok=True)
