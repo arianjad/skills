@@ -142,13 +142,11 @@ def check_routes(doc: object, path: Path) -> None:
                 and all(isinstance(v, str) and v for v in opts.values()))
     rt = doc.get("router")
     budget = rt.get("budget_s") if isinstance(rt, dict) else None
-    cutoff = rt.get("cutoff") if isinstance(rt, dict) else None
     classes = rt.get("classes") if isinstance(rt, dict) else None
     floors = rt.get("risk_floor") if isinstance(rt, dict) else None
     priors = rt.get("priors") if isinstance(rt, dict) else None
     if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list) or not good_models(rt)
             or isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0
-            or isinstance(cutoff, bool) or not isinstance(cutoff, (int, float)) or not 0 <= cutoff <= 1
             or not isinstance(classes, dict) or "*" not in classes or not all(good_class(k, v) for k, v in classes.items())
             or not isinstance(floors, dict) or set(floors) != RISKS or any(v not in TIERS for v in floors.values())
             or not isinstance(priors, dict) or "*" not in priors or not set(priors) <= TASK_CLASSES | {"*"}
@@ -1162,10 +1160,9 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     routed dispatch; via (the `tw.py codex` path) skips the competing-writer/race guard and names picks as --tier.
     target: the router's pick raised to the highest routes.json risk_floor among the brief's
     TW-Risk flags (the coordinator's tier on a coordinator-source row). eligible: the router's pick differs from the
-    coordinator's tier (a gated `bayes` pick or an explored one, fresh or a cached bayes decision; another source at
-    router.cutoff), whatever the mode, and the floor did not lift a pick below the coordinator's tier to it or
-    above; promote's coordinator arm keeps only such rows so it matches the dispatches the router would have
-    acted on."""
+    coordinator's tier (a gated `bayes` pick or an explored one, fresh or a cached bayes decision), whatever the
+    mode, and the floor did not lift a pick below the coordinator's tier to it or above; promote's coordinator arm
+    keeps only such rows so it matches the dispatches the router would have acted on."""
     raw = r["tier"]
     flags = [] if d.fields["TW-Risk"] == "none" else [x.strip() for x in d.fields["TW-Risk"].split(",")]
     floor = 0 if r["source"] == "coordinator" else max(   # the floor lifts the router's pick only
@@ -1173,10 +1170,9 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     target = TIERS[max(TIERS.index(raw), floor)]
     floored = target != raw
     lower = TIERS.index(target) < TIERS.index(d.tier)
-    # A combined pick already cleared the margin gate and an explored pick is the exploration itself (design D14);
-    # router.cutoff applies to other sources only. A re-dispatch of an explored brief is not re-advised.
-    decided = r["source"] in ("bayes", "cached:bayes", "explore")
-    disagree = target != d.tier and (decided or r["confidence"] >= routes["router"]["cutoff"])
+    # A combined pick already cleared the margin gate and an explored pick is the exploration itself (design D14).
+    # A re-dispatch of an explored brief is not re-advised.
+    disagree = target != d.tier and r["source"] in ("bayes", "cached:bayes", "explore")
     eligible = r["source"] != "coordinator" and disagree and not (floored and not lower)
     if floored and not lower:
         return None, None, None, eligible, target

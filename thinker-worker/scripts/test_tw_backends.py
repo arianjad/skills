@@ -143,7 +143,7 @@ if __name__ == "__main__":
     want = expect({"a": A, "b": B})
     assert (r["source"], r["tier"], r["gate"]) == ("bayes", "low", "pass"), r
     assert close(r["combined"], want) and close(r["probs"], want), (r["combined"], want)
-    assert abs(r["confidence"] - want["low"]) < 1e-5 and r["confidence"] < SHIPPED["router"]["cutoff"], r
+    assert abs(r["confidence"] - want["low"]) < 1e-5, r
     assert set(r["backends"]) == {"a", "b"} and r["backends"]["a"]["tier"] == "low", r["backends"]
     assert r["backends"]["b"]["probs"] == B and isinstance(r["backends"]["b"]["ms"], int), r["backends"]
     C, D = {"low": 0.5, "medium": 0.5}, {"low": 0.4, "medium": 0.6}               # margin ~0.1 < 0.2
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     r = tw.route(routes_with(backends=[]), "claude", "worker", fields, BRIEF, "high")
     assert (r["source"], r["backends"], r["combined"], r["gate"]) == ("coordinator", {}, None, None), r
 
-    # D2 through the hook: advisory acts on a gated pick below the cutoff; a margin miss leaves the coordinator's
+    # D2 through the hook: advisory acts on a gated pick at p=0.65; a margin miss leaves the coordinator's
     # tier; the route row carries every backend, combined, gate; a re-dispatch reuses the decision (no calls)
     import tempfile
     from test_tw_hook import run_main

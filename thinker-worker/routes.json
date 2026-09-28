@@ -24,7 +24,6 @@
                 "high": "Compare plausible approaches, investigate failures, and check assumptions.",
                 "xhigh": "Sustain extensive alternative search and adversarial checking."},
     "budget_s": 2.0,
-    "cutoff": 0.85,
     "defaults": {"independent-review": "gpt-6-astra", "ideation": "fable"},
     "risk_floor": {"physics": "medium", "destructive": "medium", "external": "medium"},
     "priors": {"*": "medium", "T1-mechanical": "low", "T2-simple-transform": "low", "T3-moderate-reasoning": "medium",

@@ -41,7 +41,7 @@ def verdict(k, n=10, lost=0, advised=0):
                                                   "router_tier": "low", "coordinator_tier": "high", "eligible": True})
             tw.append_receipt(home, "claude", S, {"kind": "outcome", "tool_use_id": f"c{i}", "accepted": i < 850})
             ran(home, f"c{i}")
-        for i in range(200):  # table wanted low but would not have acted (under cutoff, unexplored): neither arm
+        for i in range(200):  # table wanted low but would not have acted (margin miss, unexplored): neither arm
             tw.append_receipt(home, "claude", S, {"kind": "route", "tool_use_id": f"e{i}", "ticket": f"y{i}",
                                                   "class": "C-coding", "action": None, "source": "table",
                                                   "router_tier": "low", "coordinator_tier": "high", "eligible": False})
