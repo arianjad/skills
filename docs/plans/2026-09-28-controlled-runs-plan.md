@@ -118,6 +118,9 @@ are API-equivalent figures, not billed amounts.
 
 ## 5. Proposed full-run parameters (need Arian's yes)
 
+**Status 2026-09-28: Stage 0 declined by Arian; no controlled run is approved.** The `gpt-6-sol` refusal in the smoke was the npm codex CLI 0.153.4; after updating to 0.158.0, gpt-6-sol and gpt-6-luna answer.
+
+
 Strongest objection to OTB as the fail source: the smoke went 4/4 correct at the cheapest tiers. If UnderthinkingBench
 saturates on 2026 models, it reproduces the one-sidedness of the mined labels. Its items were selected for a
 thinking-versus-non-thinking gap in 2025 models (Astra report, §2 of the paper). So stage 0 measures the fail rate
