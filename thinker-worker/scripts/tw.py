@@ -611,10 +611,11 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
 CODEX_USAGE = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
 
 
-def codex_cmd(exe: str, model: str, tier: str, cd: Path, out: Path) -> list[str]:
-    # Same reach as a Claude child: may write (temp files, scripts) and search the web.
-    return [exe, "--search", "exec", "-m", model, "-c", f"model_reasoning_effort={tier}", "-s", "workspace-write",
-            "--json", "--skip-git-repo-check", "-C", str(cd), "-o", str(out), "-"]
+def codex_cmd(exe: str, model: str, tier: str, cd: Path, out: Path, sandbox: str = "workspace-write",
+              search: bool = True) -> list[str]:
+    # Defaults (tw.py codex): same reach as a Claude child, may write (temp files, scripts) and search the web.
+    return [exe, *(["--search"] if search else []), "exec", "-m", model, "-c", f"model_reasoning_effort={tier}",
+            "-s", sandbox, "--json", "--skip-git-repo-check", "-C", str(cd), "-o", str(out), "-"]
 
 
 def codex_evidence(home: Path, events: str) -> dict:

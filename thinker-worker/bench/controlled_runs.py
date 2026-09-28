@@ -17,6 +17,9 @@ from __future__ import annotations
 import argparse, json, os, random, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import tw  # noqa: E402  codex_cmd, codex_evidence (usage + executed identity from the rollout)
+
 DATA = Path(__file__).resolve().parents[2] / "scratchpad" / "controlled" / "otb" / "otl_bench.jsonl"
 OUT = Path(__file__).resolve().parents[2] / "scratchpad" / "controlled" / "runs"
 SUFFIX = " Answer the final answer in \\boxed{}"  # OTB generate.py, verbatim
@@ -151,14 +154,13 @@ def command(h: str, m: str, e: str, work: Path) -> list[str]:
                 "--no-session-persistence", "--tools", "", "--setting-sources", "", "--strict-mcp-config",
                 "--disable-slash-commands", "--system-prompt", SYSTEM]
     # no --ephemeral: the rollout's turn_context is the only record of the executed model/effort (the stream has none)
-    return [shutil.which("codex") or "codex", "exec", "-m", m, "-c", f"model_reasoning_effort={e}", "-s", "read-only",
-            "--json", "--skip-git-repo-check", "-C", str(work), "-o", str(work / "last.md"), "-"]
+    return tw.codex_cmd(shutil.which("codex") or "codex", m, e, work, work / "last.md", sandbox="read-only", search=False)
 
 
 def parse(h: str, stdout: str, work: Path | None) -> dict:
     """Answer text + usage + executed identity. Claude: the single `--output-format json` result; executed model =
-    modelUsage keys (effort is not reported: null). Codex: `--json` events; executed model/effort from the rollout's
-    last turn_context (tw.py's codex_evidence reads the same; duplicated here because tw.py is under concurrent edit)."""
+    modelUsage keys (effort is not reported: null). Codex: `--json` events; thread id, usage and executed model/effort
+    (the rollout's last turn_context) from tw.codex_evidence; text, is_error and tool_events from the events here."""
     if h == "claude":
         try:
             j = json.loads(stdout)
@@ -173,8 +175,9 @@ def parse(h: str, stdout: str, work: Path | None) -> dict:
                 "executed": {"model": keys[0] if len(keys) == 1 else keys or None, "effort": None},
                 **{k: u.get(k, 0) for k in ("input_tokens", "cache_creation_input_tokens",
                                             "cache_read_input_tokens", "output_tokens")}}
-    ev = {"text": "", "tool_events": 0, "is_error": False, "thread_id": None, "executed": {"model": None, "effort": None},
-          **{k: 0 for k in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")}}
+    cx = tw.codex_evidence(HOME, stdout)
+    ev = {"text": "", "tool_events": 0, "is_error": False, "thread_id": cx["thread_id"],
+          "executed": {"model": cx["model"], "effort": cx["effort"]}, **{k: cx[k] for k in tw.CODEX_USAGE}}
     for line in stdout.splitlines():
         try:
             row = json.loads(line)
@@ -183,27 +186,14 @@ def parse(h: str, stdout: str, work: Path | None) -> dict:
         if not isinstance(row, dict):
             continue
         t, item = row.get("type"), row.get("item") or {}
-        if t == "thread.started":
-            ev["thread_id"] = row.get("thread_id")
-        elif t in ("turn.failed", "error"):
+        if t in ("turn.failed", "error"):
             ev["is_error"] = True
-        elif t == "turn.completed":
-            for k in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"):
-                ev[k] += (row.get("usage") or {}).get(k) or 0
         elif t == "item.completed" and item.get("type") == "agent_message":
             ev["text"] = item.get("text") or ev["text"]
         elif t == "item.started" and item.get("type") not in (None, "agent_message", "reasoning"):
             ev["tool_events"] += 1  # a command or tool the no-tools line asked it not to use
     if not ev["text"] and work and (work / "last.md").exists():
         ev["text"] = (work / "last.md").read_text(encoding="utf-8", errors="replace")
-    ro = next((HOME / ".codex" / "sessions").rglob(f"rollout-*{ev['thread_id']}.jsonl"), None) if ev["thread_id"] else None
-    for line in ro.read_text(encoding="utf-8", errors="replace").splitlines() if ro else []:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and row.get("type") == "turn_context":  # last one wins
-            ev["executed"] = {"model": row["payload"].get("model"), "effort": row["payload"].get("effort")}
     return ev
 
 
