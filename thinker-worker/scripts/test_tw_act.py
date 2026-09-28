@@ -13,6 +13,7 @@ from test_tw_hook import pinned_routes, run_main
 from test_tw_receipt import HDR, SESSION, receipts
 
 BASE = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
+BASE["router"]["risk_floor"]["physics"] = "high"          # floor mechanics below, independent of the shipped value
 
 
 def run(mode, pick="low", conf=0.95, explore=0.0, brief_extra="", guard=None, flag=False, risk="none",

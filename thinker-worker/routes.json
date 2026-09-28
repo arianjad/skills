@@ -19,7 +19,7 @@
     "budget_s": 2.0,
     "cutoff": 0.85,
     "defaults": {"independent-review": "gpt-6-astra", "ideation": "fable"},
-    "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"},
+    "risk_floor": {"physics": "medium", "destructive": "medium", "external": "medium"},
     "priors": {"*": "medium", "T1-mechanical": "low", "T2-simple-transform": "low", "T3-moderate-reasoning": "medium",
                "T4-hard-reasoning": "high", "R-research": "medium", "C-coding": "high"},
     "table": {"path": "~/Code/effortmining/bench/state/calibration.json"},

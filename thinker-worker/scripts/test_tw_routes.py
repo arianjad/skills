@@ -138,7 +138,7 @@ if __name__ == "__main__":
             assert code == 0 and json.loads(out)["tier"] == want, (cls, role, out)
         code, out = run_main(["activate", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
         assert code == 0 and "C-coding=high" in out and "T1-mechanical=low" in out, out
-        assert "Tier priors (installed routes.json): *=medium," in out and "risk floors: physics=high" in out, out
+        assert "Tier priors (installed routes.json): *=medium," in out and "risk floors: physics=medium" in out, out
         code, out = run_main(["status", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
         assert code == 0 and "C-coding=high" in out and "T1-mechanical=low" in out, out
 

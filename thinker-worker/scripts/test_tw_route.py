@@ -155,5 +155,10 @@ if __name__ == "__main__":
         why = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
         assert code == 0 and "(exploration)" in why and "dispatch tw-worker-medium " in why, out   # next tier down
         assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": over}) == (0, "")
+        phys = next(b.replace("TW-Risk: none", "TW-Risk: physics") for b in briefs
+                    if coin(b.replace("TW-Risk: none", "TW-Risk: physics")) < 0.2)
+        code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": phys})
+        why = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]    # physics floor is medium, not high
+        assert "dispatch tw-worker-medium " in why, out
     print("PASS route: table clamp, coordinator fallback (missing/invalid/overrun), route rows, no body, body store, "
           "header truncation, CLI, backend-only cache, TW-Override ticket, backend errors, torn line, fail-open error row")
