@@ -110,10 +110,18 @@ def check_routes(doc: object, path: Path) -> None:
             if not pol.get("models") or not pol.get("tiers") or any(t not in TIERS for t in pol["tiers"]):
                 raise Conflict(f"routes.json: bad policy for {harness}/{role}")
 
+    def num(v: object) -> bool:
+        return not isinstance(v, bool) and isinstance(v, (int, float))
+
+    def good_explore(ex: object) -> bool:  # a constant in [0, 1], or a decaying schedule (see epsilon)
+        if isinstance(ex, dict):
+            return (set(ex) == {"c", "power", "floor"} and all(num(v) for v in ex.values())
+                    and ex["c"] > 0 and ex["power"] >= 0 and 0 <= ex["floor"] <= 1)
+        return num(ex) and 0 <= ex <= 1
+
     def good_class(name: object, entry: object) -> bool:
-        ex = entry.get("explore", 0.0) if isinstance(entry, dict) else None
         return ((name == "*" or name in TASK_CLASSES) and isinstance(entry, dict) and entry.get("mode") in MODES
-                and not isinstance(ex, bool) and isinstance(ex, (int, float)) and 0 <= ex <= 1)
+                and good_explore(entry.get("explore", 0.0)))
     rt = doc.get("router")
     budget = rt.get("budget_s") if isinstance(rt, dict) else None
     cutoff = rt.get("cutoff") if isinstance(rt, dict) else None
@@ -700,10 +708,26 @@ def valid_route(out: object, tiers: list[str]) -> bool:
             and isinstance(out.get("confidence"), (int, float)) and 0 <= out["confidence"] <= 1)
 
 
-def class_mode(routes: dict, cls: str | None) -> tuple[str, float]:
+def class_mode(routes: dict, cls: str | None) -> tuple[str, float | dict]:
+    """(mode, explore as configured: a number or a {c, power, floor} schedule) for a class, "*" if it has none."""
     classes = routes["router"]["classes"]
     c = classes.get(cls) or classes["*"]
-    return c["mode"], float(c.get("explore", 0.0))
+    return c["mode"], c.get("explore", 0.0)
+
+
+def epsilon(explore: float | dict, t: int) -> float:
+    """Exploration probability at the t-th routed dispatch of a class. A schedule decays as SLARouter's forced
+    exploration (arXiv 2606.19376, p_t = min(1, c / t^(1/4))) with a floor: max(floor, min(1, c / t**power))."""
+    if isinstance(explore, dict):
+        return max(explore["floor"], min(1.0, explore["c"] / t ** explore["power"]))
+    return float(explore)
+
+
+def class_count(home: Path, harness: str, cls: str) -> int:
+    """Non-pinned route rows of a class across every receipt file of the harness."""
+    # ponytail: rereads all receipts per dispatch; a per-class counter file if this ever gets slow
+    return sum(1 for p in (state_root(home) / "receipts" / harness).glob("*.jsonl") for r in read_rows(p)
+               if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
 
 
 def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | None:
@@ -715,21 +739,21 @@ def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | Non
 
 
 def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
-          prior: dict | None = None, model: str | None = None) -> dict:
+          prior: dict | None = None, model: str | None = None, t: int = 1) -> dict:
     """Fail-open router: the first backend giving a valid answer inside budget_s wins, else the coordinator,
-    except that a ticket whose coin falls below the class's explore goes one tier below it (source "explore").
+    except that a ticket whose coin falls below eps goes one tier below it (source "explore"). eps is the class's
+    explore at the class's t-th routed dispatch (epsilon), 0 when cached or pinned.
     model: the requested model (default the role's models[0]); it keys the ticket."""
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
     tick, digest = ticket(brief, model or pol["models"][0])
     mode, explore = class_mode(routes, fields["TW-Class"])
-    if flagged(brief, "TW-Pin"):
-        explore = 0.0  # the user pinned this model/effort: never explored
+    eps = 0.0 if flagged(brief, "TW-Pin") else epsilon(explore, t)  # a user pin is never explored
     if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
         return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
                 "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
-                "ticket": tick, "digest": digest, "mode": mode, "explore": 0.0}
+                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0}
     result: dict = {}
     start = time.monotonic()
 
@@ -756,12 +780,12 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
                  "body_chars_sent": 0}
         if result.get("errors"):
             found["errors"] = list(result["errors"])
-    if found["source"] == "coordinator" and explore > 0 and int(tick, 16) / 16 ** 12 < explore \
+    if found["source"] == "coordinator" and eps > 0 and int(tick, 16) / 16 ** 12 < eps \
             and coord_tier in pol["tiers"] and pol["tiers"].index(coord_tier) > 0:
         below = pol["tiers"][pol["tiers"].index(coord_tier) - 1]  # design §5 Stage 2: one tier below, no backend
         found = {**found, "tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
     return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
-            "mode": mode, "explore": explore}
+            "mode": mode, "explore": explore, "eps": eps}
 
 
 def _win_claude_start() -> float | None:
@@ -889,7 +913,7 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     floored = target != raw
     lower = TIERS.index(target) < TIERS.index(d.tier)
     disagree = target != d.tier and r["confidence"] >= routes["router"]["cutoff"]
-    explored = lower and r["explore"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["explore"]
+    explored = lower and r["eps"] > 0 and int(r["ticket"], 16) / 16 ** 12 < r["eps"]
     eligible = r["source"] != "coordinator" and (disagree or explored) and not (floored and not lower)
     if floored and not lower:
         return None, None, None, eligible, target
@@ -999,14 +1023,16 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         brief = inp.get("message" if harness == "codex" else "prompt")
         model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
         cached = prior_route(home, harness, session, ticket(brief, model)[0])
-        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, model)
+        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, model,
+                  1 + class_count(home, harness, d.fields["TW-Class"]))
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
                "prior_tier": prior(routes, harness, d.role, d.fields["TW-Class"]),
                "agent_model": model,
                "probs": r["probs"],
-               "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "ms": r["ms"],
+               "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "eps": r["eps"],
+               "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
@@ -1589,7 +1615,8 @@ def main() -> int:
             if problem:
                 raise Conflict(problem)
             r = route(routes, args.harness, args.role, fields, brief,
-                      prior(routes, args.harness, args.role, fields["TW-Class"]))
+                      prior(routes, args.harness, args.role, fields["TW-Class"]),
+                      t=1 + class_count(home, args.harness, fields["TW-Class"]))
             print(json.dumps({k: r[k] for k in ("tier", "probs", "confidence", "source", "ticket", "mode")}))
         else:
             try:

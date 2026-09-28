@@ -77,6 +77,7 @@ if __name__ == "__main__":
             "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"},
             "priors": {"*": "medium"}}
     no_cutoff = {k: v for k, v in good.items() if k != "cutoff"}
+    dec = {"c": 0.5, "power": 0.25, "floor": 0.05}
     with tempfile.TemporaryDirectory() as tmp:
         for router, ok in [(good, True), (None, False), ([], False), ({**good, "backends": "table"}, False),
                            ({**good, "budget_s": 0}, False), ({**good, "budget_s": "2"}, False),
@@ -93,7 +94,14 @@ if __name__ == "__main__":
                            ({**good, "priors": {"*": "max"}}, False),                                    # a real tier
                            ({**good, "classes": {"*": {"mode": "bogus"}}}, False),                       # a real mode
                            ({**good, "classes": {"*": {"mode": "shadow"}, "X": {"mode": "shadow"}}}, False),
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": 1.5}}}, False)]:
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": 1.5}}}, False),
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": dec}}}, True),     # decaying
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "floor": 1.5}}}}, False),
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "c": 0}}}}, False),
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "power": -1}}}}, False),
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "c": True}}}}, False),
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {"c": 0.5, "power": 0.25}}}}, False),
+                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "x": 1}}}}, False)]:
             doc = {**R, "router": router}
             if router is None:
                 del doc["router"]
@@ -158,7 +166,7 @@ if __name__ == "__main__":
             assert tw.prior(doc, "claude", "worker", "C-coding") == "medium"
             doc = loaded(json.dumps({"router": {"classes": {"C-coding": {"explore": 0.5}}}}))   # partial entry
             assert tw.class_mode(doc, "C-coding") == ("advisory", 0.5), doc["router"]["classes"]  # inherits "*" mode
-            assert tw.class_mode(doc, "T1-mechanical") == ("advisory", 0.2)
+            assert tw.class_mode(doc, "T1-mechanical") == ("advisory", dec)     # the shipped "*" schedule
             doc = loaded(json.dumps({"router": {"classes": {"*": {"mode": "shadow"}, "C-coding": {"explore": 0.5}}}}))
             assert tw.class_mode(doc, "C-coding") == ("shadow", 0.5), doc["router"]["classes"]
             doc = loaded(json.dumps({"router": {"risk_floor": {"physics": "xhigh"}}}))
@@ -188,7 +196,7 @@ if __name__ == "__main__":
             assert code == 0 and "override ignored" in out, out
             coin = lambda b: int(tw.ticket(b, "opus")[0], 16) / 16 ** 12
             brief = next(b for b in ("TW-Role: worker\n" + hdr.format("C-coding") + str(i) for i in range(50))
-                         if coin(b) >= 0.2)                                   # shipped explore 0.2: stay unexplored
+                         if coin(b) >= 0.5)                   # shipped eps at t=1 is 0.5: stay unexplored
             env = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session, "tool_use_id": "t1",
                    "tool_input": {"subagent_type": "tw-worker-high", "prompt": brief}}
             code, out = run_main(["hook", "--home", tmp, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))

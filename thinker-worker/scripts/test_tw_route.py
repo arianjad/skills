@@ -170,13 +170,40 @@ if __name__ == "__main__":
     finally:
         tw.load_routes = REAL_LOAD
 
+    # decaying forced exploration: eps_t = max(floor, min(1, c / t**power)), t = 1 + prior non-pinned class rows
+    decay = {"c": 0.5, "power": 0.25, "floor": 0.05}
+    r1 = json.loads(json.dumps(REAL_LOAD()))
+    r1["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": decay}})
+    coin = lambda b: int(tw.ticket(b, "opus")[0], 16) / 16 ** 12
+    mid = next(b for b in (BRIEF + f" d{i}" for i in range(500)) if 0.3 < coin(b) < 0.5)   # explored iff eps > coin
+    r = tw.route(r1, "claude", "worker", fields, mid, "high", t=1)
+    assert (r["source"], r["eps"], r["explore"]) == ("explore", 0.5, decay), r
+    r = tw.route(r1, "claude", "worker", fields, mid, "high", t=16)
+    assert (r["source"], r["eps"]) == ("coordinator", 0.25), r
+    assert tw.route(r1, "claude", "worker", fields, mid, "high", t=10 ** 8)["eps"] == 0.05       # the floor
+    tw.load_routes = lambda path=None: r1
+    try:
+        for n_class, want in ((15, "coordinator"), (0, "explore")):  # t counts every session file of the harness
+            with tempfile.TemporaryDirectory() as home:
+                for i in range(n_class):
+                    tw.append_receipt(Path(home), "claude", "other", {"kind": "route", "class": "C-coding"})
+                for i in range(100):  # pinned rows and other classes never count
+                    tw.append_receipt(Path(home), "claude", "other", {"kind": "route", "class": "C-coding", "pinned": True})
+                    tw.append_receipt(Path(home), "claude", "other", {"kind": "route", "class": "T1-mechanical"})
+                run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+                hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": mid})
+                row = tw.read_rows(tw.receipts_path(Path(home), "claude", SESSION))[-1]
+                assert (row["source"], row["eps"]) == (want, 0.25 if n_class else 0.5), (n_class, row)
+    finally:
+        tw.load_routes = REAL_LOAD
+
     pin.__exit__(None, None, None)  # the one deliberate test of the SHIPPED routes.json: TW_ROUTES names it, so
     os.environ["TW_ROUTES"] = str(tw.source_root() / "routes.json")  # a real-home override file is never read
-    shipped = tw.load_routes()  # switch-on: no backend, every class advisory with exploration 0.2
-    assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": 0.2}
+    shipped = tw.load_routes()  # no backend, every class advisory with decaying exploration (eps 0.5 at t=1)
+    assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": decay}
     coin = lambda b: int(tw.ticket(b, "opus")[0], 16) / 16 ** 12      # the draw route() and act() use
     briefs = ["TW-Role: worker\n" + HDR.replace("destructive", "none") + f"shipped {i}" for i in range(200)]
-    under, over = next(b for b in briefs if coin(b) < 0.2), next(b for b in briefs if coin(b) >= 0.2)
+    under, over = next(b for b in briefs if coin(b) < 0.2), next(b for b in briefs if coin(b) >= 0.5)  # t=1, t=2
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": under})

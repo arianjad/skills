@@ -96,11 +96,11 @@ if __name__ == "__main__":
     out, row = run("advisory", explore=1.0, backends=())            # no backend: explore one tier below
     assert "tw-worker-medium" in out["permissionDecisionReason"] and "exploration" in out["permissionDecisionReason"]
     assert row["source"] == "explore" and row["router_tier"] == "medium" and row["eligible"] is True, row
-    assert row["explore"] == 1.0, row                                                      # ε recorded
+    assert row["explore"] == row["eps"] == 1.0, row                                        # ε recorded
     out, row = run("advisory", explore=1e-9, backends=())           # coin >= ε: the phase-2 control shape
     assert out is None and row["source"] == "coordinator" and row["explore"] == 1e-9, row
     out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-medium", ""))   # take the pick
-    assert out is None and row["source"] == "cached:explore" and row["explore"] == 0.0, row
+    assert out is None and row["source"] == "cached:explore" and (row["explore"], row["eps"]) == (1.0, 0.0), row
     out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-medium", ""), prior="high")
     assert out is None, out     # complying with the router's pick below the prior draws no prior reminder (live check)
     out, row = run("advisory", explore=1.0, backends=(), then=("tw-worker-high", ""))     # rejected, back to high

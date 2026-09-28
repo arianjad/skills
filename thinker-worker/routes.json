@@ -23,6 +23,6 @@
     "priors": {"*": "medium", "T1-mechanical": "low", "T2-simple-transform": "low", "T3-moderate-reasoning": "medium",
                "T4-hard-reasoning": "high", "R-research": "medium", "C-coding": "high"},
     "table": {"path": "~/Code/effortmining/bench/state/calibration.json"},
-    "classes": {"*": {"mode": "advisory", "explore": 0.2}}
+    "classes": {"*": {"mode": "advisory", "explore": {"c": 0.5, "power": 0.25, "floor": 0.05}}}
   }
 }
