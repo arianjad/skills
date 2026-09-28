@@ -347,3 +347,27 @@ if __name__ == "__main__":
         assert (r["source"], r["tier"], r["gate"]) == ("coordinator", "high", None), (bad, r)
         assert "502" in r["backends"]["laya"]["error"], (bad, r["backends"])
     print("PASS backends R3: Laya adapter answers 502 on malformed predictor probabilities; route() falls back")
+
+    # Astra round-3 R4: backend_jev reads at most a fixed cap of the response; a larger body is an error before any
+    # JSON parse, so a huge body cannot hold the GIL past the budget. HTTP transport mocked (build_opener)
+    import io
+    from unittest.mock import patch
+
+    class Opener:
+        def __init__(self, body):
+            self.body = body
+
+        def open(self, req, timeout=None):
+            return io.BytesIO(self.body)
+    huge = b'{"answers":{"tier":{"probabilities":[' + b"0," * 3000000 + b'0]}}}'   # ~6 MB, the review's body
+    rr = routes_with(backends=["kev"], budget_s=0.3, classes={"*": {"mode": "active", "explore": 0.0}})
+    tw.check_routes(rr, Path("in-memory"))
+    with patch("urllib.request.build_opener", return_value=Opener(json.dumps(answer({"low": 1.0})).encode())):
+        assert tw.route(rr, "claude", "worker", fields, BRIEF, "high")["source"] == "bayes"   # control: mock path acts
+    with patch("urllib.request.build_opener", return_value=Opener(huge)):
+        t0 = time.monotonic()
+        r = tw.route(rr, "claude", "worker", fields, BRIEF, "high")
+        dt = time.monotonic() - t0
+    assert "oversize" in r["backends"]["kev"].get("error", ""), r["backends"]
+    assert r["source"] == "coordinator" and dt < 0.3, (r["source"], dt)
+    print(f"PASS backends R4: a {len(huge) >> 20} MB backend body fails as oversize in {dt:.3f} s (budget 0.3 s)")

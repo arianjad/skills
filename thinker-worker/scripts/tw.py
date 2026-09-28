@@ -931,6 +931,7 @@ def backend_table(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
 # provisional, from Astra ideation 2026-09-28, until candidate cards (design D5) replace it.
 JEV_INSTRUCTIONS = ("Pick the lowest reasoning-effort tier at which a capable model completes this delegated task "
                     "correctly.")  # provisional, like router.options
+JEV_MAX_BYTES = 64 * 1024  # a tier answer is well under 1 KiB; a larger body is refused before any JSON parse
 
 
 def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
@@ -949,7 +950,10 @@ def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
                                   headers={"Content-Type": "application/json"})
     # ProxyHandler({}): a local server, never through a system proxy
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(http, timeout=cfg["timeout"]) as resp:
-        got = json.loads(resp.read().decode("utf-8"))["answers"]["tier"]["probabilities"]
+        data = resp.read(JEV_MAX_BYTES + 1)  # the join deadline cannot preempt a GIL-holding parse: bound it (R4)
+    if len(data) > JEV_MAX_BYTES:
+        raise ValueError(f"oversize: response over {JEV_MAX_BYTES} bytes")
+    got = json.loads(data.decode("utf-8"))["answers"]["tier"]["probabilities"]
     if not isinstance(got, dict) or not all(prob(v) and v <= 1 for v in got.values()):
         raise ValueError("probabilities must be finite numbers in [0, 1]")  # never coerce flags or scores
     raw = {t: float(got.get(t, 0.0)) for t in pol["tiers"]}
