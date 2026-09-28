@@ -459,6 +459,28 @@ def kill_tree(proc: subprocess.Popen, wait: float = 10) -> bool:
     return ok
 
 
+def run_bounded(argv: list[str], cwd: object, stdin_bytes: bytes | None, timeout: float, merge: bool = False) -> dict:
+    """Run argv once for at most `timeout` s. stdio are temp files, not pipes (a surviving grandchild cannot hang the
+    read); on POSIX the child gets its own session so kill_tree kills the group. On timeout the tree is killed
+    (kill_tree). Returns code (None on timeout), out, err ("" with merge: stderr goes to out, in order), timed_out,
+    kill_failed, pid, exited (the process was gone at return). Popen's OSError propagates. stdin_bytes None: DEVNULL."""
+    with tempfile.TemporaryFile() as fin, tempfile.TemporaryFile() as fout, tempfile.TemporaryFile() as ferr:
+        if stdin_bytes is not None:
+            fin.write(stdin_bytes)
+            fin.seek(0)
+        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL if stdin_bytes is None else fin, stdout=fout,
+                                stderr=subprocess.STDOUT if merge else ferr, start_new_session=os.name != "nt")
+        code, timed_out, kill_failed = None, False, False
+        try:
+            code = proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            timed_out, kill_failed = True, not kill_tree(proc)
+        fout.seek(0), ferr.seek(0)
+        out, err = (f.read().decode("utf-8", errors="replace") for f in (fout, ferr))
+    return {"code": code, "out": out, "err": err, "timed_out": timed_out, "kill_failed": kill_failed,
+            "pid": proc.pid, "exited": proc.poll() is not None}
+
+
 def check_shell() -> tuple[str | None, str | None]:
     """(shell path, None) or (None, unknown_reason). Modeled on GitHub Actions `shell: bash`: TW_CHECK_BASH if set;
     on Windows the bash of git's own install (never a PATH bash: WSL's bash.exe, or anything planted first);
@@ -505,22 +527,18 @@ def run_check(cmd: str, cwd: object, timeout: float) -> dict:
         # without pipefail `failing | cat` exits 0 and would label pass; Git's sh.exe and macOS /bin/sh are bash
         res["unknown_reason"] = "no pipefail shell"
     else:
-        with tempfile.TemporaryFile() as out:  # a file, not a pipe: a surviving grandchild cannot hang the read
-            try:
-                proc = subprocess.Popen([shell, "--noprofile", "--norc", "-eo", "pipefail", "-c", cmd], cwd=cwd,
-                                        stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                        start_new_session=os.name != "nt")
-            except OSError as exc:
-                res["unknown_reason"] = f"launch error: {type(exc).__name__}: {exc}"[:200]
+        try:
+            ran = run_bounded([shell, "--noprofile", "--norc", "-eo", "pipefail", "-c", cmd], cwd, None, timeout,
+                              merge=True)
+        except OSError as exc:
+            res["unknown_reason"] = f"launch error: {type(exc).__name__}: {exc}"[:200]
+        else:
+            if ran["timed_out"]:
+                res["kill_failed"], res["unknown_reason"] = ran["kill_failed"], "timeout"
             else:
-                try:
-                    res["exit_code"] = proc.wait(timeout)
-                    res["label"] = "pass" if res["exit_code"] == 0 else "fail"
-                except subprocess.TimeoutExpired:
-                    res["kill_failed"] = not kill_tree(proc)
-                    res["unknown_reason"] = "timeout"
-                out.seek(0)
-                res["tail"] = out.read().decode("utf-8", errors="replace")[-400:]
+                res["exit_code"] = ran["code"]
+                res["label"] = "pass" if ran["code"] == 0 else "fail"
+            res["tail"] = ran["out"][-400:]
     res["seconds"] = round(time.monotonic() - start, 3)
     return res
 
@@ -638,24 +656,14 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     out = state_root(home) / "codex" / f"{tool_use_id}.last.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     timeout = float(os.environ.get("TW_CODEX_TIMEOUT", "3600"))
-    # files, not pipes: a surviving grandchild cannot hang the read
-    with tempfile.TemporaryFile() as fin, tempfile.TemporaryFile() as fout, tempfile.TemporaryFile() as ferr:
-        fin.write((AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"))
-        fin.seek(0)
-        proc = subprocess.Popen(codex_cmd(exe, model, tier, cd, out), stdin=fin, stdout=fout, stderr=ferr,
-                                start_new_session=os.name != "nt")
-        kill_failed = False
-        try:
-            code, timed_out = proc.wait(timeout), False
-        except subprocess.TimeoutExpired:
-            kill_failed = not kill_tree(proc)  # codex.CMD -> node -> codex.exe -> sandbox helpers
-            code, timed_out = None, True
-        fout.seek(0), ferr.seek(0)
-        stdout, stderr = (f.read().decode("utf-8", errors="replace") for f in (fout, ferr))
+    # on timeout the whole tree is killed: codex.CMD -> node -> codex.exe -> sandbox helpers
+    ran = run_bounded(codex_cmd(exe, model, tier, cd, out), None, (AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
+                      timeout)
+    code, timed_out, kill_failed, stdout, stderr = ran["code"], ran["timed_out"], ran["kill_failed"], ran["out"], ran["err"]
     if timed_out:
         stderr += (f"\ncodex timed out after {timeout:g} s (TW_CODEX_TIMEOUT); "
-                   + (f"killing its process tree failed; pid {proc.pid} "
-                      + ("exited" if proc.poll() is not None else "may still be running") if kill_failed
+                   + (f"killing its process tree failed; pid {ran['pid']} "
+                      + ("exited" if ran["exited"] else "may still be running") if kill_failed
                       else "process tree killed"))
     ev = codex_evidence(home, stdout)
     append_receipt(home, "claude", session, {"kind": "cost", "at": now(), "harness": "claude", "session_id": session,
