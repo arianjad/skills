@@ -340,7 +340,10 @@ if __name__ == "__main__":
             srv.server_close()
     r = laya({"low": 0.9, "medium": 0.05, "high": 0.05, "xhigh": 0.0})              # control: a valid prediction acts
     assert (r["source"], r["tier"], r["gate"]) == ("bayes", "low", "pass"), r
-    for bad in ({"low": True, "medium": False, "high": False, "xhigh": False},
+    r = laya({"low": 0.9, "medium": 0.1})                                           # round-4 F2 control: subset acts
+    assert (r["source"], r["tier"], r["gate"]) == ("bayes", "low", "pass"), r
+    for bad in ({"low": 90, "medium": 10},                                          # round-4 F2: values > 1
+                {"low": True, "medium": False, "high": False, "xhigh": False},
                 {"low": -4, "medium": -1, "high": 0, "xhigh": 0}, {"low": 0, "medium": 0, "high": 0, "xhigh": 0},
                 {"low": float("nan"), "medium": 0.5, "high": 0.5, "xhigh": 0}, {"low": "0.9", "medium": 0.1}):
         r = laya(bad)

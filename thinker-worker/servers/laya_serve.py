@@ -15,12 +15,13 @@ class BadPrediction(ValueError):
 
 def map_answer(raw: dict, qdef: dict) -> dict:
     """Map one Laya answer to the contract; choice probabilities renormalized over the given options, after checking
-    every value is a finite, non-bool real >= 0 with some mass on an option (never coerced: Astra round-3 R3)."""
+    every value is a finite, non-bool real in [0, 1] with some mass on an option (never coerced: Astra round-3 R3;
+    the upper bound, so percentages are not laundered into a distribution: round-4 F2)."""
     if raw.get("type") != "choice":
         return raw
     opts, got = list(qdef["criteria"]), raw.get("probabilities")
     if not (isinstance(got, dict) and all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
-                                          and v >= 0 for v in got.values()) and any(got.get(o, 0) > 0 for o in opts)):
+                                          and 0 <= v <= 1 for v in got.values()) and any(got.get(o, 0) > 0 for o in opts)):
         raise BadPrediction(f"predictor probabilities are not a distribution: {got!r}"[:200])
     p = {o: float(got.get(o, 0.0)) for o in opts}
     s = sum(p.values())
@@ -92,7 +93,8 @@ def selftest():
         assert set(t) == {"type", "choice", "confidence", "probabilities"}, t
         assert t["choice"] == "high" and abs(sum(t["probabilities"].values()) - 1) < 1e-9, t
         assert abs(t["probabilities"]["high"] - 0.5 / 0.9) < 1e-9 and isinstance(a["latency_ms"], float), a
-        for bad in ({"low": True}, {"low": -4, "high": 0}, {"low": 0}, {"low": float("nan")}, {"low": "0.9"}, [0.9]):
+        for bad in ({"low": True}, {"low": -4, "high": 0}, {"low": 0}, {"low": float("nan")}, {"low": "0.9"}, [0.9],
+                    {"low": 90, "medium": 10}):  # round-4 F2: a percentage is not a probability
             try:
                 map_answer({"type": "choice", "confidence": 0.3, "probabilities": bad}, q["tier"])
                 raise AssertionError(f"accepted {bad!r}")
