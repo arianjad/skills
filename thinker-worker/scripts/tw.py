@@ -644,10 +644,11 @@ def promote(home: Path, harness: str, cls: str | None = None, margin: float = 0.
             "n_advisor_excluded": n_adv, "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
 
 
-def ticket(brief: str) -> tuple[str, str]:
+def ticket(brief: str, model: str) -> tuple[str, str]:
+    """(12-hex ticket, full digest) of the brief without TW-Route/TW-Override lines, keyed by the requested model."""
     norm = "\n".join(x.rstrip() for x in brief.split("\n")
                      if not x.startswith(("TW-Route:", "TW-Override:"))).strip()
-    digest = sha(norm.encode("utf-8"))
+    digest = sha(f"{model}\n{norm}".encode("utf-8"))
     return digest[:12], digest
 
 
@@ -690,12 +691,13 @@ def prior_route(home: Path, harness: str, session: str, tick: str) -> dict | Non
 
 
 def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
-          prior: dict | None = None) -> dict:
+          prior: dict | None = None, model: str | None = None) -> dict:
     """Fail-open router: the first backend giving a valid answer inside budget_s wins, else the coordinator,
-    except that a ticket whose coin falls below the class's explore goes one tier below it (source "explore")."""
+    except that a ticket whose coin falls below the class's explore goes one tier below it (source "explore").
+    model: the requested model (default the role's models[0]); it keys the ticket."""
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
-    tick, digest = ticket(brief)
+    tick, digest = ticket(brief, model or pol["models"][0])
     mode, explore = class_mode(routes, fields["TW-Class"])
     if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
         return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
@@ -969,13 +971,14 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
     try:
         inp = envelope["tool_input"]
         brief = inp.get("message" if harness == "codex" else "prompt")
-        cached = prior_route(home, harness, session, ticket(brief)[0])
-        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached)
+        model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
+        cached = prior_route(home, harness, session, ticket(brief, model)[0])
+        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, model)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
                "prior_tier": prior(routes, harness, d.role, d.fields["TW-Class"]),
-               "agent_model": d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0],  # requested
+               "agent_model": model,
                "probs": r["probs"],
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],

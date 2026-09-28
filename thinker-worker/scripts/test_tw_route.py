@@ -45,8 +45,8 @@ if __name__ == "__main__":
         t0 = time.monotonic()
         r = tw.route(routes_with(cal, ("slow",), budget=0.2), "claude", "worker", fields, BRIEF, "high")
         assert r["source"] == "coordinator" and time.monotonic() - t0 < 1.0, r
-    assert tw.ticket(BRIEF) == tw.ticket(BRIEF.replace(HDR, HDR + "TW-Route: abc\n"))
-    assert tw.ticket(BRIEF) == tw.ticket(BRIEF.replace(HDR, HDR + "TW-Override: keep high\n"))
+    assert tw.ticket(BRIEF, "opus") == tw.ticket(BRIEF.replace(HDR, HDR + "TW-Route: abc\n"), "opus")
+    assert tw.ticket(BRIEF, "opus") == tw.ticket(BRIEF.replace(HDR, HDR + "TW-Override: keep high\n"), "opus")
 
     with tempfile.TemporaryDirectory() as tmp:
         cal = Path(tmp) / "calibration.json"
@@ -109,7 +109,7 @@ if __name__ == "__main__":
         code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF + " v2"})
         assert code == 0 and out == "", out
         last = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])  # the torn fragment swallows the next row
-        assert last["kind"] == "route" and last["ticket"] == tw.ticket(BRIEF + " v2")[0], last
+        assert last["kind"] == "route" and last["ticket"] == tw.ticket(BRIEF + " v2", "opus")[0], last
 
     with tempfile.TemporaryDirectory() as home:  # post-admission failure: admit stands, error row logged
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION, "--store-bodies"])
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         f = Path(home) / "b.md"
         f.write_text(BRIEF, encoding="utf-8")
         code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f)])
-        assert code == 0 and json.loads(out)["ticket"] == tw.ticket(BRIEF)[0], out
+        assert code == 0 and json.loads(out)["ticket"] == tw.ticket(BRIEF, "opus")[0], out
 
     r0 = json.loads(json.dumps(tw.load_routes()))  # no backend: explore one tier below the coordinator
     r0["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": 1.0}})
@@ -142,11 +142,28 @@ if __name__ == "__main__":
     r0["router"]["classes"]["*"]["explore"] = 0.0
     assert tw.route(r0, "claude", "worker", f, "x", "high")["source"] == "coordinator"
 
+    # the ticket includes the model (per-call, else the role's models[0]): cached decisions are per (brief, model)
+    tw.load_routes = lambda path=None: r0
+    r0["router"]["classes"]["*"]["explore"] = 1.0
+    try:
+        with tempfile.TemporaryDirectory() as home:
+            run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+            deny = lambda o: json.loads(o)["hookSpecificOutput"]["permissionDecision"] == "deny"
+            assert deny(hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})[1])
+            assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF,
+                                                  "model": "opus"}) == (0, "")          # = the default: cached
+            assert deny(hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF,
+                                                       "model": "claude-opus-5-5"})[1])  # another model: fresh decision
+            a, b, c = [x for x in receipts(home, "claude") if x["kind"] == "route"]
+            assert a["ticket"] == b["ticket"] != c["ticket"] and b["source"] == "cached:explore", (a, b, c)
+    finally:
+        tw.load_routes = REAL_LOAD
+
     pin.__exit__(None, None, None)  # the one deliberate test of the SHIPPED routes.json: TW_ROUTES names it, so
     os.environ["TW_ROUTES"] = str(tw.source_root() / "routes.json")  # a real-home override file is never read
     shipped = tw.load_routes()  # switch-on: no backend, every class advisory with exploration 0.2
     assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": 0.2}
-    coin = lambda b: int(tw.ticket(b)[0], 16) / 16 ** 12      # the draw route() and act() use
+    coin = lambda b: int(tw.ticket(b, "opus")[0], 16) / 16 ** 12      # the draw route() and act() use
     briefs = ["TW-Role: worker\n" + HDR.replace("destructive", "none") + f"shipped {i}" for i in range(200)]
     under, over = next(b for b in briefs if coin(b) < 0.2), next(b for b in briefs if coin(b) >= 0.2)
     with tempfile.TemporaryDirectory() as home:

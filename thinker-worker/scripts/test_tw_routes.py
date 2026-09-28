@@ -186,7 +186,7 @@ if __name__ == "__main__":
             assert code == 0 and "Tier priors (override ignored: " in out, out
             code, out = run_main(["status", "--home", tmp, "--harness", "claude", "--session", session])
             assert code == 0 and "override ignored" in out, out
-            coin = lambda b: int(tw.ticket(b)[0], 16) / 16 ** 12
+            coin = lambda b: int(tw.ticket(b, "opus")[0], 16) / 16 ** 12
             brief = next(b for b in ("TW-Role: worker\n" + hdr.format("C-coding") + str(i) for i in range(50))
                          if coin(b) >= 0.2)                                   # shipped explore 0.2: stay unexplored
             env = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session, "tool_use_id": "t1",
