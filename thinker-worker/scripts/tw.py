@@ -934,7 +934,8 @@ JEV_INSTRUCTIONS = ("Pick the lowest reasoning-effort tier at which a capable mo
 JEV_MAX_BYTES = 64 * 1024  # a tier answer is well under 1 KiB; a larger body is refused before any JSON parse
 # Windows refuses a closed loopback port only after ~2 s (measured 2026-09-28), so a down server would cost every
 # dispatch the whole budget; the connect gets this bound, the reply keeps the budget left. Local servers only.
-JEV_CONNECT_S = 0.25
+# 0.5 s is ~20x the worst loopback connect measured to live Kev/Laya under 16 concurrent requests (27 ms, 2026-09-28).
+JEV_CONNECT_S = 0.5
 
 
 def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
