@@ -5,7 +5,9 @@ Rule (Astra review, agreed by Arian): only hard evidence counts; missing evidenc
         child's result (parent side), and its output shows success.
   fail: the last such check failed; a parent check on the artifact failed and the parent then edited the
         child's files; or a near-identical brief was re-dispatched after a completed result.
-  unknown: everything else, with a category (usage-limit, api-error, cancelled, no-result, no-check, ...).
+  unknown: everything else, with a category (usage-limit, api-error, cancelled, no-result, no-check, ...). A child
+        check followed by any tool call that may mutate files (shell, REPL, script, patch, agent) is void
+        (post-check-shell-activity); a parent pass after the parent edited the child's files is parent-rescued.
 
     python mine_labels.py [--n 150] [--out DIR]     # writes labels.jsonl + summary.json into DIR
     python mine_labels.py selftest
@@ -39,6 +41,11 @@ SCRATCH = re.compile(r"[\\/](?:Temp|tmp|scratchpad)[\\/]", re.I)
 BAD_OUT = re.compile(r"\b[1-9]\d* (?:failed|errors?)\b|^FAILED\b|^\s*\[?FAIL(?:ED)?\b|^\S*\bFAIL:|^Traceback \(most recent"
                      r"|^\w*Error\b", re.M)   # the harness's "Exit code N" prefix is is_error, judged in verdict()
 MUTATE = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
+# tools that cannot change files; any other tool after a check (Bash, PowerShell, REPL, ctx_execute, Agent, Monitor,
+# patch helpers, unknown MCP tools) may have changed the tested artifact.
+# ponytail: name-based allowlist, no shell parsing; a `git commit` after the tests also voids them (conservative, D15)
+READ_ONLY = {"Read", "Grep", "Glob", "WebSearch", "WebFetch", "ToolSearch", "Skill", "SubagentHandback", "TodoWrite", "TaskStop"}
+READ_ONLY_MCP = re.compile(r"^mcp__.*__(?:\w+_)?(?:get|read|search|list|query|info|timeline|render)\w*$")
 OUTAGE = [("usage-limit", re.compile(r"hit your (?:monthly spend|session|weekly|usage) limit|extra usage|usage limit|rate limit", re.I)),
           ("model-error", re.compile(r"issue with the selected model", re.I)),
           ("api-error", re.compile(r"API Error|terminated early due to an API error|Connection closed", re.I)),
@@ -135,8 +142,17 @@ def checks(rows, lo=0, hi=None):
             if b.get("type") == "tool_use" and b.get("name") in ("Bash", "PowerShell"):
                 cmd = (b.get("input") or {}).get("command") or ""
                 if check_segs(cmd):
-                    res[b["id"]] = {"line": n, "command": cmd[:2000], "check": check_segs(cmd)[:400], "verdict": "no-result"}
+                    res[b["id"]] = {"id": b["id"], "line": n, "command": cmd[:2000], "check": check_segs(cmd)[:400], "verdict": "no-result"}
     return list(res.values())
+
+
+def after_check(rows, c):
+    """Tool uses that may mutate files, issued after check c (or beside it in the same message); Edit/Write-family
+    uses are excluded because they already move the last-write line."""
+    return [(n, b.get("name"), str((b.get("input") or {}).get("command") or "")[:200])
+            for n, d in rows if n >= c["line"] for b in blocks(d)
+            if b.get("type") == "tool_use" and b.get("id") != c["id"] and b.get("name") not in MUTATE | READ_ONLY
+            and not READ_ONLY_MCP.match(b.get("name") or "")]
 
 
 def writes(rows, lo=0, hi=None):
@@ -295,6 +311,7 @@ def label(disp, prow, sess_disps):
     pchecks = [c for c in pchecks if c["why"]]
     child_files = {Path(p.replace("\\", "/")).name.lower() for _, p in cw if p}
     pfix = [(n, p) for n, p in writes(prow, first_ok, end) if Path(p.replace("\\", "/")).name.lower() in child_files]
+    flags["parent_edited_child_files"] = len(pfix)
 
     # -- re-dispatch of a near-identical brief after this one's completed result
     redo = None
@@ -345,7 +362,9 @@ def label(disp, prow, sess_disps):
                    "text": f"{o['id']} ({o['input'].get('description')}) names {','.join(hit[:3])}; brief says: {m.group(0)!r}"})
         # ponytail: attribution (latest writer of a shared file) and "substantive" are unverified -> candidate, not fail
         flags["fix_dispatch"] = o["id"]
-    if cchecks and cchecks[-1]["verdict"] == "bad":
+    post = after_check(crow, cchecks[-1]) if cchecks else []   # the checked state may not be the delivered one
+    flags["post_check_calls"] = len(post)
+    if cchecks and cchecks[-1]["verdict"] == "bad" and not post:
         cev("child-final-check", disp["child"], cchecks[-1])
         if flags["brief_stop"]:   # the child reports a brief-sanctioned stop: an honest halt, not a capability signal
             ev.append({"src": "child-report", "file": disp["parent"], "line": prow[ri][0], "text": STOP_RX.search(rtext).group(0)})
@@ -354,11 +373,19 @@ def label(disp, prow, sess_disps):
     pok = [c for c in pchecks if c["verdict"] == "ok"]
     if pok and not pbad:
         cev("parent-post-check", disp["parent"], pok[0])
+        rescue = [(n, p) for n, p in pfix if n < pok[0]["line"]]
+        if rescue:   # the parent's check tested the parent's edit of the child's file, not the child's delivery
+            ev.append({"src": "parent-edit-child-file", "file": disp["parent"], "line": rescue[0][0], "text": rescue[0][1]})
+            return done("unknown", "parent-rescued")
         return done("pass", "parent-post-check")
+    if post:
+        cev("child-final-check", disp["child"], cchecks[-1])
+        n, name, cmd = post[0]
+        ev.append({"src": "child-post-check-call", "file": disp["child"], "line": n, "text": f"{name}: {cmd}"})
+        return done("unknown", "post-check-shell-activity")
     if cchecks and cchecks[-1]["verdict"] == "ok" and not pbad:
         cev("child-final-check", disp["child"], cchecks[-1])
         return done("pass", "child-final-check")
-    flags["parent_edited_child_files"] = len(pfix)
     if redo:
         return done("unknown", "candidate-fail:re-dispatch")
     if fixer:
@@ -431,7 +458,56 @@ def selftest():
     assert relevant("pytest -q", set(), True) and relevant("pytest -q", set(), False) is None
     assert header("TW-Role: worker\nTW-Accept: tests pass\n", "TW-Accept") == "tests pass"
     assert is_human({"type": "user", "message": {"content": "fix it"}}) and not is_human({"type": "user", "message": {"content": "<task-notification>x"}})
+    # end-to-end label() fixtures: Astra review 2026-09-28 findings 4 and 5 (synthetic transcripts, nothing executed)
+    W = [_a(_tu("w1", "Write", file_path="module_impl.py", content="return 0")), _u(_tr("w1", "ok"))]
+    CHK = [_a(_tu("c1", "Bash", command="python -m pytest tests/test_module_impl.py")), _u(_tr("c1", "1 passed in 0.1s"))]
+    SHELL = [_a(_tu("b2", "Bash", command="python -c \"from pathlib import Path; Path('module_impl.py').write_text('broken')\"")),
+             _u(_tr("b2", ""))]
+    CHK2 = [_a(_tu("c3", "Bash", command="python -m pytest tests/test_module_impl.py")), _u(_tr("c3", "1 passed in 0.1s"))]
+    got = lambda r: (r["label"], r["category"])
+    assert got(_label(W + CHK)) == ("pass", "child-final-check")                          # control
+    assert got(_label(W + CHK + SHELL)) == ("unknown", "post-check-shell-activity"), got(_label(W + CHK + SHELL))  # F4
+    assert got(_label(W + CHK + SHELL + CHK2)) == ("pass", "child-final-check")           # re-verified after the shell call
+    FIX = [_a(_tu("e1", "Edit", file_path="module_impl.py", old_string="return 0", new_string="return 1")), _u(_tr("e1", "ok"))]
+    PCHK = [_a(_tu("c2", "Bash", command="python tests/test_module_impl.py")), _u(_tr("c2", "1 passed"))]
+    r = _label(W, FIX + PCHK)                                                                # F5: repair by inspection, then pass
+    assert got(r) == ("unknown", "parent-rescued") and r["flags"].get("parent_edited_child_files") == 1, (got(r), r["flags"])
+    r = _label(W, PCHK + FIX)                                                                # control: the child's state was tested
+    assert got(r) == ("pass", "parent-post-check") and r["flags"].get("parent_edited_child_files") == 1, (got(r), r["flags"])
     print("selftest ok")
+
+
+def _tu(i, name, **inp):
+    return {"type": "tool_use", "id": i, "name": name, "input": inp}
+
+
+def _tr(i, text):
+    return {"type": "tool_result", "tool_use_id": i, "content": text}
+
+
+def _a(*b):
+    return {"type": "assistant", "message": {"content": list(b)}}
+
+
+def _u(*b):
+    return {"type": "user", "message": {"content": list(b)}}
+
+
+def _label(child_rows, parent_after=()):
+    """label() on a synthetic completed dispatch: parent Agent call -> sync result -> parent_after rows."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cp = Path(td) / "agent-x.jsonl"
+        cp.write_text("".join(json.dumps(r) + "\n" for r in child_rows), encoding="utf-8")
+        call = _tu("T1", "Agent", prompt="build module_impl.py", subagent_type="tw-worker-medium")
+        prow = list(enumerate([_a(call), _u(_tr("T1", "done")), *parent_after], 1))
+        disp = {"id": "T1", "input": call["input"], "meta": {"agentType": "tw-worker-medium"}, "session": "s", "project": "p",
+                "ts": None, "parent": "parent.jsonl", "line": 1, "child": str(cp)}
+        orig, tw.cost_row = tw.cost_row, lambda *a: None
+        try:
+            return label(disp, prow, [disp])
+        finally:
+            tw.cost_row = orig
 
 
 if __name__ == "__main__":
