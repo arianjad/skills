@@ -800,10 +800,11 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
     # advisor tokens appear only in usage.iterations (never top-level); subagent rows may lack iterations
     adv = [it for u in usage.values() for it in u.get("iterations") or [] if it.get("type") == "advisor_message"]
     ran = [m for m in ((o.get("message") or {}).get("model") for o in rows if o.get("type") == "assistant")
-           if m and m != "<synthetic>"]  # an error stub names no model; tw-* meta.json carries no model
+           if m and m != "<synthetic>"]  # an error stub names no model
     att = [o.get("attachment") or {} for o in rows if o.get("type") == "attachment"]
     return {"kind": "cost", "at": now(), "harness": harness, "session_id": session, "tool_use_id": tool_use_id,
-            "agent_type": meta.get("agentType"), "model": ran[-1] if ran else meta.get("model"),
+            # model: executed evidence only; meta.json's model is the request (an alias), never promoted to it
+            "agent_type": meta.get("agentType"), "model": ran[-1] if ran else None, "requested_model": meta.get("model"),
             # offered at any point in the run; a later available:false removal does not clear it
             "advisor_available": any(a.get("type") == "advisor_tool" and a.get("available") is True for a in att),
             "api_calls": len(usage),

@@ -97,7 +97,18 @@ if __name__ == "__main__":
         assert (c["api_calls"], c["output_tokens"], c["input_tokens"], c["cache_read_input_tokens"],
                 c["agent_type"]) == (2, 47, 3, 100, "tw-worker-high"), c
         assert (c["advisor_calls"], c["advisor_model"]) == (0, None), c           # the existing child has no advisor
-        assert (c["model"], c["advisor_available"]) == ("opus", False), c   # no message.model: meta's; a removal is no offer
+        # no message.model: the executed model is unknown (meta.json's alias is only the request); a removal is no offer
+        assert (c["model"], c["requested_model"], c["advisor_available"]) == (None, "opus", False), c
+    with tempfile.TemporaryDirectory() as home:          # Astra round-3 R2: producer -> promote, no transcript model
+        child(home, "tw-worker-high", False)             # meta.json model "opus", agent_type tw-worker-high, no ran
+        c = tw.cost_row(Path(home), "claude", SESSION, "toolu_x")
+        for row in ({"kind": "route", "tool_use_id": "toolu_x", "ticket": "t1", "class": "C-coding", "action": None,
+                     "source": "bayes", "eligible": True, "router_tier": "medium", "target_tier": "medium",
+                     "coordinator_tier": "high"},   # an eligible coordinator-arm row: the router wanted lower
+                    {"kind": "outcome", "tool_use_id": "toolu_x", "accepted": True}, c):
+            tw.append_receipt(Path(home), "claude", SESSION, row)
+        v = [(x["model"], x["n_coord"], x["n_excluded_identity"]) for x in tw.promote(Path(home), "claude", draws=100)]
+        assert v == [(None, 0, 1)], v                     # identity unknown: in neither arm, not under "opus"
     with tempfile.TemporaryDirectory() as home:          # the model that ran comes from the transcript, not meta.json
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
