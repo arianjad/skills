@@ -545,6 +545,10 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     record = activation(home, "claude", session)
     if record is None:
         raise Conflict(f"claude session {session} is not activated for thinker-worker")
+    if Path.home().resolve().is_relative_to(cd.expanduser().resolve()):
+        # workspace-write makes Codex's Windows sandbox ACL-walk every top-level entry under --cd: at the home
+        # directory that spun codex-windows-sandbox-setup for 90+ min (2026-09-28; 150 s probe vs 19 s in a small dir).
+        raise Conflict(f"--cd {cd} is the home directory or above it; pass the repo or a scratch directory")
     brief = brief_file.read_text(encoding="utf-8")
     tool_use_id = f"codex-{os.urandom(6).hex()}"
     env = {"tool_name": "codex", "tool_use_id": tool_use_id, "cwd": str(cd),
@@ -567,22 +571,40 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
         raise Conflict("codex CLI not found on PATH")
     out = state_root(home) / "codex" / f"{tool_use_id}.last.md"
     out.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(codex_cmd(exe, model, tier, cd, out), input=(AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
-                          capture_output=True)
-    ev = codex_evidence(home, proc.stdout.decode("utf-8", errors="replace"))
+    timeout = float(os.environ.get("TW_CODEX_TIMEOUT", "3600"))
+    # files, not pipes: a surviving grandchild cannot hang the read
+    with tempfile.TemporaryFile() as fin, tempfile.TemporaryFile() as fout, tempfile.TemporaryFile() as ferr:
+        fin.write((AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"))
+        fin.seek(0)
+        proc = subprocess.Popen(codex_cmd(exe, model, tier, cd, out), stdin=fin, stdout=fout, stderr=ferr,
+                                start_new_session=os.name != "nt")
+        try:
+            code, timed_out = proc.wait(timeout), False
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":  # codex.CMD -> node -> codex.exe -> sandbox helpers: kill the whole tree
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+            else:
+                os.killpg(proc.pid, 9)
+            proc.wait()
+            code, timed_out = None, True
+        fout.seek(0), ferr.seek(0)
+        stdout, stderr = (f.read().decode("utf-8", errors="replace") for f in (fout, ferr))
+    if timed_out:
+        stderr += f"\ncodex timed out after {timeout:g} s (TW_CODEX_TIMEOUT); process tree killed"
+    ev = codex_evidence(home, stdout)
     append_receipt(home, "claude", session, {"kind": "cost", "at": now(), "harness": "claude", "session_id": session,
-                                             "tool_use_id": tool_use_id, "via": "codex-exec", "exit_code": proc.returncode,
-                                             "requested_effort": tier, **ev})
+                                             "tool_use_id": tool_use_id, "via": "codex-exec", "exit_code": code,
+                                             "timed_out": timed_out, "requested_effort": tier, **ev})
     if row and row["action"] == "rewrite":  # verified like race_check: did the child run the router's pick?
         append_receipt(home, "claude", session, {"kind": "race", "at": now(), "harness": "claude",
                                                  "session_id": session, "tool_use_id": tool_use_id,
                                                  "lost": ev["effort"] != tier, "agent_type": None, "via": "codex-exec",
                                                  "effective_effort": ev["effort"]})  # unknown effort counts as lost
-    print(json.dumps({"tool_use_id": tool_use_id, "last_message": str(out), "exit_code": proc.returncode,
+    print(json.dumps({"tool_use_id": tool_use_id, "last_message": str(out), "exit_code": code, "timed_out": timed_out,
                       "effective_model": ev["model"], "effective_effort": ev["effort"], "thread_id": ev["thread_id"]}))
-    if proc.returncode:
-        print(proc.stderr.decode("utf-8", errors="replace")[-2000:], file=sys.stderr)
-    return proc.returncode
+    if code != 0:
+        print(stderr[-2000:], file=sys.stderr)
+    return 1 if timed_out else code
 
 
 COST_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")

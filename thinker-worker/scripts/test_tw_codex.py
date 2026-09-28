@@ -19,6 +19,7 @@ from pathlib import Path
 args = sys.argv[1:]
 home = Path(os.environ["FAKE_HOME"])
 (home / "call.json").write_text(json.dumps({"args": args, "stdin": sys.stdin.read()}), encoding="utf-8")
+import time; time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))  # a wedged codex (sandbox setup spinning)
 tid = "0000-thread-1"
 d = home / ".codex" / "sessions" / "2026" / "09" / "27"
 d.mkdir(parents=True, exist_ok=True)
@@ -187,5 +188,25 @@ if __name__ == "__main__":
                        "--accepted", "yes").returncode == 0
         p = run(home, env, "promote", "--harness", "claude", "--model", "gpt-6-sol")
         assert p.returncode == 0 and [json.loads(x)["n_router"] for x in p.stdout.splitlines()] == [1], p
+
+        # --cd at the user's home: Codex's Windows workspace-write sandbox ACL-walks every top-level home entry
+        # (spun 90+ min, 2026-09-28). Refused before codex runs.
+        (home / "call.json").unlink(missing_ok=True)
+        brief.write_text(REV + " at home", encoding="utf-8")
+        r = run(home, env, "codex", "--session", "s1", "--role", "independent-review", "--tier", "high", "--model",
+                "gpt-6-astra", "--brief-file", str(brief), "--cd", str(Path.home()))
+        assert r.returncode == 2 and "home directory" in r.stderr, r
+        assert not (home / "call.json").exists(), "codex ran with --cd at home"
+
+        # a wedged codex is killed at TW_CODEX_TIMEOUT: bounded return, nonzero, a cost row that says so
+        import time
+        env.update(FAKE_SLEEP="120", TW_CODEX_TIMEOUT="3")
+        t0 = time.monotonic()
+        r = codex(REV + " wedged")
+        took = time.monotonic() - t0
+        env.pop("FAKE_SLEEP"); env.pop("TW_CODEX_TIMEOUT")
+        assert took < 30 and r.returncode != 0 and "timed out" in r.stderr, (took, r)
+        cost = [x for x in rows_of(home) if x["kind"] == "cost"][-1]
+        assert cost["timed_out"] is True and cost["exit_code"] is None, cost
     print("PASS codex: activation gate, decide() reuse (tier/role/scope), Codex-model admission per Claude role "
           "(Sol worker/review, Luna leaf; Luna worker and Sonnet denied), codex flags + stdin, receipts, outcome label")
