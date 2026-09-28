@@ -26,6 +26,24 @@ def models(port):
         return None
 
 
+def warm(port):
+    """POST one /v1/systemone tier question shaped like tw.backend_jev's (router.options wording) so the first real
+    router call does not pay the cold start (Kev timed out on its first call against the 2 s budget). Returns a
+    printable latency, or why it failed."""
+    sys.path.insert(0, str(HERE.parent / "scripts"))
+    import tw
+    req = {"state": "TW-Role: worker\nwarm-up", "questions": {"tier": {
+        "type": "choice", "instructions": tw.JEV_INSTRUCTIONS,
+        "criteria": tw.load_routes(tw.source_root() / "routes.json")["router"]["options"]}}}
+    t0 = time.time()
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/v1/systemone", json.dumps(req).encode(),
+                                                      {"Content-Type": "application/json"}), timeout=120).read()
+    except Exception as exc:
+        return f"failed ({type(exc).__name__}: {exc})"[:200]
+    return f"{time.time() - t0:.2f} s"
+
+
 def listeners(port):
     out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True).stdout
     return {int(l.split()[-1]) for l in out.splitlines()
@@ -82,7 +100,7 @@ def start():
     for name, s in SERVERS.items():
         port = s["port"]
         if name in rec and models(port):
-            print(f"{name}: already up on {port} (pid {rec[name]['pid']})")
+            print(f"{name}: already up on {port} (pid {rec[name]['pid']}); warm-up /v1/systemone {warm(port)}")
             continue
         taken = listeners(port)
         if taken and not (name in rec and taken <= tree_pids(rec[name]["pid"])):
@@ -99,7 +117,7 @@ def start():
             if p.poll() is not None or time.time() - t0 > 180:
                 sys.exit(f"{name}: did not come up (exit {p.poll()}); run `stop` to clean up")
             time.sleep(1)
-        print(f"{name}: up on {port} (pid {p.pid}) in {time.time() - t0:.1f} s")
+        print(f"{name}: up on {port} (pid {p.pid}) in {time.time() - t0:.1f} s; warm-up /v1/systemone {warm(port)}")
 
 
 def status():
@@ -139,7 +157,9 @@ def stop():
 
 def selftest():
     """No real servers. Mocked cases plus one real sleeper this test launches and kills itself."""
+    import io
     import tempfile
+    from contextlib import redirect_stdout
     from unittest import mock
     me = sys.modules[__name__]
     KEV = SERVERS["kev"]["cmd"]
@@ -190,18 +210,38 @@ def selftest():
     two = {**good, "laya": {"pid": 5151, "port": 8767, "created": "T9", "cmdline": "python laya_serve.py"}}
     k, code, after = run_stop(two, {4242: ("T0", kev_line)}, taskkill_rc=1)
     assert len(k) == 1 and code != 0 and after == {"kev": good["kev"]}, (k, code, after)
-    # 4. start() records identity (Popen/network mocked; no server launched)
+    # 4. start() records identity and warms each server once it is up (Popen/network mocked; no server launched,
+    # nothing sent to a real port)
     fake_p = mock.Mock(pid=4242, poll=lambda: None)
+    warmed = []
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "servers.json"
+        out = io.StringIO()
         with mock.patch.object(me, "REC", path), mock.patch.object(me.subprocess, "Popen", return_value=fake_p), \
                 mock.patch.object(me, "models", side_effect=lambda port: None if not path.exists() else [{}]), \
                 mock.patch.object(me, "listeners", return_value=set()), \
                 mock.patch.object(me, "SERVERS", {"kev": SERVERS["kev"]}), \
-                mock.patch.object(me, "proc_info", lambda pid: ("T0", kev_line)):
+                mock.patch.object(me, "proc_info", lambda pid: ("T0", kev_line)), \
+                mock.patch.object(me, "warm", lambda port: warmed.append(port) or "0.42 s"), redirect_stdout(out):
             start()
             r = json.loads(path.read_text())["kev"]
+            start()                                                   # already up: warmed again, not relaunched
     assert r == {"pid": 4242, "port": 8766, "created": "T0", "cmdline": kev_line}, r
+    assert warmed == [8766, 8766] and out.getvalue().count("warm-up /v1/systemone 0.42 s") == 2, (warmed, out.getvalue())
+    # 4b. warm() sends one tier question shaped like tw.backend_jev's (urlopen mocked); a failure is reported, not raised
+    sent = []
+
+    def fake_open(req, timeout):
+        sent.append((req.full_url, json.loads(req.data), timeout))
+        return io.BytesIO(b"{}")
+    with mock.patch.object(me.urllib.request, "urlopen", fake_open):
+        lat = warm(8767)
+    url, body, _ = sent[0]
+    q = body["questions"]["tier"]
+    assert url == "http://127.0.0.1:8767/v1/systemone" and lat.endswith(" s") and len(sent) == 1, (url, lat, sent)
+    assert q["type"] == "choice" and q["instructions"] and list(q["criteria"]) == ["low", "medium", "high", "xhigh"], q
+    with mock.patch.object(me.urllib.request, "urlopen", side_effect=OSError("refused")):
+        assert warm(8767).startswith("failed (OSError"), "warm-up failure not reported"
     # 5. real process launched here: a python sleeper holding a recorded PID is not killed
     sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -227,7 +267,8 @@ def selftest():
         sleeper.kill()
         sleeper.wait()
     print("selftest PASS: match->1 taskkill; reused/missing/legacy/no-marker->0; failed taskkill kept+nonzero; "
-          "start records identity; real sleeper untouched")
+          "start records identity and warms each server (latency printed); warm() request shape, failure reported; "
+          "real sleeper untouched")
 
 
 if __name__ == "__main__":
