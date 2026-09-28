@@ -181,6 +181,18 @@ if __name__ == "__main__":
     r = tw.route(r1, "claude", "worker", fields, mid, "high", t=16)
     assert (r["source"], r["eps"]) == ("coordinator", 0.25), r
     assert tw.route(r1, "claude", "worker", fields, mid, "high", t=10 ** 8)["eps"] == 0.05       # the floor
+    # propensity of the logged action: explored eps_t, eligible but unexplored 1 - eps_t, otherwise 1.0
+    prop = lambda brief=mid, tier="high", t=1, prior=None: tw.route(r1, "claude", "worker", fields, brief, tier,
+                                                                    prior, t=t)["propensity"]
+    assert (prop(), prop(t=16)) == (0.5, 0.75), (prop(), prop(t=16))
+    assert prop(tier="low") == 1.0                                                   # nothing below: not eligible
+    assert prop(mid.replace(HDR, HDR + "TW-Pin: user asked for high\n")) == 1.0      # pinned
+    cached = {"router_tier": "medium", "probs": {"medium": 1.0}, "confidence": 0.0, "source": "explore"}
+    assert prop(prior=cached) == 1.0                                                  # cached: no draw
+    tw.BACKENDS["stub"] = lambda *a: {"tier": "low", "probs": {"low": 1.0}, "confidence": 1.0}
+    r1["router"]["backends"] = ["stub"]
+    assert prop() == 1.0                                                              # a backend answered: no draw
+    r1["router"]["backends"] = []
     tw.load_routes = lambda path=None: r1
     try:
         for n_class, want in ((15, "coordinator"), (0, "explore")):  # t counts every session file of the harness
@@ -194,6 +206,7 @@ if __name__ == "__main__":
                 hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": mid})
                 row = tw.read_rows(tw.receipts_path(Path(home), "claude", SESSION))[-1]
                 assert (row["source"], row["eps"]) == (want, 0.25 if n_class else 0.5), (n_class, row)
+                assert row["propensity"] == (0.75 if n_class else 0.5), row
     finally:
         tw.load_routes = REAL_LOAD
 

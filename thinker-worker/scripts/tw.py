@@ -753,7 +753,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
                 "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
-                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0}
+                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "propensity": 1.0}
     result: dict = {}
     start = time.monotonic()
 
@@ -780,12 +780,17 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
                  "body_chars_sent": 0}
         if result.get("errors"):
             found["errors"] = list(result["errors"])
-    if found["source"] == "coordinator" and eps > 0 and int(tick, 16) / 16 ** 12 < eps \
-            and coord_tier in pol["tiers"] and pol["tiers"].index(coord_tier) > 0:
+    # Eligible for exploration: no backend answered, eps > 0, a tier below exists. The coin decides, and the row's
+    # propensity is the probability of the logged action: eps if explored, 1 - eps if not, 1.0 with no draw.
+    drawn = (found["source"] == "coordinator" and eps > 0 and coord_tier in pol["tiers"]
+             and pol["tiers"].index(coord_tier) > 0)
+    explored = drawn and int(tick, 16) / 16 ** 12 < eps
+    if explored:
         below = pol["tiers"][pol["tiers"].index(coord_tier) - 1]  # design §5 Stage 2: one tier below, no backend
         found = {**found, "tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
     return {**found, "ms": round((time.monotonic() - start) * 1000), "ticket": tick, "digest": digest,
-            "mode": mode, "explore": explore, "eps": eps}
+            "mode": mode, "explore": explore, "eps": eps,
+            "propensity": eps if explored else 1 - eps if drawn else 1.0}
 
 
 def _win_claude_start() -> float | None:
@@ -1032,7 +1037,7 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "agent_model": model,
                "probs": r["probs"],
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "eps": r["eps"],
-               "ms": r["ms"],
+               "propensity": r["propensity"], "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
