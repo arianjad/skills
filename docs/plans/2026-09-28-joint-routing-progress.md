@@ -28,3 +28,11 @@ Final: A1-A3, A2 --out fix, B1-B6 green; full suite 16/16 exit 0.
 | F3 codex.md sweep | none (prose); acceptance grep `never below .high.|xhigh. only|explore: 0.2|physics. → .high|0.2|20 %` over SKILL.md, references/, README.md returns nothing | n/a | codex.md: tier rule (medium; high/xhigh adversarial), decaying schedule replaces 0.2/20 %, floors all medium, ticket keyed by model, promote per (class, model) + `--model`, TW-Pin; suite 16/16 |
 
 Follow-up final: F1-F4 green; full suite 16/16 exit 0.
+
+## TW-Check (automatic pass/fail/unknown labels)
+
+Baseline before C1: 16/16 test scripts exit 0 (183 s, 2026-09-28, Windows).
+
+| Item | Test (seam) | Red evidence | Green |
+|---|---|---|---|
+| C1 header + dispatch row | test_tw_check.py (hook fed a JSON envelope with `cwd`): 616-char TW-Check stored in full as `check`, `cwd` from the envelope; brief without it admitted (`check: null`); repeated / empty / 1001-char TW-Check denied, 1000 chars admitted. test_tw_codex.py (codex CLI): dispatch row `check` + `cwd` = resolved `--cd` | hook: KeyError 'check'; codex: `cwd: None` (shown by reverting the one-line `"cwd": str(cd)` edit) | header_fields accepts optional `TW-Check` (once, non-empty, <= VALUE_MAX); receipt() adds `check` (full) and `cwd` (envelope string, else null); codex_run's synthetic envelope carries `cwd: --cd`; suite 15/15 + codex C1 assertions (codex file's C2 assertions red until C2) |

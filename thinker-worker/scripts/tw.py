@@ -36,6 +36,7 @@ VALUE_MAX = 1000  # per header value at the gate; receipts truncate at 256
 ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")
 # Routing header: labeled input for the routing classifier. Classes are effortmining's vocabulary.
 HEADER_KEYS = ("TW-Class", "TW-Deliverable", "TW-Accept", "TW-Risk")
+CHECK_KEY = "TW-Check"  # optional: a shell command `tw.py outcome` runs in the dispatch cwd for a pass/fail label
 TASK_CLASSES = {"T1-mechanical", "T2-simple-transform", "T3-moderate-reasoning",
                 "T4-hard-reasoning", "R-research", "C-coding"}
 RISKS = {"destructive", "external", "physics"}
@@ -273,11 +274,11 @@ def review_details(brief: str) -> bool:
 
 
 def header_fields(brief: str) -> tuple[dict | None, str]:
-    """Return ({key: value}, "") or (None, problem). Keys may sit anywhere in lines 2-12."""
+    """Return ({key: value}, "") or (None, problem). Keys may sit anywhere in lines 2-12; TW-Check is optional."""
     found: dict[str, str] = {}
     for line in brief.split("\n")[1:12]:
         key, sep, value = line.partition(": ")
-        if sep and key in HEADER_KEYS:
+        if sep and key in HEADER_KEYS + (CHECK_KEY,):
             if key in found:
                 return None, f"routing header repeats {key}"
             found[key] = value.strip()
@@ -289,7 +290,9 @@ def header_fields(brief: str) -> tuple[dict | None, str]:
     risks = [r.strip() for r in found["TW-Risk"].split(",")]
     if risks != ["none"] and not (set(risks) <= RISKS and len(set(risks)) == len(risks)):
         return None, "routing header TW-Risk must be none or distinct values from " + ", ".join(sorted(RISKS))
-    long = [k for k in HEADER_KEYS if len(found[k]) > VALUE_MAX]
+    if CHECK_KEY in found and not found[CHECK_KEY]:
+        return None, f"routing header {CHECK_KEY} is empty; drop the line or name a command"
+    long = [k for k in found if len(found[k]) > VALUE_MAX]
     if long:
         return None, f"routing header value over {VALUE_MAX} characters: " + ", ".join(long)
     return found, ""
@@ -388,6 +391,8 @@ def receipt(home: Path, harness: str, session: str, envelope: dict, d: Decision)
              "tool_name": envelope.get("tool_name"), "decision": "admit" if d.admitted else "deny",
              "reason": d.reason, "role": d.role, "requested_model": small(d.model),
              "tier": d.tier, "effective_model": None, "effective_effort": None,
+             # full TW-Check (not cut at 256) and where it runs; `outcome` executes it
+             "check": (d.fields or {}).get(CHECK_KEY), "cwd": envelope["cwd"] if isinstance(envelope.get("cwd"), str) else None,
              "brief_checks": "unavailable-encrypted-v2" if harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent" else "plaintext-route"}
     append_receipt(home, harness, session, entry)
 
@@ -485,7 +490,7 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
         raise Conflict(f"claude session {session} is not activated for thinker-worker")
     brief = brief_file.read_text(encoding="utf-8")
     tool_use_id = f"codex-{os.urandom(6).hex()}"
-    env = {"tool_name": "codex", "tool_use_id": tool_use_id,
+    env = {"tool_name": "codex", "tool_use_id": tool_use_id, "cwd": str(cd),
            "tool_input": {"subagent_type": agent_name(role, tier), "model": model, "prompt": brief}}
     routes = load_routes()
     d = decide("claude", env, routes)
