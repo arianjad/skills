@@ -1986,7 +1986,8 @@ def main() -> int:
             r = route(routes, args.harness, args.role, fields, brief,
                       prior(routes, args.harness, args.role, fields["TW-Class"]),
                       t=1 + class_count(home, args.harness, fields["TW-Class"], routes))
-            print(json.dumps({k: r[k] for k in ("tier", "probs", "confidence", "source", "ticket", "mode")}))
+            print(json.dumps({k: r[k] for k in ("tier", "probs", "confidence", "source", "ticket", "mode",
+                                                "backends", "combined", "gate", "eps")}))
         else:
             try:
                 hook(home, args.harness, args.owner)

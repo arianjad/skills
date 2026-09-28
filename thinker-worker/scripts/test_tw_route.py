@@ -130,6 +130,22 @@ if __name__ == "__main__":
         f.write_text(BRIEF, encoding="utf-8")
         code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f)])
         assert code == 0 and json.loads(out)["ticket"] == tw.ticket(BRIEF, "opus")[0], out
+        # `route` shows why: each backend's answer or error, the combined probabilities, the gate, and eps
+        rs = json.loads(json.dumps(tw.load_routes()))
+        rs["router"].update(backends=["s", "gone"], classes={"*": {"mode": "advisory", "explore": 0.0}})
+        tw.BACKENDS["s"] = lambda *a: {"tier": "low", "probs": {"low": 0.55, "medium": 0.45}, "confidence": 0.55,
+                                       "body_chars_sent": 3}
+        real_load = tw.load_routes
+        tw.load_routes = lambda path=None: rs
+        try:
+            code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f)])
+        finally:
+            tw.load_routes = real_load
+            del tw.BACKENDS["s"]
+        got = json.loads(out)
+        assert got["backends"]["s"]["probs"]["low"] == 0.55 and got["backends"]["gone"]["error"] == "unknown backend", got
+        assert got["gate"] == "margin" and got["source"] == "coordinator" and got["eps"] == 0.0, got
+        assert abs(got["combined"]["low"] - 0.55) < 1e-5, got   # absent tiers floored at 1e-6
 
     r0 = json.loads(json.dumps(tw.load_routes()))  # no backend: explore one tier below the coordinator
     r0["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": 1.0}})
