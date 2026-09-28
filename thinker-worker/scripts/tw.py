@@ -762,8 +762,12 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
 
 def promote(home: Path, harness: str, cls: str | None = None, model: str | None = None, margin: float = 0.15,
             draws: int = 200_000, seed: int = 7) -> list[dict]:
-    """One verdict per (class, model) group of route rows, filtered by cls/model. The model is the row's
-    `agent_model`, else its role's default (models[0], role from `router_agent`), else None.
+    """One verdict per (class, model) group of route rows, filtered by cls/model. The model is the executed one, the
+    dispatch's latest `cost` row `model` (never the requested `agent_model`, never a role default), else None.
+    An arm counts a dispatch only on executed evidence that agrees with it: a cost row with a model, and, when the
+    row carries effort evidence (codex `effort`, which must be non-null; else the tier of a Claude `tw-*`
+    `agent_type`), that effort equals the arm's tier (the floored target for a rewrite, the coordinator's tier
+    otherwise). A dispatch failing this leaves both arms and is counted in n_excluded_identity.
     Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
     (backend wanted lower and the row is `eligible`, child ran at the coordinator tier); promote/demote/hold on
     P(diff >= -margin). "Lower" and "complied" compare the floored `target_tier` (`router_tier` on rows written
@@ -773,17 +777,13 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
     rows = []
     for path in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
         rows += read_rows(path)  # skips torn lines
-    roles = load_routes()["harnesses"][harness]["roles"]
-
-    def model_of(r: dict) -> str | None:
-        m = AGENT_NAME.fullmatch(r.get("router_agent") or "")
-        return r.get("agent_model") or (roles[m.group(1)]["models"][0] if m and m.group(1) in roles else None)
+    cost = {r.get("tool_use_id"): r for r in rows if r.get("kind") == "cost"}  # the latest wins
     routes = [r for r in rows if r.get("kind") == "route"]
     groups = {}
     for r in routes:
         if r.get("pinned"):
             continue  # the user pinned model/effort: the router never acted, so neither arm
-        key = (r.get("class"), model_of(r))
+        key = (r.get("class"), (cost.get(r.get("tool_use_id")) or {}).get("model"))
         if (cls is None or key[0] == cls) and (model is None or key[1] == model):
             groups.setdefault(key, []).append(r)
     return [{"class": c, "model": m, **arms(rows, routes, g, margin, draws, seed)} for (c, m), g in groups.items()]
@@ -791,6 +791,13 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
 
 def arms(rows: list[dict], routes: list[dict], group: list[dict], margin: float, draws: int, seed: int) -> dict:
     """The promote verdict for one group of route rows (see promote)."""
+    cost = {r.get("tool_use_id"): r for r in rows if r.get("kind") == "cost"}
+
+    def ran_as(tid: str | None, tier: str) -> bool:  # executed identity agrees with the arm's tier (see promote)
+        c = cost.get(tid) or {}
+        m = AGENT_NAME.fullmatch(c.get("agent_type") or "")
+        eff = c.get("effort") if "effort" in c else m.group(2) if m else None
+        return bool(c.get("model")) and not ("effort" in c and eff is None) and (eff is None or eff == tier)
     label = {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"}
     checked = {r["tool_use_id"]: r.get("label") for r in rows if r.get("kind") == "check"}  # the latest wins
     race = {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"}  # outcome runs race_check
@@ -798,7 +805,7 @@ def arms(rows: list[dict], routes: list[dict], group: list[dict], margin: float,
     tgt = lambda r: r.get("target_tier") or r["router_tier"]  # floored pick; rows before switch-on T3 lack it
     advised = {r["ticket"]: tgt(r) for r in routes if r.get("action") == "advise"
                and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])}
-    router, coord, n_adv, src = [], [], 0, {"check": 0, "coordinator": 0}
+    router, coord, n_adv, n_id, src = [], [], 0, 0, {"check": 0, "coordinator": 0}
     for r in group:
         if r.get("tool_use_id") in advised_by:
             n_adv += 1
@@ -812,20 +819,24 @@ def arms(rows: list[dict], routes: list[dict], group: list[dict], margin: float,
                          and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]))
         complied = (r.get("action") is None and (r.get("source") or "").startswith("cached:")
                     and advised.get(r["ticket"]) == r["coordinator_tier"])
-        if rewrite_lower or complied:
-            router.append(ok)
-            src[by] += 1
-        elif (r.get("action") is None and not (r.get("source") or "coordinator").endswith("coordinator")
-              and r.get("eligible") and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])):
-            coord.append(ok)  # router wanted lower and would have acted; child ran at the coordinator tier
-            src[by] += 1
+        to_coord = (not (rewrite_lower or complied) and r.get("action") is None
+                    and not (r.get("source") or "coordinator").endswith("coordinator")
+                    and r.get("eligible") and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]))
+        if not (rewrite_lower or complied or to_coord):
+            continue
+        if not ran_as(tid, tgt(r) if rewrite_lower else r["coordinator_tier"]):
+            n_id += 1  # no executed evidence, or it contradicts the arm
+            continue
+        # router arm, or coordinator arm: the router wanted lower and would have acted; child ran at the coordinator tier
+        (router if rewrite_lower or complied else coord).append(ok)
+        src[by] += 1
     k, n, kc, nc = sum(router), len(router), sum(coord), len(coord)
     rng = random.Random(seed)
     hit = sum(rng.betavariate(1 + k, 1 + n - k) - rng.betavariate(1 + kc, 1 + nc - kc) >= -margin
               for _ in range(draws))
     p = hit / draws
     return {"k_router": k, "n_router": n, "k_coord": kc, "n_coord": nc, "p": round(p, 3),
-            "n_advisor_excluded": n_adv, "n_check": src["check"], "n_coordinator": src["coordinator"], "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
+            "n_advisor_excluded": n_adv, "n_excluded_identity": n_id, "n_check": src["check"], "n_coordinator": src["coordinator"], "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
 
 
 def ticket(brief: str, model: str) -> tuple[str, str]:
