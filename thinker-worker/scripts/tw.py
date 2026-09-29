@@ -132,12 +132,15 @@ def model_tiers(pol: dict, model: str | None) -> list[str]:
 def check_routes(doc: object, path: Path) -> None:
     if not isinstance(doc, dict) or doc.get("schema") != 1:
         raise Conflict(f"routes.json missing or not schema 1: {path}")
+    def ladder(ts: object, allowed: list) -> bool:  # non-empty, unique, in TIERS order: the router steps by position
+        return (isinstance(ts, list) and bool(ts) and all(t in allowed for t in ts)
+                and [TIERS.index(t) for t in ts] == sorted({TIERS.index(t) for t in ts}))
+
     for harness in HARNESSES:
         for role, pol in doc["harnesses"][harness]["roles"].items():
             mt = pol.get("model_tiers", {})
-            if (not pol.get("models") or not pol.get("tiers") or any(t not in TIERS for t in pol["tiers"])
-                    or not isinstance(mt, dict) or any(m not in pol["models"] or not isinstance(ts, list) or not ts
-                                                       or any(t not in pol["tiers"] for t in ts) for m, ts in mt.items())):
+            if (not pol.get("models") or not ladder(pol.get("tiers"), TIERS) or not isinstance(mt, dict)
+                    or any(m not in pol["models"] or not ladder(ts, pol["tiers"]) for m, ts in mt.items())):
                 raise Conflict(f"routes.json: bad policy for {harness}/{role}")
 
     def num(v: object) -> bool:
@@ -1139,8 +1142,12 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     pinned = flagged(brief, "TW-Pin") if pinned is None else pinned
     eps = 0.0 if pinned else epsilon(explore, t)  # a user pin is never explored
     if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
-        # the ticket omits the model (D17): a decision cached on another model is clamped into this model's ladder
-        return {"tier": clamp(prior["router_tier"], pol["tiers"]), "probs": prior["probs"], "confidence": prior["confidence"],
+        # the ticket omits the model (D17): a decision cached on another model is clamped into this model's ladder;
+        # a clamped tier was never picked, so it carries no confidence and its probs name only itself
+        tier = clamp(prior["router_tier"], pol["tiers"])
+        moved = tier != prior["router_tier"]
+        return {"tier": tier, "probs": {tier: 1.0} if moved else prior["probs"],
+                "confidence": 0.0 if moved else prior["confidence"],
                 "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
                 "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "draw_propensity": 1.0,
@@ -2062,6 +2069,7 @@ def main() -> int:
         if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
             p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
             p.add_argument("--brief-file", type=Path, required=True)
+            p.add_argument("--model", help="the planned model (default: the role's first); sets its model_tiers ladder")
         if name == "promote":  # read-only over receipts
             p.add_argument("--class", dest="cls")
             p.add_argument("--model")
@@ -2131,9 +2139,11 @@ def main() -> int:
             fields, problem = header_fields(brief)
             if problem:
                 raise Conflict(problem)
+            if args.model is not None and args.model not in routes["harnesses"][args.harness]["roles"][args.role]["models"]:
+                raise Conflict(f"model {args.model} is not allowed for {args.role}")
             r = route(routes, args.harness, args.role, fields, brief,
-                      prior(routes, args.harness, args.role, fields["TW-Class"]),
-                      t=1 + class_count(home, args.harness, fields["TW-Class"], routes))
+                      prior(routes, args.harness, args.role, fields["TW-Class"], args.model),
+                      t=1 + class_count(home, args.harness, fields["TW-Class"], routes), model=args.model)
             print(json.dumps({k: r[k] for k in ("tier", "probs", "confidence", "source", "ticket", "mode",
                                                 "backends", "combined", "gate", "eps")}))
         else:

@@ -148,6 +148,29 @@ if __name__ == "__main__":
                                      "R-research": "medium", "C-coding": "high"}, R["router"]["priors"]
     assert not [(h, r) for h in R["harnesses"] for r, pol in R["harnesses"][h]["roles"].items() if "default" in pol]
     assert tw.prior(R, "claude", "worker", "C-coding") == "high"
+    with tempfile.TemporaryDirectory() as tmp:  # every tier list is a ladder: non-empty, unique, in TIERS order
+        for mt, ok in (({"sonnet": ["high", "xhigh"]}, True), ({"sonnet": ["xhigh", "high"]}, False),
+                       ({"sonnet": ["high", "high"]}, False), ({"sonnet": []}, False), ({"sonnet": "high"}, False),
+                       ({"sonnet": ["max"]}, False), ({"haiku": ["high"]}, False), ([], False)):
+            doc = json.loads(json.dumps(R))
+            doc["harnesses"]["claude"]["roles"]["worker"]["model_tiers"] = mt
+            p = Path(tmp) / "mt.json"
+            p.write_text(json.dumps(doc), encoding="utf-8")
+            try:
+                tw.load_routes(p)
+                got = True
+            except tw.Conflict as exc:
+                got = False
+                assert "bad policy for claude/worker" in str(exc), exc
+            assert got == ok, mt
+        doc = json.loads(json.dumps(R))
+        doc["harnesses"]["claude"]["roles"]["leaf"]["tiers"] = ["medium", "low"]
+        p.write_text(json.dumps(doc), encoding="utf-8")
+        try:
+            tw.load_routes(p)
+            raise AssertionError("reversed role tiers accepted")
+        except tw.Conflict:
+            pass
     assert tw.prior(R, "claude", "independent-review", "T1-mechanical") == "medium"    # clamped to the review ladder
     assert tw.prior(R, "codex", "ideation", "T1-mechanical") == "medium"
 
@@ -160,6 +183,11 @@ if __name__ == "__main__":
             f.write_text(f"TW-Role: {role}\n" + hdr.format(cls), encoding="utf-8")
             code, out = run_main(["route", "--harness", "claude", "--role", role, "--brief-file", str(f)])
             assert code == 0 and json.loads(out)["tier"] == want, (cls, role, out)
+        f.write_text("TW-Role: worker\n" + hdr.format("T1-mechanical"), encoding="utf-8")  # --model: its ladder
+        code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "sonnet"])
+        assert code == 0 and json.loads(out)["tier"] == "high", out
+        code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "haiku"])
+        assert code == 2, out
         code, out = run_main(["activate", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
         assert code == 0 and "C-coding=high" in out and "T1-mechanical=low" in out, out
         assert "Tier priors (installed routes.json): *=medium," in out and "risk floors: physics=medium" in out, out
