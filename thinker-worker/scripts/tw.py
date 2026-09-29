@@ -1327,7 +1327,11 @@ def hook(home: Path, harness: str, owner: str) -> None:
         denial("unknown installed hook owner")
         return
     try:
-        envelope = json.load(sys.stdin)
+        # Hook transport is UTF-8, not the Windows locale. PowerShell may add a BOM.
+        payload = getattr(sys.stdin, "buffer", sys.stdin).read()
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8-sig")
+        envelope = json.loads(payload)
     except (UnicodeError, json.JSONDecodeError):
         denial("malformed hook JSON; routing state cannot be established")
         return

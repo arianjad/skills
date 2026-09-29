@@ -1,5 +1,7 @@
 # Installer progress (portable hook)
 
+- 2026-09-28 transport repair: Windows PowerShell forwarding adds a UTF-8 BOM on this host. The hook now reads bytes and explicitly decodes `utf-8-sig` instead of using locale-dependent stdin text. `test_tw_hook_transport.py` reproduces the pre-fix denial and checks BOM/plain UTF-8, Unicode under cp1252, the generated Windows command, and continued rejection of malformed input and unsupported models. This repairs parsing, not model availability or hook trust. Desktop live-dispatch validation is recorded by the investigating chat.
+
 - seam 1 green: `install --portable` writes a home-relative Claude hook; check passes (test_tw_portable.py seam1)
 - seam 2 green: portable command run by bash denies a bad dispatch, admits a good one, both OS branches, bogus --python-cmd falls back (mutation-checked red: wrong path, no interpreter)
 - seam 3 green: install --portable -> check -> uninstall restores prior settings (test_tw_install.py; mutation-checked red: manifest recording the exec entry)
