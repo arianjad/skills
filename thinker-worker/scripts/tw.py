@@ -261,11 +261,12 @@ def activate(home: Path, harness: str, session: str, store_bodies: bool = False)
     old = path.read_bytes() if path.exists() else None
     if old is not None:
         activation(home, harness, session)
+    priors = priors_line(load_routes())
     obj = {"schema": 1, "harness": harness, "session_id": session,
            "store_bodies": store_bodies, "activated_at": now()}
     atomic_write(path, canonical_json(obj), old)
     print(f"Activation requested for {harness} session {session}; hook trust/loading, interception, and effective child model remain unverified.")
-    print(priors_line(load_routes()))
+    print(priors)
 
 
 def deactivate(home: Path, harness: str, session: str) -> None:
@@ -852,26 +853,37 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
     fail rejected, unknown excluded), else the coordinator's `outcome`; n_check / n_coordinator count each source."""
     rows = harness_rows(home, harness)
     routes = [r for r in rows if r.get("kind") == "route"]
-    maps = {"cost": {r.get("tool_use_id"): r for r in rows if r.get("kind") == "cost"},  # the latest wins
-            "label": {r["tool_use_id"]: r["accepted"] for r in rows if r.get("kind") == "outcome"},
-            "checked": {r["tool_use_id"]: r.get("label") for r in rows if r.get("kind") == "check"},  # latest wins
-            "race": {r["tool_use_id"]: r.get("lost") for r in rows if r.get("kind") == "race"},  # outcome runs race_check
-            "advisor": {r["tool_use_id"] for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")},
-            "advised": {r["ticket"]: tgt(r) for r in routes if r.get("action") == "advise"
-                        and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"])}}
+    maps = {"cost": {dispatch_key(r): r for r in rows if r.get("kind") == "cost"},  # the latest in-session wins
+            "label": {dispatch_key(r): r["accepted"] for r in rows if r.get("kind") == "outcome"},
+            "checked": {dispatch_key(r): r.get("label") for r in rows if r.get("kind") == "check"},
+            "race": {dispatch_key(r): r.get("lost") for r in rows if r.get("kind") == "race"},
+            "advisor": {dispatch_key(r) for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")},
+            "advised": {}}
+    advice = {}
+    for r in routes:  # receipt order within each session: later advice cannot relabel earlier work
+        key = (r["_session_file"], r["ticket"])
+        maps["advised"][dispatch_key(r)] = advice.get(key)
+        if r.get("action") == "advise" and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]):
+            advice[key] = tgt(r)
     groups = {}
     for r in routes:
         if r.get("pinned"):
             continue  # the user pinned model/effort: the router never acted, so neither arm
-        key = (r.get("class"), (maps["cost"].get(r.get("tool_use_id")) or {}).get("model"))
+        key = (r.get("class"), (maps["cost"].get(dispatch_key(r)) or {}).get("model"))
         if (cls is None or key[0] == cls) and (model is None or key[1] == model):
             groups.setdefault(key, []).append(r)
     return [{"class": c, "model": m, **arms(maps, g, margin, draws, seed)} for (c, m), g in groups.items()]
 
 
 def harness_rows(home: Path, harness: str) -> list[dict]:
-    """Every receipt row of the harness, across all session files (torn lines skipped)."""
-    return [r for p in (state_root(home) / "receipts" / harness).glob("*.jsonl") for r in read_rows(p)]
+    """Every receipt row of the harness, preserving session-file order (torn lines skipped).
+    The receipt filename supplies the session join key, including rows without session_id."""
+    return [{**r, "_session_file": p.stem}
+            for p in (state_root(home) / "receipts" / harness).glob("*.jsonl") for r in read_rows(p)]
+
+
+def dispatch_key(r: dict) -> tuple[str, str | None]:
+    return r["_session_file"], r.get("tool_use_id")
 
 
 def tgt(r: dict) -> str:
@@ -880,30 +892,30 @@ def tgt(r: dict) -> str:
 
 
 def arms(maps: dict, group: list[dict], margin: float, draws: int, seed: int) -> dict:
-    """The promote verdict for one group of route rows (see promote); maps: the per-tool_use_id indexes promote
+    """The promote verdict for one group of route rows (see promote); maps: the per-session/tool_use_id indexes promote
     builds once over every row."""
     cost, label, checked, race = maps["cost"], maps["label"], maps["checked"], maps["race"]
     advised_by, advised = maps["advisor"], maps["advised"]
 
-    def ran_as(tid: str | None, tier: str) -> bool:  # executed identity agrees with the arm's tier (see promote)
+    def ran_as(tid: tuple[str, str | None], tier: str) -> bool:  # executed identity agrees with the arm's tier
         c = cost.get(tid) or {}
         m = AGENT_NAME.fullmatch(c.get("agent_type") or "")
         eff = c.get("effort") if "effort" in c else m.group(2) if m else None
         return bool(c.get("model")) and eff == tier  # no effort evidence: unknown tier, in neither arm
     router, coord, n_adv, n_id, src = [], [], 0, 0, {"check": 0, "coordinator": 0}
     for r in group:
-        if r.get("tool_use_id") in advised_by:
+        if dispatch_key(r) in advised_by:
             n_adv += 1
             continue
-        tid = r.get("tool_use_id")  # an executed TW-Check outranks the coordinator's accept (design D6)
+        tid = dispatch_key(r)  # an executed TW-Check outranks the coordinator's accept (design D6)
         by = "check" if tid in checked else "coordinator"
         ok = {"pass": True, "fail": False}.get(checked[tid]) if by == "check" else label.get(tid)
         if ok is None or race.get(tid) is True:
             continue  # unlabeled, or lost race: ran at neither arm's tier
-        rewrite_lower = (r.get("action") == "rewrite" and race.get(r.get("tool_use_id")) is False  # verified only
+        rewrite_lower = (r.get("action") == "rewrite" and race.get(tid) is False  # verified only
                          and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]))
         complied = (r.get("action") is None and (r.get("source") or "").startswith("cached:")
-                    and advised.get(r["ticket"]) == r["coordinator_tier"])
+                    and advised.get(tid) == r["coordinator_tier"])
         to_coord = (not (rewrite_lower or complied) and r.get("action") is None
                     and not (r.get("source") or "coordinator").endswith("coordinator")
                     and r.get("eligible") and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]))
@@ -1868,7 +1880,11 @@ def upgrade(home: Path) -> None:
     no longer produces it) when it still matches the manifest or already matches the new source; any other state (a
     hand edit, an unowned file in the way, a changed hook entry) refuses before the first write. Hook entries,
     activation records and receipts are kept, unlike uninstall + install."""
+    manifest_file = manifest_path(home)
+    manifest_before = manifest_file.read_bytes() if manifest_file.exists() else None
     manifest = load_manifest(home)
+    if manifest_file.read_bytes() != manifest_before:
+        raise Conflict(f"Concurrent change at {manifest_file}; no overwrite")
     if manifest.get("uninstalling"):
         raise Conflict("uninstall incomplete; rerun uninstall")
     for harness in installed_harnesses(manifest):
@@ -1879,26 +1895,37 @@ def upgrade(home: Path) -> None:
     problems, plan = [], []
     for rel in sorted(set(manifest["files"]) | set(items)):
         path = home / rel
-        have = sha(path.read_bytes()) if path.is_file() else None
+        if (path.exists() or path.is_symlink()) and not path.is_file():
+            problems.append(f"non-file target in the way: {path}")
+            continue
+        parent = next((p for p in path.parents if (p.exists() or p.is_symlink()) and not p.is_dir()), None)
+        if parent is not None:
+            problems.append(f"non-directory parent in the way: {parent}")
+            continue
+        before = path.read_bytes() if path.is_file() else None
+        have = sha(before) if before is not None else None
         new = sha(items[rel]) if rel in items else None
         if have == new:
             continue
         if have is None or have == manifest["files"].get(rel):
-            plan.append(rel)
+            plan.append((rel, before))
         else:
             problems.append(f"owned file changed by hand: {path}" if rel in manifest["files"]
                             else f"unowned file in the way: {path}")
     if problems:
         raise Conflict("Upgrade conflict; nothing written: " + "; ".join(problems))
-    for rel in plan:
+    for rel, before in plan:
         path = home / rel
         if rel in items:
-            atomic_write(path, items[rel], path.read_bytes() if path.is_file() else None)
-        elif path.is_file():
+            atomic_write(path, items[rel], before)
+        else:
+            current = path.read_bytes() if path.is_file() else None
+            if current != before:
+                raise Conflict(f"Concurrent or unexpected change at {path}; no removal")
             path.unlink()
     manifest = {**manifest, "source": {rel: sha(d) for rel, d in items.items()},
                 "files": {rel: sha(d) for rel, d in items.items()}, "upgraded_at": now()}
-    atomic_write(manifest_path(home), canonical_json(manifest), manifest_path(home).read_bytes())
+    atomic_write(manifest_file, canonical_json(manifest), manifest_before)
     adopted = manifest.get("adopted", [])
     write_ledger(Path(manifest.get("ledger_dir") or default_ledger_dir(home)), manifest.get("machine_id", machine_id()),
                  "installed", manifest.get("flags", {}),
