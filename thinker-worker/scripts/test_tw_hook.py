@@ -15,7 +15,7 @@ W_MIN = "TW-Role: worker\nTW-Class: C-coding\nTW-Deliverable: d\nTW-Accept: a\nT
 
 
 def run_main(argv, stdin=""):
-    if argv[:1] and argv[0] in ("hook", "activate", "status", "route"):  # these read routes.json (+ user override)
+    if argv[:1] and argv[0] in ("hook", "activate", "status", "route", "models"):  # these read routes.json (+ user override)
         assert os.environ.get("TW_ROUTES") or os.environ.get("TW_ROUTES_OVERRIDE"), \
             "tests must pin routing: TW_ROUTES (pinned_routes) or TW_ROUTES_OVERRIDE, never the real home override"
     out = io.StringIO()

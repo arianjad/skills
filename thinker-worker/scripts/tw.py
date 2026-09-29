@@ -201,6 +201,24 @@ def prior(routes: dict, harness: str, role: str, cls: str | None, model: str | N
     return clamp(own.get(cls, own.get("*", priors.get(cls, priors["*"]))), model_tiers(pol, model))
 
 
+def models(harness: str) -> list[dict]:
+    """One line per (role, model) admitted for the harness: its tiers, its model_priors entries (source "override" when
+    the local override set that value, else "installed"), whether it is the role's default (router.defaults, else the
+    role's first model: the agent file's pin), and how to dispatch it from this harness."""
+    routes, installed = load_routes(), load_routes(source_root() / "routes.json")
+    rt, shipped = routes["router"], installed["router"].get("model_priors", {})
+    out = []
+    for role, pol in routes["harnesses"][harness]["roles"].items():
+        for m in pol["models"]:
+            own = rt.get("model_priors", {}).get(m, {})
+            out.append({"harness": harness, "role": role, "model": m, "tiers": model_tiers(pol, m),
+                        "priors": {c: {"tier": v, "source": "installed" if shipped.get(m, {}).get(c) == v else "override"}
+                                   for c, v in own.items()},
+                        "default": rt.get("defaults", {}).get(role, pol["models"][0]) == m,
+                        "via": "tw.py codex" if harness == "claude" and is_codex_model(routes, m) else "native"})
+    return out
+
+
 def priors_line(routes: dict) -> str:
     rt = routes["router"]
     source = (f"override ignored: {routes['_override_error']}" if routes.get("_override_error")
@@ -2063,7 +2081,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "upgrade", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "route", "promote", "codex"):
+                 "route", "promote", "codex", "models"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
         if name == "codex":  # Claude harness only; Codex dispatches its models natively
@@ -2073,7 +2091,7 @@ def main() -> int:
             p.add_argument("--model", required=True)
             p.add_argument("--brief-file", type=Path, required=True)
             p.add_argument("--cd", type=Path, default=Path.cwd(), help="the child's working root (default: cwd)")
-        if name in {"activate", "deactivate", "status", "hook", "outcome", "route", "promote"}:
+        if name in {"activate", "deactivate", "status", "hook", "outcome", "route", "promote", "models"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
         if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
             p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
@@ -2142,6 +2160,9 @@ def main() -> int:
         elif args.command == "codex":
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
                              args.cd.expanduser().resolve())
+        elif args.command == "models":
+            for line in models(args.harness):
+                print(json.dumps(line))
         elif args.command == "route":
             routes = load_routes()
             brief = args.brief_file.read_text(encoding="utf-8")

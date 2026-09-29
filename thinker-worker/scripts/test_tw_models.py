@@ -68,3 +68,30 @@ note = R["$override"]
 assert set(note["may_set"]) == {f"router.{k}" for k in tw.OVERRIDABLE} | {"router.<jev backend block>"}, note
 assert "TW_ROUTES_OVERRIDE" in note["path"] and ".thinker-worker/routes.json" in note["path"], note
 print("PASS S2 override may set model_priors; routes.json names the override")
+
+# S3: `tw.py models` lists one JSON line per (role, model), with prior sources and how to dispatch it
+from test_tw_hook import run_main
+saved = {k: os.environ.pop(k, None) for k in ("TW_ROUTES", "TW_ROUTES_OVERRIDE")}
+try:
+    with tempfile.TemporaryDirectory() as tmp:
+        ov = Path(tmp) / "ov.json"
+        os.environ["TW_ROUTES_OVERRIDE"] = str(ov)
+        ov.write_text(json.dumps({"router": {"model_priors": {"gpt-6-sol": {"C-coding": "xhigh"}}}}), encoding="utf-8")
+        code, out = run_main(["models", "--harness", "claude"])
+        assert code == 0, out
+        lines = {(x["role"], x["model"]): x for x in map(json.loads, out.splitlines())}
+        assert lines[("worker", "gpt-6-sol")] == {
+            "harness": "claude", "role": "worker", "model": "gpt-6-sol", "tiers": ["low", "medium", "high", "xhigh"],
+            "priors": {"C-coding": {"tier": "xhigh", "source": "override"}}, "default": False, "via": "tw.py codex"}
+        assert lines[("worker", "sonnet")] == {
+            "harness": "claude", "role": "worker", "model": "sonnet", "tiers": ["high", "xhigh"],
+            "priors": {}, "default": False, "via": "native"}
+        assert lines[("worker", "opus")]["default"] is True                      # the agent file's pin
+        assert lines[("independent-review", "gpt-6-astra")]["default"] is True   # router.defaults
+        assert lines[("leaf", "sonnet")]["tiers"] == ["low", "medium"]
+finally:
+    for k, v in saved.items():
+        os.environ.pop(k, None)
+        if v is not None:
+            os.environ[k] = v
+print("PASS S3 models listing")
