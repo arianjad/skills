@@ -95,3 +95,73 @@ finally:
         if v is not None:
             os.environ[k] = v
 print("PASS S3 models listing")
+
+# S5: the shipped routes.json is in canonical form, so script edits and hand edits cannot drift apart
+text = (tw.source_root() / "routes.json").read_text(encoding="utf-8")
+assert text == tw.dump_routes(json.loads(text)), "routes.json is not canonical: run tw.dump_routes over it"
+assert '"tiers": ["low", "medium"]' in text                                  # scalar lists stay on one line
+print("PASS S5 canonical routes.json")
+
+
+# S4: `tw.py model set|archive --routes <path>` edits a routes file, validated before it writes
+def model_cmd(path, *argv):
+    code, out = run_main(["model", *argv, "--routes", str(path)])
+    return code, out, json.loads(path.read_text(encoding="utf-8"))
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    p = Path(tmp) / "routes.json"
+    p.write_text(tw.dump_routes(R), encoding="utf-8")
+    base = json.loads(p.read_text(encoding="utf-8"))
+    code, out, doc = model_cmd(p, "set", "--harness", "claude", "--role", "worker", "--model", "gpt-9-test",
+                               "--tiers", "medium,high", "--prior", "*=medium", "--prior", "C-coding=high")
+    assert code == 0, out
+    want = json.loads(json.dumps(base))
+    w = want["harnesses"]["claude"]["roles"]["worker"]
+    w["models"].append("gpt-9-test")
+    w["model_tiers"]["gpt-9-test"] = ["medium", "high"]
+    want["router"]["model_priors"] = {"gpt-9-test": {"*": "medium", "C-coding": "high"}}
+    assert doc == want, doc
+    assert p.read_text(encoding="utf-8") == tw.dump_routes(want)              # written canonical
+    before = p.read_text(encoding="utf-8")
+    code, out, _ = model_cmd(p, "set", "--harness", "claude", "--role", "worker", "--model", "gpt-9-test",
+                             "--tiers", "medium,high", "--prior", "*=medium", "--prior", "C-coding=high")
+    assert code == 0 and p.read_text(encoding="utf-8") == before and "unchanged" in out, out   # idempotent
+    for bad in (["--tiers", "high,medium"], ["--tiers", "max"], ["--prior", "C-coding=max"], ["--prior", "Z=low"],
+                ["--role", "nope"]):
+        args = ["set", "--harness", "claude", "--role", "worker", "--model", "gpt-9-test", *bad]
+        code, out, _ = model_cmd(p, *args)
+        assert code == 2 and p.read_text(encoding="utf-8") == before, (bad, out)                # nothing written
+print("PASS S4 model set: add, idempotent, invalid writes nothing")
+
+# S4: archive removes a model from dispatch and keeps a dated record; set restores it
+import re
+with tempfile.TemporaryDirectory() as tmp:
+    p = Path(tmp) / "routes.json"
+    p.write_text(tw.dump_routes(R), encoding="utf-8")
+    base = json.loads(p.read_text(encoding="utf-8"))
+    for h in ("claude", "codex"):
+        assert model_cmd(p, "set", "--harness", h, "--role", "worker", "--model", "gpt-9-test", "--tiers", "high,xhigh",
+                         "--prior", "C-coding=high")[0] == 0
+    assert model_cmd(p, "set", "--harness", "claude", "--role", "independent-review", "--model", "gpt-9-test",
+                     "--default")[0] == 0
+    code, out, doc = model_cmd(p, "archive", "--model", "gpt-9-test")
+    assert code == 0, out
+    rec = doc["archived"]["gpt-9-test"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", rec["date"]), rec
+    assert rec == {"date": rec["date"],
+                   "roles": {"claude/worker": ["high", "xhigh"], "codex/worker": ["high", "xhigh"],
+                             "claude/independent-review": ["medium", "high", "xhigh"]},
+                   "model_priors": {"C-coding": "high"}, "default_for": ["independent-review"]}, rec
+    del doc["archived"]
+    want = json.loads(json.dumps(base))
+    del want["router"]["defaults"]["independent-review"]      # a default archived: the role falls back to its first
+    assert doc == want, "archive left traces or changed other entries"
+    assert "default" in out and "independent-review" in out, out           # and says so
+    code, out, doc = model_cmd(p, "set", "--harness", "claude", "--role", "worker", "--model", "gpt-9-test")
+    assert code == 0 and "archived" not in doc and "gpt-9-test" in doc["harnesses"]["claude"]["roles"]["worker"]["models"]
+    before = p.read_text(encoding="utf-8")
+    for m in ("opus", "never-admitted"):                                   # a role's agent-file pin; unknown model
+        code, out, _ = model_cmd(p, "archive", "--model", m)
+        assert code == 2 and p.read_text(encoding="utf-8") == before, (m, out)
+print("PASS S4 model archive: dated record, clean removal, restore, refusals")

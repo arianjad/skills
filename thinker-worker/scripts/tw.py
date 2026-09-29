@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
+import difflib
 import json
 import math
 import os
@@ -186,6 +187,9 @@ def check_routes(doc: object, path: Path) -> None:
     if not isinstance(mp, dict) or any(m not in admitted or not isinstance(t, dict) or not set(t) <= TASK_CLASSES | {"*"}
                                        or any(v not in TIERS for v in t.values()) for m, t in mp.items()):
         raise Conflict("routes.json: router.model_priors must map an admitted model to {class or *: tier}")
+    arch = doc.get("archived", {})  # dated records of models no longer offered; never admitted at the same time
+    if not isinstance(arch, dict) or any(m in admitted or not isinstance(r, dict) for m, r in arch.items()):
+        raise Conflict("routes.json: archived must map a model that is not admitted to its record")
     defaults = rt.get("defaults", {})  # per-role default model the coordinator dispatches; guidance, not enforced
     claude_roles = doc["harnesses"]["claude"]["roles"]
     if not isinstance(defaults, dict) or any(r not in claude_roles or m not in claude_roles[r]["models"]
@@ -217,6 +221,91 @@ def models(harness: str) -> list[dict]:
                         "default": rt.get("defaults", {}).get(role, pol["models"][0]) == m,
                         "via": "tw.py codex" if harness == "claude" and is_codex_model(routes, m) else "native"})
     return out
+
+
+def dump_routes(doc: dict) -> str:
+    """The canonical routes.json text: 2-space blocks, a list of scalars on one line, a trailing newline."""
+    def fmt(v: object, pad: str) -> str:
+        inner = pad + "  "
+        if isinstance(v, dict) and v:
+            return "{\n" + ",\n".join(f"{inner}{json.dumps(k)}: {fmt(x, inner)}" for k, x in v.items()) + f"\n{pad}}}"
+        if isinstance(v, list) and any(isinstance(x, (dict, list)) for x in v):
+            return "[\n" + ",\n".join(inner + fmt(x, inner) for x in v) + f"\n{pad}]"
+        return json.dumps(v, ensure_ascii=False)
+    return fmt(doc, "") + "\n"
+
+
+def model_set(path: Path, harness: str, role: str, model: str, tiers: str | None, priors: list[str],
+              default: bool) -> str:
+    """Admit (or update, or restore from `archived`) a model for one harness role; validated before it writes."""
+    doc = read_json(path, None)
+    check_routes(doc, path)
+    roles = doc["harnesses"].get(harness, {}).get("roles", {}) if harness in HARNESSES else {}
+    if role not in roles:
+        raise Conflict(f"no role {role!r} for harness {harness!r}")
+    pol, rt = roles[role], doc["router"]
+    if model not in pol["models"]:
+        pol["models"].append(model)  # appended: the role's first model (the agent file's pin) never changes here
+    if tiers is not None:
+        ts = tiers.split(",")
+        pol.setdefault("model_tiers", {}).pop(model, None)
+        if ts != pol["tiers"]:
+            pol["model_tiers"][model] = ts
+        if not pol["model_tiers"]:
+            del pol["model_tiers"]
+    for kv in priors:
+        cls, _, tier = kv.partition("=")
+        rt.setdefault("model_priors", {}).setdefault(model, {})[cls] = tier
+    if default:
+        rt.setdefault("defaults", {})[role] = model
+    doc.get("archived", {}).pop(model, None)
+    if doc.get("archived") == {}:
+        del doc["archived"]
+    return write_routes(path, doc)
+
+
+def model_archive(path: Path, model: str) -> str:
+    """Remove a model no longer offered from every role, keeping a dated record under `archived`. A role's first model
+    (its agent file's pin) is refused; a role it was the default for falls back to its first model."""
+    doc = read_json(path, None)
+    check_routes(doc, path)
+    rt, roles, pins = doc["router"], {}, []
+    for h in HARNESSES:
+        for role, pol in doc["harnesses"][h]["roles"].items():
+            if model in pol["models"]:
+                if pol["models"][0] == model:
+                    pins.append(f"{h}/{role}")
+                roles[f"{h}/{role}"] = model_tiers(pol, model)
+                pol["models"].remove(model)
+                pol.get("model_tiers", {}).pop(model, None)
+                if pol.get("model_tiers") == {}:
+                    del pol["model_tiers"]
+    if not roles or pins:
+        raise Conflict(f"{model} is not admitted" if not roles else
+                       f"{model} is the first model (agent file pin) of {', '.join(pins)}; archive refused")
+    was_default = sorted(r for r, m in rt.get("defaults", {}).items() if m == model)
+    for r in was_default:
+        del rt["defaults"][r]
+    rec = {"date": datetime.now().date().isoformat(), "roles": roles,
+           "model_priors": rt.get("model_priors", {}).pop(model, {}), "default_for": was_default}
+    if rt.get("model_priors") == {}:
+        del rt["model_priors"]
+    doc.setdefault("archived", {})[model] = rec
+    note = (f"note: {model} was the default for {', '.join(was_default)}; it now falls back to the role's first "
+            "model (set another with `model set --default`)\n") if was_default else ""
+    return note + write_routes(path, doc)
+
+
+def write_routes(path: Path, doc: dict) -> str:
+    """Validate, then write canonical text atomically; returns the diff (or "unchanged")."""
+    check_routes(doc, path)
+    old, new = path.read_text(encoding="utf-8"), dump_routes(doc)
+    if old == new:
+        return f"unchanged: {path}"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(new, encoding="utf-8")
+    os.replace(tmp, path)
+    return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), str(path), str(path)))
 
 
 def priors_line(routes: dict) -> str:
@@ -2081,7 +2170,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "upgrade", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "route", "promote", "codex", "models"):
+                 "route", "promote", "codex", "models", "model"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
         if name == "codex":  # Claude harness only; Codex dispatches its models natively
@@ -2097,6 +2186,15 @@ def main() -> int:
             p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
             p.add_argument("--brief-file", type=Path, required=True)
             p.add_argument("--model", help="the planned model (default: the role's first); sets its model_tiers ladder")
+        if name == "model":  # edits the skill's source routes.json (validated before it writes); then `upgrade`
+            p.add_argument("action", choices=("set", "archive"))
+            p.add_argument("--harness")
+            p.add_argument("--role")
+            p.add_argument("--model", required=True)
+            p.add_argument("--tiers", help="comma list in ascending order; the role's tiers when omitted on a new model")
+            p.add_argument("--prior", action="append", default=[], help="CLASS=TIER (or *=TIER); repeatable")
+            p.add_argument("--default", action="store_true", help="router.defaults[role] = this model")
+            p.add_argument("--routes", type=Path, default=source_root() / "routes.json")
         if name == "promote":  # read-only over receipts
             p.add_argument("--class", dest="cls")
             p.add_argument("--model")
@@ -2160,6 +2258,13 @@ def main() -> int:
         elif args.command == "codex":
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
                              args.cd.expanduser().resolve())
+        elif args.command == "model":
+            if args.action == "set":
+                if not (args.harness and args.role):
+                    raise Conflict("model set needs --harness and --role")
+                print(model_set(args.routes, args.harness, args.role, args.model, args.tiers, args.prior, args.default))
+            else:
+                print(model_archive(args.routes, args.model))
         elif args.command == "models":
             for line in models(args.harness):
                 print(json.dumps(line))
