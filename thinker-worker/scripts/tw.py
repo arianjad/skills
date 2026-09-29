@@ -124,12 +124,20 @@ def is_codex_model(routes: dict, model: object) -> bool:
     return any(model in p["models"] for p in routes["harnesses"]["codex"]["roles"].values())
 
 
+def model_tiers(pol: dict, model: str | None) -> list[str]:
+    """The role's tiers for this model: its `model_tiers` entry (a subset of the role's tiers), else the role's."""
+    return pol.get("model_tiers", {}).get(model, pol["tiers"])
+
+
 def check_routes(doc: object, path: Path) -> None:
     if not isinstance(doc, dict) or doc.get("schema") != 1:
         raise Conflict(f"routes.json missing or not schema 1: {path}")
     for harness in HARNESSES:
         for role, pol in doc["harnesses"][harness]["roles"].items():
-            if not pol.get("models") or not pol.get("tiers") or any(t not in TIERS for t in pol["tiers"]):
+            mt = pol.get("model_tiers", {})
+            if (not pol.get("models") or not pol.get("tiers") or any(t not in TIERS for t in pol["tiers"])
+                    or not isinstance(mt, dict) or any(m not in pol["models"] or not isinstance(ts, list) or not ts
+                                                       or any(t not in pol["tiers"] for t in ts) for m, ts in mt.items())):
                 raise Conflict(f"routes.json: bad policy for {harness}/{role}")
 
     def num(v: object) -> bool:
@@ -175,10 +183,10 @@ def check_routes(doc: object, path: Path) -> None:
         raise Conflict("routes.json: router.defaults must map a Claude role to one of its models")
 
 
-def prior(routes: dict, harness: str, role: str, cls: str | None) -> str:
-    """The tier prior for a class (router.priors, "*" when the class has none), clamped into the role's tiers."""
+def prior(routes: dict, harness: str, role: str, cls: str | None, model: str | None = None) -> str:
+    """The tier prior for a class (router.priors, "*" when the class has none), clamped into the model's tiers."""
     priors = routes["router"]["priors"]
-    return clamp(priors.get(cls, priors["*"]), routes["harnesses"][harness]["roles"][role]["tiers"])
+    return clamp(priors.get(cls, priors["*"]), model_tiers(routes["harnesses"][harness]["roles"][role], model))
 
 
 def priors_line(routes: dict) -> str:
@@ -380,8 +388,9 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
         if model not in pol["models"]:
             return Decision(False, f"model is not allowed for {route}", role, model, fields=fields)
         tier = inp.get("reasoning_effort")
-        if tier not in pol["tiers"]:
-            return Decision(False, f"reasoning_effort must be one of {', '.join(pol['tiers'])} for {route}", role, model, fields=fields)
+        if tier not in model_tiers(pol, model):
+            return Decision(False, f"reasoning_effort must be one of {', '.join(model_tiers(pol, model))} for {route}",
+                            role, model, fields=fields)
         if not valid_codex_fork(inp.get("fork_turns")):
             return Decision(False, "fork_turns must be explicit 'none' or a bounded positive count", role, model, fields=fields)
     else:
@@ -394,6 +403,9 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
             return Decision(False, f"tier {tier} is outside {role}'s tiers {pol['tiers']}", role, model, fields=fields)
         if model is not None and model not in pol["models"]:
             return Decision(False, f"model {model} is not allowed for {role}", role, model, fields=fields)
+        if tier not in model_tiers(pol, model):
+            return Decision(False, f"tier {tier} is outside {role}'s tiers {model_tiers(pol, model)} on {model}",
+                            role, model, fields=fields)
         if envelope.get("tool_name") != "codex" and is_codex_model(routes, model):  # not the pipeline's own call
             return Decision(False, f"model {model} is a Codex model; dispatch it with `tw.py codex --model {model}`",
                             role, model, fields=fields)
@@ -1112,21 +1124,23 @@ def combine(answers: dict, tiers: list[str], weights: dict) -> dict:
 
 
 def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
-          prior: dict | None = None, t: int = 1, pinned: bool | None = None) -> dict:
+          prior: dict | None = None, t: int = 1, pinned: bool | None = None, model: str | None = None) -> dict:
     """Fail-open router (design D11, D14): every backend is asked in parallel (ask_backends); the valid answers are
     combined (combine) and the combined pick decides (source "bayes") if its top1 - top2 >= router.combine.margin
     (gate "pass"), else the coordinator's tier stands (gate "margin"; None when no backend answered). A ticket whose
     coin falls below eps goes one tier below that pick (source "explore"). eps is the class's explore at the class's
     t-th routed dispatch (epsilon), 0 when cached or pinned. pinned: the brief's TW-Pin flag, computed here unless
-    the caller passes it."""
+    the caller passes it. model: the dispatch's model; its `model_tiers` entry is the ladder (the role's by default)."""
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
+    pol = {**pol, "tiers": model_tiers(pol, model)}
     tick, digest = ticket(brief)
     mode, explore = class_mode(routes, fields["TW-Class"])
     pinned = flagged(brief, "TW-Pin") if pinned is None else pinned
     eps = 0.0 if pinned else epsilon(explore, t)  # a user pin is never explored
     if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
-        return {"tier": prior["router_tier"], "probs": prior["probs"], "confidence": prior["confidence"],
+        # the ticket omits the model (D17): a decision cached on another model is clamped into this model's ladder
+        return {"tier": clamp(prior["router_tier"], pol["tiers"]), "probs": prior["probs"], "confidence": prior["confidence"],
                 "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
                 "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "draw_propensity": 1.0,
@@ -1452,11 +1466,11 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         pinned = flagged(brief, "TW-Pin")
         cached = prior_route(home, harness, session, ticket(brief)[0], rows)
         r = route(routes, harness, d.role, d.fields, brief, d.tier, cached,
-                  1 + class_count(home, harness, d.fields["TW-Class"], routes), pinned)
+                  1 + class_count(home, harness, d.fields["TW-Class"], routes), pinned, model)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
-               "prior_tier": prior(routes, harness, d.role, d.fields["TW-Class"]),
+               "prior_tier": prior(routes, harness, d.role, d.fields["TW-Class"], model),
                "agent_model": model, "quota": quota(home),
                "probs": r["probs"],
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "eps": r["eps"],

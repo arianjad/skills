@@ -57,7 +57,7 @@ if __name__ == "__main__":
         work = Path(home) / "work"
         work.mkdir()
         marker = work / "marker.txt"
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "model": "sonnet",
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "model": "haiku",
                                        "prompt": brief("echo review-marker > marker.txt")}, "t_deny", cwd=str(work))
         assert [r["decision"] for r in receipts(home, "claude") if r["kind"] == "dispatch"] == ["deny"]
         # advised: advisory mode, explore 1.0, no backends -> a high dispatch is advised to medium (denied)

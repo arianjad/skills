@@ -186,6 +186,12 @@ if __name__ == "__main__":
     assert tw.route(r0, "claude", "worker", f, "x", "low")["source"] == "coordinator"       # cheapest: never explored
     assert tw.route(r0, "claude", "independent-review", f, "x", "xhigh")["tier"] == "high"  # the role's own ladder
     assert tw.route(r0, "claude", "leaf", f, "x", "medium")["tier"] == "low"
+    # a Sonnet worker's ladder is its model_tiers (high, xhigh): explored down to high, never below
+    assert tw.route(r0, "claude", "worker", f, "x", "xhigh", model="sonnet")["tier"] == "high"
+    assert tw.route(r0, "claude", "worker", f, "x", "high", model="sonnet")["source"] == "coordinator"
+    cached = {"router_tier": "medium", "probs": {"medium": 1.0}, "confidence": 0.0, "source": "explore"}
+    assert tw.route(r0, "claude", "worker", f, "x", "high", cached, model="sonnet")["tier"] == "high"  # clamped
+    assert tw.prior(r0, "claude", "worker", "T1-mechanical", "sonnet") == "high"
     r0["router"]["classes"]["*"]["explore"] = 0.0
     assert tw.route(r0, "claude", "worker", f, "x", "high")["source"] == "coordinator"
 
