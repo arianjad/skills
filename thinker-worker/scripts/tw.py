@@ -1818,7 +1818,7 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
         originals[harness] = raw
         if found == [entries[harness]]:
             # A synced config already holds exactly this entry (written by another machine):
-            # record it without writing; uninstall leaves it for the machine that wrote it.
+            # record it without writing; uninstall keeps it while another installed ledger claims it.
             adopted.append(harness)
         elif found:
             raise Conflict(f"Existing {OWNER} hook at {path} differs from what this install would write; "
@@ -1877,8 +1877,10 @@ def install(home: Path, python: Path, portable: bool = False, python_cmd: str | 
 
 def upgrade(home: Path) -> None:
     """Bring an installation to the current source in place: every owned file is replaced (or removed, if the source
-    no longer produces it) when it still matches the manifest or already matches the new source; any other state (a
-    hand edit, an unowned file in the way, a changed hook entry) refuses before the first write. Hook entries,
+    no longer produces it) when it still matches the manifest or already matches the new source; missing current
+    files are restored. Pre-existing edits, non-file collisions and changed hook entries refuse before the first
+    write. A later concurrent conflict preserves that target but may follow earlier replacements; this is not a
+    multi-file transaction. Resolve the conflict and rerun to reconcile the installation. Hook entries,
     activation records and receipts are kept, unlike uninstall + install."""
     manifest_file = manifest_path(home)
     manifest_before = manifest_file.read_bytes() if manifest_file.exists() else None
