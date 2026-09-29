@@ -28,7 +28,7 @@ Run from the source repo root: `python thinker-worker/scripts/tw.py <command>`.
    is appended; a role's first model (the Claude agent file's pin) is never changed here. A superseded model stays
    admitted (drop its default with `--default` on the successor). A model no longer offered:
    `tw.py model archive --model <id>` (removes it everywhere, keeps a dated record under `archived`; `model set`
-   restores it). Machine-local priors go in the override file named by `routes.json` `$override`, not here.
+   re-admits it for the given role and drops the record). Machine-local priors go in the override file named by `routes.json` `$override`, not here.
 4. **Verify.** `tw.py models --harness claude` and `--harness codex` show the result; run every
    `thinker-worker/scripts/test_tw_*.py`; commit (the message names the prior source); `tw.py upgrade`; `tw.py check`.
    Push, and `git pull` + `tw.py upgrade` on the other machine, only after the user approves the push.

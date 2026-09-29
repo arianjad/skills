@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
-import difflib
 import json
 import math
 import os
@@ -101,8 +100,8 @@ def merge_override(doc: dict, ov_path: Path) -> dict:
             or not all(k in OVERRIDABLE or is_jev(v) or is_jev(doc["router"].get(k)) for k, v in rt.items())
             or not all(isinstance(v, list if k == "backends" else dict) for k, v in rt.items())
             or not all(isinstance(v, dict) for v in rt.get("classes", {}).values())):
-        raise Conflict("may set only router.priors, model_priors, classes, risk_floor, defaults, combine, options and jev backend "
-                       "blocks (each an object) and router.backends (a list)")
+        raise Conflict("may set only router." + ", router.".join(sorted(OVERRIDABLE - {"backends"}))
+                       + " and jev backend blocks (each an object) and router.backends (a list)")
     merged = json.loads(json.dumps(doc))
     mr = merged["router"]
     for k, v in rt.items():
@@ -115,6 +114,7 @@ def merge_override(doc: dict, ov_path: Path) -> dict:
         mr["classes"][cls] = star if cls == "*" else {**star, **mr["classes"].get(cls, {}), **entry}
     check_routes(merged, ov_path)
     merged["_override"] = str(ov_path)
+    merged["_override_model_priors"] = rt.get("model_priors", {})  # which prior values came from the override
     return merged
 
 
@@ -208,16 +208,16 @@ def prior(routes: dict, harness: str, role: str, cls: str | None, model: str | N
 
 def models(harness: str) -> list[dict]:
     """One line per (role, model) admitted for the harness: its tiers, its model_priors entries (source "override" when
-    the local override set that value, else "installed"), whether it is the role's default (router.defaults, else the
+    the local override set that entry, else "installed"), whether it is the role's default (router.defaults, else the
     role's first model: the agent file's pin), and how to dispatch it from this harness."""
-    routes, installed = load_routes(), load_routes(source_root() / "routes.json")
-    rt, shipped = routes["router"], installed["router"].get("model_priors", {})
+    routes = load_routes()
+    rt, local = routes["router"], routes.get("_override_model_priors", {})
     out = []
     for role, pol in routes["harnesses"][harness]["roles"].items():
         for m in pol["models"]:
             own = rt.get("model_priors", {}).get(m, {})
             out.append({"harness": harness, "role": role, "model": m, "tiers": model_tiers(pol, m),
-                        "priors": {c: {"tier": v, "source": "installed" if shipped.get(m, {}).get(c) == v else "override"}
+                        "priors": {c: {"tier": v, "source": "override" if c in local.get(m, {}) else "installed"}
                                    for c, v in own.items()},
                         "default": rt.get("defaults", {}).get(role, pol["models"][0]) == m,
                         "via": "tw.py codex" if harness == "claude" and is_codex_model(routes, m) else "native"})
@@ -225,7 +225,9 @@ def models(harness: str) -> list[dict]:
 
 
 def dump_routes(doc: dict) -> str:
-    """The canonical routes.json text: 2-space blocks, a list of scalars on one line, a trailing newline."""
+    """The canonical routes.json text: 2-space blocks, a list of scalars on one line, a trailing newline.
+    ponytail: not canonical_json (indent=2) because routes.json is read by people: one line per model/tier list keeps
+    it ~110 lines instead of ~200. Switch to canonical_json if nobody reads the file by hand."""
     def fmt(v: object, pad: str) -> str:
         inner = pad + "  "
         if isinstance(v, dict) and v:
@@ -238,10 +240,9 @@ def dump_routes(doc: dict) -> str:
 
 def model_set(path: Path, harness: str, role: str, model: str, tiers: str | None, priors: list[str],
               default: bool) -> str:
-    """Admit (or update, or restore from `archived`) a model for one harness role; validated before it writes."""
-    doc = read_json(path, None)
-    check_routes(doc, path)
-    roles = doc["harnesses"].get(harness, {}).get("roles", {}) if harness in HARNESSES else {}
+    """Admit (or update, or re-admit an archived) model for one harness role; validated before it writes."""
+    doc = load_routes(path)
+    roles = doc["harnesses"].get(harness, {}).get("roles", {})
     if role not in roles:
         raise Conflict(f"no role {role!r} for harness {harness!r}")
     pol, rt = roles[role], doc["router"]
@@ -268,8 +269,7 @@ def model_set(path: Path, harness: str, role: str, model: str, tiers: str | None
 def model_archive(path: Path, model: str) -> str:
     """Remove a model no longer offered from every role, keeping a dated record under `archived`. A role's first model
     (its agent file's pin) is refused; a role it was the default for falls back to its first model."""
-    doc = read_json(path, None)
-    check_routes(doc, path)
+    doc = load_routes(path)
     rt, roles, pins = doc["router"], {}, []
     for h in HARNESSES:
         for role, pol in doc["harnesses"][h]["roles"].items():
@@ -299,13 +299,13 @@ def model_archive(path: Path, model: str) -> str:
 
 def write_routes(path: Path, doc: dict) -> str:
     """Validate, then write canonical text atomically; returns the diff (or "unchanged")."""
+    import difflib  # cold path: kept off the hook's import time
     check_routes(doc, path)
-    old, new = path.read_text(encoding="utf-8"), dump_routes(doc)
+    raw = path.read_bytes()  # atomic_write's changed-target check compares raw bytes (a Windows checkout may be CRLF)
+    old, new = raw.decode("utf-8").replace("\r\n", "\n"), dump_routes(doc)
     if old == new:
         return f"unchanged: {path}"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(new, encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write(path, new.encode("utf-8"), raw)
     return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), str(path), str(path)))
 
 
@@ -315,7 +315,9 @@ def priors_line(routes: dict) -> str:
               else "installed routes.json" + (f" + {routes['_override']}" if routes.get("_override") else ""))
     return (f"Tier priors ({source}): " + ", ".join(f"{k}={v}" for k, v in rt["priors"].items())
             + "; risk floors: " + ", ".join(f"{k}={v}" for k, v in rt["risk_floor"].items())
-            + "; default models: " + (", ".join(f"{k}={v}" for k, v in rt.get("defaults", {}).items()) or "agent files"))
+            + "; default models: " + (", ".join(f"{k}={v}" for k, v in rt.get("defaults", {}).items()) or "agent files")
+            + "".join(f"; {m}: " + ", ".join(f"{k}={v}" for k, v in t.items())
+                      for m, t in rt.get("model_priors", {}).items()))
 
 
 def now() -> str:
@@ -2195,7 +2197,7 @@ def main() -> int:
             p.add_argument("--tiers", help="comma list in ascending order; the role's tiers when omitted on a new model")
             p.add_argument("--prior", action="append", default=[], help="CLASS=TIER (or *=TIER); repeatable")
             p.add_argument("--default", action="store_true", help="router.defaults[role] = this model")
-            p.add_argument("--routes", type=Path, default=source_root() / "routes.json")
+            p.add_argument("--routes", type=Path, help="default: the skill's own source routes.json")
         if name == "promote":  # read-only over receipts
             p.add_argument("--class", dest="cls")
             p.add_argument("--model")
@@ -2260,6 +2262,7 @@ def main() -> int:
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
                              args.cd.expanduser().resolve())
         elif args.command == "model":
+            args.routes = args.routes or source_root() / "routes.json"
             if args.action == "set":
                 if not (args.harness and args.role):
                     raise Conflict("model set needs --harness and --role")

@@ -1,9 +1,11 @@
 """Adding a model: per-model priors (S1), their validation and override (S2).
 Run: python test_tw_models.py"""
+import contextlib
 import json
 import os
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 import tw
 
@@ -43,25 +45,27 @@ for bad in ({"not-a-model": {"*": "low"}}, {"gpt-6-sol": {"*": "max"}}, {"gpt-6-
     assert not loads(with_model_priors(bad)), bad
 print("PASS S2 model_priors validated")
 
-# S2: the local override may set model_priors; a model's override table merges over its installed one
-saved = {k: os.environ.pop(k, None) for k in ("TW_ROUTES", "TW_ROUTES_OVERRIDE")}
-try:
-    with tempfile.TemporaryDirectory() as tmp:
+@contextlib.contextmanager
+def override(doc: dict):
+    """The user override file set to doc (TW_ROUTES_OVERRIDE, TW_ROUTES unset); the environment restored on exit."""
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ):
+        os.environ.pop("TW_ROUTES", None)
         ov = Path(tmp) / "ov.json"
+        ov.write_text(json.dumps(doc), encoding="utf-8")
         os.environ["TW_ROUTES_OVERRIDE"] = str(ov)
-        ov.write_text(json.dumps({"router": {"model_priors": {"gpt-6-sol": {"C-coding": "xhigh"}}}}), encoding="utf-8")
-        got = tw.load_routes()
-        assert "_override_error" not in got, got.get("_override_error")
-        installed = R["router"].get("model_priors", {}).get("gpt-6-sol", {})
-        assert got["router"]["model_priors"]["gpt-6-sol"] == {**installed, "C-coding": "xhigh"}, got["router"]
-        assert tw.prior(got, "claude", "worker", "C-coding", "gpt-6-sol") == "xhigh"
-        ov.write_text(json.dumps({"router": {"model_priors": {"not-a-model": {"*": "low"}}}}), encoding="utf-8")
-        assert "_override_error" in tw.load_routes()                                   # fails open, named
-finally:
-    for k, v in saved.items():
-        os.environ.pop(k, None)
-        if v is not None:
-            os.environ[k] = v
+        yield
+
+
+# S2: the local override may set model_priors; a model's override table merges over its installed one
+OV = {"router": {"model_priors": {"gpt-6-sol": {"C-coding": "xhigh"}}}}
+with override(OV):
+    got = tw.load_routes()
+    assert "_override_error" not in got, got.get("_override_error")
+    installed = R["router"].get("model_priors", {}).get("gpt-6-sol", {})
+    assert got["router"]["model_priors"]["gpt-6-sol"] == {**installed, "C-coding": "xhigh"}, got["router"]
+    assert tw.prior(got, "claude", "worker", "C-coding", "gpt-6-sol") == "xhigh"
+with override({"router": {"model_priors": {"not-a-model": {"*": "low"}}}}):
+    assert "_override_error" in tw.load_routes()                                       # fails open, named
 
 # S2: routes.json says an override exists and lists exactly what it may set
 note = R["$override"]
@@ -71,29 +75,19 @@ print("PASS S2 override may set model_priors; routes.json names the override")
 
 # S3: `tw.py models` lists one JSON line per (role, model), with prior sources and how to dispatch it
 from test_tw_hook import run_main
-saved = {k: os.environ.pop(k, None) for k in ("TW_ROUTES", "TW_ROUTES_OVERRIDE")}
-try:
-    with tempfile.TemporaryDirectory() as tmp:
-        ov = Path(tmp) / "ov.json"
-        os.environ["TW_ROUTES_OVERRIDE"] = str(ov)
-        ov.write_text(json.dumps({"router": {"model_priors": {"gpt-6-sol": {"C-coding": "xhigh"}}}}), encoding="utf-8")
-        code, out = run_main(["models", "--harness", "claude"])
-        assert code == 0, out
-        lines = {(x["role"], x["model"]): x for x in map(json.loads, out.splitlines())}
-        assert lines[("worker", "gpt-6-sol")] == {
-            "harness": "claude", "role": "worker", "model": "gpt-6-sol", "tiers": ["low", "medium", "high", "xhigh"],
-            "priors": {"C-coding": {"tier": "xhigh", "source": "override"}}, "default": False, "via": "tw.py codex"}
-        assert lines[("worker", "sonnet")] == {
-            "harness": "claude", "role": "worker", "model": "sonnet", "tiers": ["high", "xhigh"],
-            "priors": {}, "default": False, "via": "native"}
-        assert lines[("worker", "opus")]["default"] is True                      # the agent file's pin
-        assert lines[("independent-review", "gpt-6-astra")]["default"] is True   # router.defaults
-        assert lines[("leaf", "sonnet")]["tiers"] == ["low", "medium"]
-finally:
-    for k, v in saved.items():
-        os.environ.pop(k, None)
-        if v is not None:
-            os.environ[k] = v
+with override(OV):
+    code, out = run_main(["models", "--harness", "claude"])
+    assert code == 0, out
+    lines = {(x["role"], x["model"]): x for x in map(json.loads, out.splitlines())}
+    assert lines[("worker", "gpt-6-sol")] == {
+        "harness": "claude", "role": "worker", "model": "gpt-6-sol", "tiers": ["low", "medium", "high", "xhigh"],
+        "priors": {"C-coding": {"tier": "xhigh", "source": "override"}}, "default": False, "via": "tw.py codex"}
+    assert lines[("worker", "sonnet")] == {
+        "harness": "claude", "role": "worker", "model": "sonnet", "tiers": ["high", "xhigh"],
+        "priors": {}, "default": False, "via": "native"}
+    assert lines[("worker", "opus")]["default"] is True                      # the agent file's pin
+    assert lines[("independent-review", "gpt-6-astra")]["default"] is True   # router.defaults
+    assert lines[("leaf", "sonnet")]["tiers"] == ["low", "medium"]
 print("PASS S3 models listing")
 
 # S5: the shipped routes.json is in canonical form, so script edits and hand edits cannot drift apart

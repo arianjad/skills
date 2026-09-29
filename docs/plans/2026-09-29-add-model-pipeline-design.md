@@ -23,4 +23,5 @@ see the model (`ask_backends` sends header, brief, tier options); Hermes/Qwen GV
 - [x] S3 models listing
 - [x] S4/S5 set/archive + canonical format
 - [x] sentinel denied model in tests; docs point at `tw.py models`; `references/add-model.md`
-- [ ] /simplify pass; upgrade; first real run (gpt-6.1-sol)
+- [x] /simplify pass; upgrade
+- [ ] first real run (gpt-6.1-sol)
