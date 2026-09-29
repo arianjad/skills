@@ -68,7 +68,7 @@ def agent_name(role: str, tier: str) -> str:
 
 MODES = ("shadow", "advisory", "active")
 # The router keys the user override file may set, plus any per-backend block of kind "jev" (see merge_override)
-OVERRIDABLE = {"priors", "classes", "risk_floor", "defaults", "backends", "combine", "options"}
+OVERRIDABLE = {"priors", "model_priors", "classes", "risk_floor", "defaults", "backends", "combine", "options"}
 
 
 def load_routes(path: Path | None = None) -> dict:
@@ -99,12 +99,14 @@ def merge_override(doc: dict, ov_path: Path) -> dict:
             or not all(k in OVERRIDABLE or is_jev(v) or is_jev(doc["router"].get(k)) for k, v in rt.items())
             or not all(isinstance(v, list if k == "backends" else dict) for k, v in rt.items())
             or not all(isinstance(v, dict) for v in rt.get("classes", {}).values())):
-        raise Conflict("may set only router.priors, classes, risk_floor, defaults, combine, options and jev backend "
+        raise Conflict("may set only router.priors, model_priors, classes, risk_floor, defaults, combine, options and jev backend "
                        "blocks (each an object) and router.backends (a list)")
     merged = json.loads(json.dumps(doc))
     mr = merged["router"]
     for k, v in rt.items():
-        if k != "classes":
+        if k == "model_priors":  # per model: the override's table merges over the installed one
+            mr[k] = {**mr.get(k, {}), **{m: {**mr.get(k, {}).get(m, {}), **t} for m, t in v.items()}}
+        elif k != "classes":
             mr[k] = v if k == "backends" else {**mr.get(k, {}), **v}
     star = {**mr["classes"]["*"], **rt.get("classes", {}).get("*", {})}
     for cls, entry in rt.get("classes", {}).items():
@@ -179,6 +181,11 @@ def check_routes(doc: object, path: Path) -> None:
             or not isinstance(priors, dict) or "*" not in priors or not set(priors) <= TASK_CLASSES | {"*"}
             or any(v not in TIERS for v in priors.values())):
         raise Conflict("routes.json: bad router block")
+    admitted = {m for h in HARNESSES for p in doc["harnesses"][h]["roles"].values() for m in p["models"]}
+    mp = rt.get("model_priors", {})
+    if not isinstance(mp, dict) or any(m not in admitted or not isinstance(t, dict) or not set(t) <= TASK_CLASSES | {"*"}
+                                       or any(v not in TIERS for v in t.values()) for m, t in mp.items()):
+        raise Conflict("routes.json: router.model_priors must map an admitted model to {class or *: tier}")
     defaults = rt.get("defaults", {})  # per-role default model the coordinator dispatches; guidance, not enforced
     claude_roles = doc["harnesses"]["claude"]["roles"]
     if not isinstance(defaults, dict) or any(r not in claude_roles or m not in claude_roles[r]["models"]
@@ -187,9 +194,11 @@ def check_routes(doc: object, path: Path) -> None:
 
 
 def prior(routes: dict, harness: str, role: str, cls: str | None, model: str | None = None) -> str:
-    """The tier prior for a class (router.priors, "*" when the class has none), clamped into the model's tiers."""
-    priors = routes["router"]["priors"]
-    return clamp(priors.get(cls, priors["*"]), model_tiers(routes["harnesses"][harness]["roles"][role], model))
+    """The tier prior for a class, clamped into the model's tiers: router.model_priors[model] (its class, else its
+    "*"), else router.priors (the class, else "*"). No model: the role's first."""
+    pol = routes["harnesses"][harness]["roles"][role]
+    priors, own = routes["router"]["priors"], routes["router"].get("model_priors", {}).get(model or pol["models"][0], {})
+    return clamp(own.get(cls, own.get("*", priors.get(cls, priors["*"]))), model_tiers(pol, model))
 
 
 def priors_line(routes: dict) -> str:

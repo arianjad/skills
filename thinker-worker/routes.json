@@ -1,5 +1,8 @@
 {
   "schema": 1,
+  "$override": {"path": "TW_ROUTES_OVERRIDE, else ~/.thinker-worker/routes.json (machine-local, survives reinstalls)",
+                "may_set": ["router.priors", "router.model_priors", "router.classes", "router.risk_floor", "router.defaults",
+                            "router.backends", "router.combine", "router.options", "router.<jev backend block>"]},
   "harnesses": {
     "claude": {"roles": {
       "worker":             {"models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5"], "tiers": ["low", "medium", "high", "xhigh"], "tools": null,
