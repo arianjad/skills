@@ -19,8 +19,8 @@ see the model (`ask_backends` sends header, brief, tier options); Hermes/Qwen GV
 - S5 shipped `routes.json` equals its canonical form.
 
 ## Progress
-- [ ] S1/S2 model_priors + override
-- [ ] S3 models listing
-- [ ] S4/S5 set/archive + canonical format
-- [ ] sentinel denied model in tests; docs point at `tw.py models`; `references/add-model.md`
+- [x] S1/S2 model_priors + override
+- [x] S3 models listing
+- [x] S4/S5 set/archive + canonical format
+- [x] sentinel denied model in tests; docs point at `tw.py models`; `references/add-model.md`
 - [ ] /simplify pass; upgrade; first real run (gpt-6.1-sol)

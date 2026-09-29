@@ -32,7 +32,8 @@ from typing import NamedTuple
 
 OWNER = "thinker-worker-v1"
 HARNESSES = ("codex", "claude")
-SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "scripts/tw.py")
+SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "references/add-model.md",
+               "scripts/tw.py")
 TIERS = ("low", "medium", "high", "xhigh")
 AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh)")
 VALUE_MAX = 1000  # per header value at the gate; receipts truncate at 256

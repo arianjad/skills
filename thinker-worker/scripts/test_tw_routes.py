@@ -27,7 +27,7 @@ CASES = [
     ("claude worker tier agent, no model", claude(W, "tw-worker-low").admitted, True),
     ("claude tier recorded", claude(W, "tw-worker-xhigh").tier, "xhigh"),
     ("claude matching per-call model", claude(W, "tw-worker-high", "opus").admitted, True),
-    ("claude per-call model mismatch", claude(W, "tw-worker-high", "haiku").admitted, False),
+    ("claude per-call model mismatch", claude(W, "tw-worker-high", "not-a-model").admitted, False),
     ("sonnet worker high", claude(W, "tw-worker-high", "sonnet").admitted, True),
     ("sonnet worker xhigh", claude(W, "tw-worker-xhigh", "sonnet").admitted, True),
     ("sonnet worker medium refused", claude(W, "tw-worker-medium", "sonnet").admitted, False),
@@ -53,7 +53,7 @@ CASES = [
     ("ideation on sonnet refused", claude(IDEA, "tw-ideation-xhigh", "sonnet").admitted, False),
     ("review refuses opus", claude(REV, "tw-independent-review-high", "opus").admitted, False),
     ("ideation agent file stays fable", R["harnesses"]["claude"]["roles"]["ideation"]["models"][0], "fable"),
-    ("denial names model and role", claude(W, "tw-worker-high", "haiku").reason, "model haiku is not allowed for worker"),
+    ("denial names model and role", claude(W, "tw-worker-high", "not-a-model").reason, "model not-a-model is not allowed for worker"),
     ("fork refused", claude(W, "tw-worker-high", fork=True).admitted, False),
     ("role line split on \\n only", claude("TW-Role: worker " + HDR + "x", "tw-worker-high").admitted, False),
     ("codex worker sol high", codex(W, "gpt-6-sol", "high").admitted, True),
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmp:  # every tier list is a ladder: non-empty, unique, in TIERS order
         for mt, ok in (({"sonnet": ["high", "xhigh"]}, True), ({"sonnet": ["xhigh", "high"]}, False),
                        ({"sonnet": ["high", "high"]}, False), ({"sonnet": []}, False), ({"sonnet": "high"}, False),
-                       ({"sonnet": ["max"]}, False), ({"haiku": ["high"]}, False), ([], False)):
+                       ({"sonnet": ["max"]}, False), ({"not-a-model": ["high"]}, False), ([], False)):
             doc = json.loads(json.dumps(R))
             doc["harnesses"]["claude"]["roles"]["worker"]["model_tiers"] = mt
             p = Path(tmp) / "mt.json"
@@ -186,7 +186,7 @@ if __name__ == "__main__":
         f.write_text("TW-Role: worker\n" + hdr.format("T1-mechanical"), encoding="utf-8")  # --model: its ladder
         code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "sonnet"])
         assert code == 0 and json.loads(out)["tier"] == "high", out
-        code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "haiku"])
+        code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "not-a-model"])
         assert code == 2, out
         code, out = run_main(["activate", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
         assert code == 0 and "C-coding=high" in out and "T1-mechanical=low" in out, out
