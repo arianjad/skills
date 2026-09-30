@@ -8,7 +8,7 @@
     "claude": {
       "roles": {
         "worker": {
-          "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5"],
+          "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5", "gpt-6.1-sol"],
           "tiers": ["low", "medium", "high", "xhigh"],
           "tools": null,
           "model_tiers": {
@@ -36,7 +36,7 @@
     "codex": {
       "roles": {
         "worker": {
-          "models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"],
+          "models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-sol"],
           "tiers": ["low", "medium", "high", "xhigh"]
         },
         "leaf": {
