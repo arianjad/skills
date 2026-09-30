@@ -18,7 +18,7 @@
         },
         "leaf": {
           "models": ["sonnet", "claude-sonnet-5", "claude-sonnet-5-5", "gpt-6-luna"],
-          "tiers": ["low", "medium"],
+          "tiers": ["low", "medium", "high"],
           "tools": null
         },
         "independent-review": {
@@ -41,7 +41,7 @@
         },
         "leaf": {
           "models": ["gpt-6-luna"],
-          "tiers": ["low", "medium"]
+          "tiers": ["low", "medium", "high"]
         },
         "independent-review": {
           "models": ["gpt-6-astra"],

@@ -24,6 +24,10 @@ Run from the source repo root: `python thinker-worker/scripts/tw.py <command>`.
    tw.py model set --harness codex  --role worker --model <id> [--tiers high,xhigh] [--prior "*=medium" --prior C-coding=high]
    tw.py model set --harness claude --role worker --model <id> [--tiers ...]
    ```
+   A role's tier list bounds every model in that role. Change that shared list explicitly with
+   `--role-tiers low,medium,high`, for example when enabling high-effort leaves. Existing `model_tiers`
+   restrictions remain in force; use `--tiers` to change a selected model's narrower list. Invalid role
+   tiers or incompatible model restrictions are refused before writing.
    For worker additions, use the per-assignment model selection policy in `SKILL.md` and retain existing class priors unless model-specific evidence or the user supplies a change. `--default` is for an explicitly requested fixed preference; this worker policy uses no fixed preference. `--default` makes it the role's `router.defaults` model. Running the same command again changes nothing. A new model
    is appended; a role's first model (the Claude agent file's pin) is never changed here. A superseded model stays
    admitted (drop its default with `--default` on the successor). A model no longer offered:

@@ -36,7 +36,7 @@ if __name__ == "__main__":
         assert (r["source"], r["tier"], r["mode"], r["gate"]) == ("bayes", "xhigh", "shadow", "pass"), r  # n = 1
         assert r["backends"]["table"]["tier"] == "xhigh" and r["provenance"].startswith("table: calibration "), r
         r = tw.route(routes_with(cal), "claude", "leaf", fields, BRIEF, "low")
-        assert r["tier"] == "medium", r                                   # clamped into leaf tiers
+        assert r["tier"] == "high" and r["backends"]["table"]["tier"] == "high", r  # xhigh clamped into leaf tiers
         r = tw.route(routes_with(Path(tmp) / "missing.json"), "claude", "worker", fields, BRIEF, "high")
         assert (r["source"], r["tier"], r["confidence"]) == ("coordinator", "high", 0.0), r
         tw.BACKENDS["bad"] = lambda *a: {"tier": "low", "probs": {"low": 0.7}, "confidence": 0.9}

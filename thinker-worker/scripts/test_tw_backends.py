@@ -82,7 +82,7 @@ if __name__ == "__main__":
         assert out["body_chars_sent"] == 40 and "max" not in out["probs"], out
         tw.backend_jev({"url": s.url, "options": opts, "timeout": 2.0}, leaf, fields, BRIEF)  # default body_chars 1500
         q = s.seen[-1][1]["questions"]["tier"]
-        assert list(q["criteria"]) == ["low", "medium"] and "TAIL-NOT-SENT" in s.seen[-1][1]["state"], q
+        assert list(q["criteria"]) == ["low", "medium", "high"] and "TAIL-NOT-SENT" in s.seen[-1][1]["state"], q
     finally:
         s.close()
     s = Stub(answer({"high": 0.0, "xhigh": 0.0, "low": 0.0, "medium": 0.0}))   # no mass on the role's tiers

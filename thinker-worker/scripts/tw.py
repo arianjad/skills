@@ -239,13 +239,15 @@ def dump_routes(doc: dict) -> str:
 
 
 def model_set(path: Path, harness: str, role: str, model: str, tiers: str | None, priors: list[str],
-              default: bool) -> str:
+              default: bool, role_tiers: str | None = None) -> str:
     """Admit (or update, or re-admit an archived) model for one harness role; validated before it writes."""
     doc = load_routes(path)
     roles = doc["harnesses"].get(harness, {}).get("roles", {})
     if role not in roles:
         raise Conflict(f"no role {role!r} for harness {harness!r}")
     pol, rt = roles[role], doc["router"]
+    if role_tiers is not None:
+        pol["tiers"] = role_tiers.split(",")
     if model not in pol["models"]:
         pol["models"].append(model)  # appended: the role's first model (the agent file's pin) never changes here
     if tiers is not None:
@@ -2195,6 +2197,7 @@ def main() -> int:
             p.add_argument("--role")
             p.add_argument("--model", required=True)
             p.add_argument("--tiers", help="comma list in ascending order; the role's tiers when omitted on a new model")
+            p.add_argument("--role-tiers", help="explicit role ladder, comma list in ascending order; validated before writing")
             p.add_argument("--prior", action="append", default=[], help="CLASS=TIER (or *=TIER); repeatable")
             p.add_argument("--default", action="store_true", help="router.defaults[role] = this model")
             p.add_argument("--routes", type=Path, help="default: the skill's own source routes.json")
@@ -2266,7 +2269,8 @@ def main() -> int:
             if args.action == "set":
                 if not (args.harness and args.role):
                     raise Conflict("model set needs --harness and --role")
-                print(model_set(args.routes, args.harness, args.role, args.model, args.tiers, args.prior, args.default))
+                print(model_set(args.routes, args.harness, args.role, args.model, args.tiers, args.prior, args.default,
+                                args.role_tiers))
             else:
                 print(model_archive(args.routes, args.model))
         elif args.command == "models":

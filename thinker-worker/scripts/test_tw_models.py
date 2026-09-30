@@ -87,13 +87,13 @@ with override(OV):
         "priors": {}, "default": False, "via": "native"}
     assert lines[("worker", "opus")]["default"] is True                      # the agent file's pin
     assert lines[("independent-review", "gpt-6-astra")]["default"] is True   # router.defaults
-    assert lines[("leaf", "sonnet")]["tiers"] == ["low", "medium"]
+    assert lines[("leaf", "sonnet")]["tiers"] == tw.model_tiers(R["harnesses"]["claude"]["roles"]["leaf"], "sonnet")
 print("PASS S3 models listing")
 
 # S5: the shipped routes.json is in canonical form, so script edits and hand edits cannot drift apart
 text = (tw.source_root() / "routes.json").read_text(encoding="utf-8")
 assert text == tw.dump_routes(json.loads(text)), "routes.json is not canonical: run tw.dump_routes over it"
-assert '"tiers": ["low", "medium"]' in text                                  # scalar lists stay on one line
+assert '"sonnet": ["high", "xhigh"]' in text                                 # scalar lists stay on one line
 print("PASS S5 canonical routes.json")
 
 
@@ -127,6 +127,44 @@ with tempfile.TemporaryDirectory() as tmp:
         code, out, _ = model_cmd(p, *args)
         assert code == 2 and p.read_text(encoding="utf-8") == before, (bad, out)                # nothing written
 print("PASS S4 model set: add, idempotent, invalid writes nothing")
+
+# S6: role ladder changes are explicit, validated before write, and exercised through the dispatch guard.
+with tempfile.TemporaryDirectory() as tmp:
+    p = Path(tmp) / "routes.json"
+    base = json.loads(json.dumps(R))
+    for h in ("claude", "codex"):
+        base["harnesses"][h]["roles"]["leaf"]["tiers"] = ["low", "medium"]
+    p.write_text(tw.dump_routes(base), encoding="utf-8")
+    brief = "TW-Role: leaf\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"
+    claude = {"tool_name": "Agent", "tool_input": {"subagent_type": "tw-leaf-high", "prompt": brief}}
+    codex = {"tool_name": "spawn_agent", "tool_input": {"model": "gpt-6-luna", "reasoning_effort": "high",
+                                                        "fork_turns": "none", "message": brief}}
+    assert not tw.decide("claude", claude, base).admitted
+    assert not tw.decide("codex", codex, base).admitted
+    for h, model in (("claude", "sonnet"), ("codex", "gpt-6-luna")):
+        args = ("set", "--harness", h, "--role", "leaf", "--model", model,
+                "--role-tiers", "low,medium,high", "--tiers", "low,medium,high")
+        code, out, doc = model_cmd(p, *args)
+        assert code == 0, out
+        before = p.read_bytes()
+        code, out, _ = model_cmd(p, *args)
+        assert code == 0 and p.read_bytes() == before and "unchanged" in out, out
+    for model in ("sonnet", "claude-sonnet-5-5"):
+        claude["tool_input"]["model"] = model
+        assert tw.decide("claude", claude, doc).admitted, model
+    assert tw.model_tiers(doc["harnesses"]["claude"]["roles"]["leaf"], "gpt-6-luna") == ["low", "medium", "high"]
+    claude["tool_input"]["model"] = "gpt-6-luna"
+    assert tw.decide("claude", {**claude, "tool_name": "codex"}, doc).admitted
+    assert not tw.decide("claude", claude, doc).admitted  # Codex models still require the pipeline.
+    assert tw.decide("codex", codex, doc).admitted
+    for h in ("claude", "codex"):
+        assert doc["harnesses"][h]["roles"]["worker"] == base["harnesses"][h]["roles"]["worker"]
+    assert tw.model_tiers(doc["harnesses"]["claude"]["roles"]["worker"], "sonnet") == ["high", "xhigh"]
+    for bad in ("high,medium", "low,max", "low,low", ""):
+        code, out, _ = model_cmd(p, "set", "--harness", "claude", "--role", "leaf", "--model", "sonnet",
+                                 "--role-tiers", bad)
+        assert code == 2 and p.read_bytes() == before, (bad, out)
+print("PASS S6 explicit role tiers: high leaves admitted, workers unchanged, idempotent, invalid writes nothing")
 
 # S4: archive removes a model from dispatch and keeps a dated record; set restores it
 import re
