@@ -71,8 +71,8 @@
     },
     "options": {
       "low": "Direct execution of a specified method; limited alternative search.",
-      "medium": "Work through dependent steps and perform ordinary verification.",
-      "high": "Compare plausible approaches, investigate failures, and check assumptions.",
+      "medium": "Work through dependent steps and perform ordinary verification, when the brief already fixes what to do.",
+      "high": "Compare plausible approaches, investigate failures, and check assumptions, or decide what the task needs when that is part of the work.",
       "xhigh": "Sustain extensive alternative search and adversarial checking."
     },
     "budget_s": 2.0,
