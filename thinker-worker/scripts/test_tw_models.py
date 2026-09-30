@@ -87,7 +87,7 @@ with override(OV):
         "priors": {}, "default": False, "via": "native"}
     assert lines[("worker", "opus")]["default"] is True                      # the agent file's pin
     assert lines[("independent-review", "gpt-6-astra")]["default"] is True   # router.defaults
-    assert lines[("leaf", "sonnet")]["tiers"] == tw.model_tiers(R["harnesses"]["claude"]["roles"]["leaf"], "sonnet")
+    assert lines[("leaf", "sonnet")]["tiers"] == ["low", "medium", "high"]
 print("PASS S3 models listing")
 
 # S5: the shipped routes.json is in canonical form, so script edits and hand edits cannot drift apart

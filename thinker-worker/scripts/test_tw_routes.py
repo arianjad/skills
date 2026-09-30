@@ -46,6 +46,9 @@ CASES = [
     ("review medium allowed", claude(REV, "tw-independent-review-medium").admitted, True),
     ("review low below floor", claude(REV, "tw-independent-review-low").admitted, False),
     ("native review on astra refused (tw.py codex)", claude(REV, "tw-independent-review-high", "gpt-6-astra").admitted, False),
+    ("native review on sol 6.1 refused (tw.py codex)", claude(REV, "tw-independent-review-high", "gpt-6.1-sol").admitted, False),
+    ("sol 6.1 review pipeline", tw.decide("claude", {"tool_name": "codex", "tool_input": {
+        "subagent_type": "tw-independent-review-high", "prompt": REV, "model": "gpt-6.1-sol"}}, R).admitted, True),
     ("native ideation on astra refused", claude(IDEA, "tw-ideation-medium", "gpt-6-astra").admitted, False),
     ("worker on astra refused", claude(W, "tw-worker-high", "gpt-6-astra").admitted, False),
     ("review default is astra", R["router"]["defaults"]["independent-review"], "gpt-6-astra"),
@@ -63,6 +66,7 @@ CASES = [
     ("codex worker effort required", codex(W, "gpt-6-sol").admitted, False),
     ("codex review effort required", codex(REV, "gpt-6-astra").admitted, False),
     ("codex review low below floor", codex(REV, "gpt-6-astra", "low").admitted, False),
+    ("sol 6.1 review low refused", codex(REV, "gpt-6.1-sol", "low").admitted, False),
     ("codex ideation medium", codex(IDEA, "gpt-6-astra", "medium").admitted, True),
     ("codex ideation on sol", codex(IDEA, "gpt-6-sol", "high").admitted, False),
     ("codex leaf luna low", codex(LEAF, "gpt-6-luna", "low").admitted, True),
@@ -70,8 +74,12 @@ CASES = [
     ("codex leaf luna xhigh refused", codex(LEAF, "gpt-6-luna", "xhigh").admitted, False),
     ("v2 astra needs effort", codex("<cipher>", "gpt-6-astra", v2=True).admitted, False),
     ("v2 astra high, role null", codex("<cipher>", "gpt-6-astra", "high", v2=True)[:3:2], (True, None)),
+    ("v2 sol 6.1 shared-model role inferred as worker", codex("<cipher>", "gpt-6.1-sol", "medium", v2=True).role, "worker"),
     ("v2 unknown model", codex("<cipher>", "gpt-9", "high", v2=True).admitted, False),
 ]
+
+CASES += [(f"sol 6.1 review {tier}", codex(REV, "gpt-6.1-sol", tier).admitted, True)
+          for tier in ("medium", "high", "xhigh")]
 
 if __name__ == "__main__":
     bad = [(name, got, want) for name, got, want in CASES if got != want]

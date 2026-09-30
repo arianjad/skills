@@ -22,7 +22,7 @@
           "tools": null
         },
         "independent-review": {
-          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol"],
+          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol"],
           "tiers": ["medium", "high", "xhigh"],
           "tools": null
         },
@@ -44,7 +44,7 @@
           "tiers": ["low", "medium", "high"]
         },
         "independent-review": {
-          "models": ["gpt-6-astra"],
+          "models": ["gpt-6-astra", "gpt-6.1-sol"],
           "tiers": ["medium", "high", "xhigh"]
         },
         "ideation": {
