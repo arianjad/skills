@@ -27,7 +27,7 @@ from score_briefs import tier_of   # noqa: E402
 
 HOME = Path.home()
 PARENTS = str(HOME / ".claude" / "projects" / "*" / "*.jsonl")
-OUT = Path(r"C:\Users\Arian\Code\skills\scratchpad\labels")
+OUT = Path(__file__).resolve().parents[2] / "scratchpad" / "labels"   # <repo>/scratchpad/labels
 
 CHECK_CMD = re.compile(r"pytest|unittest|\btest_\w*\.py|\w+_test\.py|selftest|self-test|runtests|npm (?:run )?test"
                        r"|cargo test|Pkg\.test|\bverify\w*\.(?:py|sh)|\bcheck\w*\.(?:py|sh)|\bgates?\w*\.py", re.I)

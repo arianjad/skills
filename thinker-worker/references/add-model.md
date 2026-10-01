@@ -1,6 +1,6 @@
 # Adding, updating, or archiving a model
 
-`routes.json` in the skill's source repository (`~/Code/skills/thinker-worker`) is the one place a model is admitted.
+`routes.json` in the skill's source repository (`~/Code/skills_public/thinker-worker`) is the one place a model is admitted.
 Edit it only with `tw.py model`, which validates the result before writing and keeps the file in canonical form (a
 test fails on a hand edit that is not canonical). Scope: the Claude/Codex dispatch router in `tw.py`. The decision
 backends (`router.backends`) never see the model, and no other router is touched.
