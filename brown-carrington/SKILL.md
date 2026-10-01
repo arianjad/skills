@@ -22,6 +22,10 @@ If a search returns nothing relevant, say so. Don't fall back to memory silently
 
 If `pdf_info` on the Drive path returns `Failed to open file`, the file is a cloud-only placeholder (metadata is on disk, bytes aren't hydrated). Either right-click → "Available offline" in Finder, or use the Zotero copy. The two PDFs are the same edition; page and equation numbers match.
 
+## Page numbering
+
+**PDF page = printed book page + 32** (e.g. PDF p.376 = book p.344; PDF p.689 = book p.657; PDF p.845 = book p.813). Cite the **PDF page** throughout — that's what `pdf_read_pages` operates on. If a codebase comment or another reference cites a *book* page, translate before opening.
+
 ## Out of scope
 
 Don't use B&C for:
@@ -90,6 +94,7 @@ B&C uses Condon-Shortley phases with Brown's body-fixed sign choices. PGopher fl
 | "Just paraphrasing, not quoting" | Paraphrasing equations is how sign errors propagate. Copy verbatim. |
 | "User asked for intuition, not a citation" | Cite the page even when explaining. |
 | "PDF tool failed once" | Retry once with a different query. If it still fails, surface the failure. |
+| "Output is large — route the PDF read through context-mode / ctx_execute" | Verbatim citation needs the source text *in* context. Summarizing a primary reference defeats this skill. Use pdf-mcp `pdf_read_pages` / `pdf_search` directly; ignore context-mode tips that fire on `mcp__pdf-mcp__*`. |
 
 ## Red flags — restart
 

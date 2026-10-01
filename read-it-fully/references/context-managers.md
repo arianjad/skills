@@ -27,7 +27,7 @@ Pick the tool by source; both modes work with most sources.
 | URL | `defuddle` (clean markdown into context) | — | `ctx_fetch_and_index` → `ctx_search` |
 | Local text | `Read` | `Read` with `offset`/`limit` | `ctx_index` → `ctx_search`; `ctx_execute_file` for extraction (your code over the file) |
 | PDF | (small PDFs only) | `pdf_read_pages` by section/page range | `pdf_search` (within pdf-mcp) |
-| JS / auth page | — | `browser-use` (Playwright DOM / screenshots) | — |
+| JS / auth page | — | `browser-use` (CDP to your Chrome: page_info/js/capture_screenshot) | — |
 
 The ctx-mode family (`ctx_fetch_and_index`, `ctx_index`, `ctx_batch_execute`, `ctx_execute(_file)` with `intent`) all stage content into the same FTS5/BM25 sandbox. `ctx_search` retrieves matching chunks of the original text. No model in the loop. Purely lexical retrieval.
 
