@@ -58,6 +58,14 @@ A session-scoped PreToolUse guard (`scripts/tw.py hook`) checks every fresh agen
 - `tw.py machines` (read-only) lists every ledger, marks this machine with `*`, and flags each installed machine whose `tw.py` SHA differs from the most recently updated one, printing `tw.py upgrade` (the machine's manifest keeps its own flags). `upgrade` refreshes the ledger like `install`.
 - `uninstall` removes a shared hook entry only if no other machine's ledger with status `installed` claims the same entry; otherwise it keeps the entry and names the machine holding it.
 
+## Debugging
+
+### systematic-debugging
+
+A standalone adaptation of Superpowers' debugging skill: investigate the root cause, compare working patterns, test one hypothesis at a time, then verify a focused fix. The package includes three supporting technique documents and optional Codex UI metadata. It requires no Superpowers plugin, hooks, executable helpers or other skills.
+
+The source is pinned to `obra/superpowers` commit `8ca22dba9a94f28898bbce59f2537ff4d87c747d`. Its MIT license and notice are retained inside the package. See [attribution](systematic-debugging/ATTRIBUTION.md) for the adaptation and [local-use instructions](systematic-debugging/INSTALL.md) for Claude Code, Codex or direct-file use by a local agent. Copy the whole `systematic-debugging/` directory to the receiving harness's skill directory.
+
 ## Adding more
 
 New skills land here in their own subdirectory as I write them. Each follows the same structure: a tool-agnostic `SKILL.md`, optional `references/` for runtime-specific implementation notes.
