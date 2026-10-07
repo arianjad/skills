@@ -27,6 +27,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import NamedTuple
+import uuid
 
 
 OWNER = "thinker-worker-v1"
@@ -34,7 +35,8 @@ HARNESSES = ("codex", "claude")
 SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "references/add-model.md",
                "scripts/tw.py")
 TIERS = ("low", "medium", "high", "xhigh")
-AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh)")
+AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh)(?:-opus55)?")
+OPUS_REVIEW_MODEL = "claude-opus-5-5"
 VALUE_MAX = 1000  # per header value at the gate; receipts truncate at 256
 ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")
 # Routing header: labeled input for the routing classifier. Classes are effortmining's vocabulary.
@@ -388,7 +390,7 @@ def activation(home: Path, harness: str, session: str) -> dict | None:
     return obj
 
 
-def activate(home: Path, harness: str, session: str, store_bodies: bool = False) -> None:
+def activate(home: Path, harness: str, session: str, store_bodies: bool = False) -> str:
     path = record_path(home, harness, session)
     old = path.read_bytes() if path.exists() else None
     if old is not None:
@@ -397,8 +399,8 @@ def activate(home: Path, harness: str, session: str, store_bodies: bool = False)
     obj = {"schema": 1, "harness": harness, "session_id": session,
            "store_bodies": store_bodies, "activated_at": now()}
     atomic_write(path, canonical_json(obj), old)
-    print(f"Activation requested for {harness} session {session}; hook trust/loading, interception, and effective child model remain unverified.")
-    print(priors)
+    return (f"Activation requested for {harness} session {session}; hook trust/loading, interception, and effective "
+            f"child model remain unverified.\n{priors}")
 
 
 def deactivate(home: Path, harness: str, session: str) -> None:
@@ -523,6 +525,11 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
         if not match or match.group(1) != role:
             return Decision(False, f"subagent_type must be tw-{role}-<tier>", role, model, fields=fields)
         tier = match.group(2)
+        if st.endswith("-opus55"):
+            if role != "independent-review" or model is not None:
+                return Decision(False, "pinned Opus review agent requires independent-review and no per-call model override",
+                                role, model, fields=fields)
+            model = OPUS_REVIEW_MODEL  # immutable generated agent pin; alias 'opus' remains unadmitted
         if tier not in pol["tiers"]:
             return Decision(False, f"tier {tier} is outside {role}'s tiers {pol['tiers']}", role, model, fields=fields)
         if model is not None and model not in pol["models"]:
@@ -734,18 +741,17 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
     Only a dispatch that ran is labeled: its dispatch row says admit, its route row (if any) is not an advise (a
     denial), and a `tw.py codex` dispatch has a cost row (codex ran). Otherwise Conflict, before anything is written."""
     rows = read_rows(receipts_path(home, harness, session))
-    mine = [r for r in rows if r.get("tool_use_id") == tool_use_id]
-    disp = [r for r in mine if r.get("kind") == "dispatch"]
-    route_rows = [r for r in mine if r.get("kind") == "route"]
-    if not disp:
+    disp, state = dispatch_state(rows, tool_use_id)
+    if state == "none":
         raise Conflict(f"no dispatch receipt for tool_use_id {tool_use_id} in {harness} session {session}")
-    if disp[-1].get("decision") != "admit":
-        raise Conflict(f"{tool_use_id} was denied at the gate ({disp[-1].get('reason')}); it never ran")
-    if route_rows and route_rows[-1].get("action") == "advise":
+    if state == "deny":
+        raise Conflict(f"{tool_use_id} was denied at the gate ({disp.get('reason')}); it never ran")
+    if state == "advise":
         raise Conflict(f"{tool_use_id} was advised (denied) by the router; it never ran")
-    if disp[-1].get("tool_name") == "codex" and not any(r.get("kind") == "cost" for r in mine):
+    if disp.get("tool_name") == "codex" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id
+                                                    for r in rows):
         raise Conflict(f"{tool_use_id}: no cost row, so codex never ran for it")
-    check = disp[-1].get("check") if run else None
+    check = disp.get("check") if run else None
     if accepted is None and not check:
         raise Conflict("nothing to record: pass --accepted yes|no, or dispatch with a TW-Check line (without "
                        "--no-check)")
@@ -755,18 +761,12 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
         append_receipt(home, harness, session, {"kind": "outcome", "at": now(), "harness": harness,
                                                 "session_id": session, "tool_use_id": tool_use_id,
                                                 "accepted": accepted, "cause": cause})
-    if harness == "claude" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id for r in rows):
-        try:  # the label above stands even if the child's files are unreadable
-            row = cost_row(home, harness, session, tool_use_id)
-        except Exception as exc:
-            row = {"kind": "cost-error", "at": now(), "harness": harness, "session_id": session,
-                   "tool_use_id": tool_use_id, "error": f"{type(exc).__name__}: {exc}"[:200]}
-        if row is not None:
-            append_receipt(home, harness, session, row)
+    if harness == "claude":  # the label above stands even if the child's files are unreadable
+        record_cost(home, harness, session, tool_use_id, rows)
     if accepted is not None:
         print(f"Recorded {'accepted' if accepted else 'rejected'} for {tool_use_id}.")
     if check:
-        res = run_check(check, disp[-1].get("cwd"), timeout)
+        res = run_check(check, disp.get("cwd"), timeout)
         append_receipt(home, harness, session, {"kind": "check", "at": now(), "harness": harness,
                                                 "session_id": session, "tool_use_id": tool_use_id, **res})
         why = f" (exit {res['exit_code']})" if res["label"] != "unknown" else f" ({res['unknown_reason']})"
@@ -840,7 +840,7 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
         raise Conflict("codex CLI not found on PATH")
     out = state_root(home) / "codex" / f"{tool_use_id}.last.md"
     out.parent.mkdir(parents=True, exist_ok=True)
-    timeout = float(os.environ.get("TW_CODEX_TIMEOUT", "3600"))
+    timeout = env_timeout("TW_CODEX_TIMEOUT")
     # on timeout the whole tree is killed: codex.CMD -> node -> codex.exe -> sandbox helpers
     ran = run_bounded(codex_cmd(exe, model, tier, cd, out), None, (AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
                       timeout)
@@ -865,6 +865,126 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     if code != 0:
         print(stderr[-2000:], file=sys.stderr)
     return 1 if timed_out else code
+
+
+def env_timeout(name: str) -> float:
+    return float(os.environ.get(name, "3600"))
+
+
+def dispatch_state(rows: list[dict], tool_use_id: str | None = None) -> tuple[dict | None, str]:
+    """The dispatch row for tool_use_id (default: the last one) and whether it ran: none, deny, advise or admit.
+    An advised dispatch was denied by the router after the gate admitted it, so it never ran either."""
+    disp = [r for r in rows if r.get("kind") == "dispatch" and tool_use_id in (None, r.get("tool_use_id"))]
+    if not disp:
+        return None, "none"
+    row = disp[-1]
+    if row.get("decision") != "admit":
+        return row, "deny"
+    route_rows = [r for r in rows if r.get("kind") == "route" and r.get("tool_use_id") == row.get("tool_use_id")]
+    return row, "advise" if route_rows and route_rows[-1].get("action") == "advise" else "admit"
+
+
+def record_cost(home: Path, harness: str, session: str, tool_use_id: str, rows: list[dict]) -> dict | None:
+    """Append the dispatch's Claude cost row once (a cost-error row if the child's files are unreadable)."""
+    if any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id for r in rows):
+        return None
+    try:
+        row = cost_row(home, harness, session, tool_use_id)
+    except Exception as exc:
+        row = {"kind": "cost-error", "at": now(), "harness": harness, "session_id": session,
+               "tool_use_id": tool_use_id, "error": f"{type(exc).__name__}: {exc}"[:200]}
+    if row is not None:
+        append_receipt(home, harness, session, row)
+    return row
+
+
+def claude_run(home: Path, role: str, tier: str, brief_file: Path, cd: Path, model: str | None = None,
+               relay_model: str = "sonnet", permission_mode: str = "bypassPermissions") -> tuple[int, dict]:
+    """Any shell (Codex) -> a guarded native Claude dispatch. A fresh session is activated, then a `claude -p` relay
+    makes exactly one native Agent call; the PreToolUse hook gates it and writes the receipts as for any dispatch.
+    Returns (exit code, result): 0 ran, 1 failed run, 2 denied or advised. The result carries executed evidence from
+    the child's transcript, never the relay's or the child's self-report."""
+    brief = Path(brief_file).expanduser().resolve().read_text(encoding="utf-8")
+    agent = agent_name(role, tier)
+    routes = load_routes()
+    pinned_opus = role == "independent-review" and model == OPUS_REVIEW_MODEL
+    native_model = None if pinned_opus else model
+    if pinned_opus:
+        agent += "-opus55"
+    pre = decide("claude", {"tool_name": "Agent", "tool_input": {"subagent_type": agent, "model": native_model,
+                                                                "prompt": brief}}, routes)
+    if not pre.admitted:  # fail before spending a relay session; the hook re-checks the real call
+        raise Conflict(pre.reason)
+    if pinned_opus:
+        expected = agent_files(routes).get(f"{agent}.md")
+        definition = home / ".claude" / "agents" / f"{agent}.md"
+        if expected is None or not definition.is_file() or definition.read_bytes() != expected:
+            raise Conflict("pinned Opus review definition missing or changed; use normal upgrade/check")
+        for parent in (Path(cd).resolve(), *Path(cd).resolve().parents):
+            if parent == home.resolve() or parent == Path.home().resolve():
+                break
+            if (parent / ".claude" / "agents" / f"{agent}.md").exists():
+                raise Conflict("project-local agent shadows pinned Opus review definition")
+    exe = shutil.which("claude")
+    if not exe:
+        raise Conflict("claude CLI not found on PATH")
+    session = str(uuid.uuid4())
+    activate(home, "claude", session)
+    relay = "\n".join([
+        "Relay only. Make exactly one foreground Agent tool call with these parameters and nothing else:",
+        f"subagent_type: {agent}", *([f"model: {native_model}"] if native_model else []),
+        "prompt: the text between the BRIEF-BEGIN and BRIEF-END lines below, verbatim.",
+        "If the call is denied, print the denial verbatim and stop: no retry, no edits, no doing the work yourself.",
+        "Otherwise print the subagent's final message verbatim and nothing else.",
+        "BRIEF-BEGIN", brief, "BRIEF-END"])
+    ran = run_bounded([exe, "-p", "--session-id", session, "--model", relay_model, "--effort", "low",
+                       "--permission-mode", permission_mode], Path(cd).expanduser().resolve(), relay.encode("utf-8"),
+                      env_timeout("TW_CLAUDE_TIMEOUT"))
+    out = state_root(home) / "claude" / f"{session}.last.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(ran["out"], encoding="utf-8")
+    rows = read_rows(receipts_path(home, "claude", session))
+    disp, state = dispatch_state(rows)
+    tool_use_id = disp.get("tool_use_id") if disp else None
+    cost = record_cost(home, "claude", session, tool_use_id, rows) if state == "admit" else None
+    cost = cost if cost and cost.get("kind") == "cost" else {}
+    result = {"session_id": session, "tool_use_id": tool_use_id, "decision": None if state == "none" else state,
+              "reason": disp.get("reason") if disp else None, "agent_type": cost.get("agent_type"),
+              "effective_model": cost.get("model"), "effective_effort": cost.get("effort"), "exit_code": ran["code"],
+              "timed_out": ran["timed_out"], "kill_failed": ran["kill_failed"], "last_message": str(out)}
+    if state in ("deny", "advise"):
+        return 2, result
+    if pinned_opus and (result["effective_model"] != OPUS_REVIEW_MODEL or result["effective_effort"] != tier):
+        result["identity_error"] = "pinned Opus review model/effort not verified; result is not accepted"
+        return 1, result
+    return (0 if result["effective_model"] and ran["code"] == 0 else 1), result
+
+
+SPOOL_KEYS = ("role", "tier", "brief_file", "cd", "model", "relay_model", "permission_mode")  # claude_run's own
+
+
+def spool_once(home: Path) -> None:
+    """For sandboxed Codex threads (no network): each `spool/inbox/<name>.json` job, keyed by claude_run's own
+    parameters, becomes one claude_run outside the sandbox; `spool/done/<name>.result.json` gets its exit code and
+    result. A job is claimed by an atomic rename into done/ before it runs, so it runs once. Writers drop
+    `<name>.json.tmp`, then rename. ponytail: sequential, one job at a time; a worker pool if jobs ever queue up."""
+    inbox, done = state_root(home) / "spool" / "inbox", state_root(home) / "spool" / "done"
+    for job in sorted(inbox.glob("*.json")):  # a missing inbox globs nothing
+        done.mkdir(parents=True, exist_ok=True)
+        claimed = done / job.name
+        try:
+            job.replace(claimed)
+        except OSError:
+            continue  # another watcher claimed it
+        res = {"job": job.name, "exit_code": 2, "result": None, "error": None}
+        try:
+            spec = read_json(claimed, None)
+            if not isinstance(spec, dict) or set(spec) - set(SPOOL_KEYS):
+                raise Conflict(f"job must be an object with keys from {list(SPOOL_KEYS)}")
+            res["exit_code"], res["result"] = claude_run(home, **spec)
+        except (Conflict, OSError, TypeError, ValueError) as exc:
+            res["error"] = f"{type(exc).__name__}: {exc}"[:500]
+        atomic_write(done / f"{claimed.stem}.result.json", canonical_json(res), None)
 
 
 COST_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
@@ -961,12 +1081,16 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
     ran = [m for m in ((o.get("message") or {}).get("model") for o in rows if o.get("type") == "assistant")
            if m and m != "<synthetic>"]  # an error stub names no model
     att = [o.get("attachment") or {} for o in rows if o.get("type") == "attachment"]
+    eff = next((o["effort"] for o in reversed(rows) if o.get("type") == "assistant" and o.get("effort")), None)
     return {"kind": "cost", "at": now(), "harness": harness, "session_id": session, "tool_use_id": tool_use_id,
             # model: executed evidence only; meta.json's model is the request (an alias), never promoted to it
             "agent_type": meta.get("agentType"), "model": ran[-1] if ran else None, "requested_model": meta.get("model"),
             # offered at any point in the run; a later available:false removal does not clear it
             "advisor_available": any(a.get("type") == "advisor_tool" and a.get("available") is True for a in att),
             "api_calls": len(usage),
+            # effort: the transcript's own per-turn field (executed); absent when the transcript lacks it, so
+            # promote's ran_as falls back to the agent_type tier
+            **({"effort": eff} if eff else {}),
             **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS},
             "advisor_calls": len(advisor_ids), "advisor_model": next((it.get("model") for it in adv), None),
             "advisor_input_tokens": sum(it.get("input_tokens", 0) for it in adv),
@@ -1453,7 +1577,8 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
     if not eligible or r["mode"] == "shadow" or pinned or flagged(brief, "TW-Override"):
         return None, None, None, eligible, target
     guard = None
-    pick = ("--tier " + target if via else agent_name(d.role, target) if harness == "claude"
+    suffix = "-opus55" if harness == "claude" and str(inp.get("subagent_type", "")).endswith("-opus55") else ""
+    pick = ("--tier " + target if via else agent_name(d.role, target) + suffix if harness == "claude"
             else "reasoning_effort=" + target)
     if r["mode"] == "active" and harness == "claude":
         if not via:  # the codex path owns its subprocess: no competing writer, no race to lose
@@ -1465,7 +1590,7 @@ def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: 
                     f"(router p={r['confidence']:.2f}); judge the result at that tier")
             out = {"hookEventName": "PreToolUse", "permissionDecision": "allow"}
             if not via:  # the whole tool_input, one key changed
-                out["updatedInput"] = {**inp, "subagent_type": agent_name(d.role, target)}
+                out["updatedInput"] = {**inp, "subagent_type": agent_name(d.role, target) + suffix}
             out["additionalContext"] = note
             return {"hookSpecificOutput": out}, "rewrite", None, eligible, target
     why = "exploration" if r["source"] == "explore" else f"p={r['confidence']:.2f}"
@@ -1703,6 +1828,11 @@ def agent_files(routes: dict) -> dict[str, bytes]:
             if pol.get("tools"):
                 head.append("tools: " + ", ".join(pol["tools"]))
             out[f"{name}.md"] = ("\n".join(head + ["---", "", body + NATIVE_WRITE_FALLBACK, ""])).encode("utf-8")
+            if role == "independent-review" and OPUS_REVIEW_MODEL in pol["models"] and tier in model_tiers(pol, OPUS_REVIEW_MODEL):
+                pinned_name = name + "-opus55"
+                pinned_head = [x.replace(f"name: {name}", f"name: {pinned_name}")
+                               .replace(f"model: {pol['models'][0]}", f"model: {OPUS_REVIEW_MODEL}") for x in head]
+                out[f"{pinned_name}.md"] = ("\n".join(pinned_head + ["---", "", body + NATIVE_WRITE_FALLBACK, ""])).encode("utf-8")
     return out
 
 
@@ -2175,7 +2305,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "upgrade", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "route", "promote", "codex", "models", "model"):
+                 "route", "promote", "codex", "claude", "spool", "models", "model"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
         if name == "codex":  # Claude harness only; Codex dispatches its models natively
@@ -2185,6 +2315,22 @@ def main() -> int:
             p.add_argument("--model", required=True)
             p.add_argument("--brief-file", type=Path, required=True)
             p.add_argument("--cd", type=Path, default=Path.cwd(), help="the child's working root (default: cwd)")
+        if name == "claude":  # any shell (Codex) -> guarded native Claude dispatch via a `claude -p` relay
+            p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
+            p.add_argument("--tier", choices=TIERS, required=True)
+            p.add_argument("--model", help="per-call native alias (default: the agent file's pin)")
+            p.add_argument("--brief-file", type=Path, required=True)
+            p.add_argument("--cd", type=Path, default=Path.cwd(), help="the relay's and child's working root")
+            p.add_argument("--relay-model", default="sonnet", help="the relay session's model (it only relays)")
+            # -p cannot answer a permission prompt, so anything not pre-approved is refused (reads outside --cd, most
+            # Bash): default bypassPermissions (Arian's own defaultMode); auto lets a classifier refuse risky actions
+            p.add_argument("--permission-mode", default="bypassPermissions",
+                           help="claude -p --permission-mode for the relay and its child (default bypassPermissions; "
+                                "auto, acceptEdits, ...)")
+        if name == "spool":  # run outside the sandbox: executes jobs sandboxed Codex threads drop in spool/inbox
+            mode = p.add_mutually_exclusive_group(required=True)
+            mode.add_argument("--once", action="store_true", help="process the inbox once and exit")
+            mode.add_argument("--watch", action="store_true", help="process the inbox every 2 s until killed")
         if name in {"activate", "deactivate", "status", "hook", "outcome", "route", "promote", "models"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
         if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
@@ -2245,7 +2391,7 @@ def main() -> int:
         elif args.command == "check":
             return 1 if check(home)["problems"] else 0
         elif args.command == "activate":
-            activate(home, args.harness, session_value(args.session), args.store_bodies)
+            print(activate(home, args.harness, session_value(args.session), args.store_bodies))
         elif args.command == "deactivate":
             deactivate(home, args.harness, session_value(args.session))
         elif args.command == "status":
@@ -2264,6 +2410,19 @@ def main() -> int:
         elif args.command == "codex":
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
                              args.cd.expanduser().resolve())
+        elif args.command == "claude":
+            code, result = claude_run(home, args.role, args.tier, args.brief_file, args.cd, args.model,
+                                      args.relay_model, args.permission_mode)
+            print(json.dumps(result))
+            if code == 2:  # the relay printed the denial verbatim
+                print(Path(result["last_message"]).read_text(encoding="utf-8")[-2000:], file=sys.stderr)
+            return code
+        elif args.command == "spool":
+            while True:
+                spool_once(home)
+                if args.once:
+                    break
+                time.sleep(2)
         elif args.command == "model":
             args.routes = args.routes or source_root() / "routes.json"
             if args.action == "set":

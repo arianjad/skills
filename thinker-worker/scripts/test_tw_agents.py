@@ -14,13 +14,18 @@ if __name__ == "__main__":
     routes = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
     want = {tw.agent_name(r, t) for r, p in routes["harnesses"]["claude"]["roles"].items() for t in p["tiers"]}
     assert len(want) == 13 and "tw-leaf-high" in want, want
+    pinned = {f'tw-independent-review-{t}-opus55' for t in ('medium','high','xhigh')}
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
         r = subprocess.run([sys.executable, TW, "install", "--home", tmp, "--python", sys.executable,
                             "--harness", "claude"], capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
         files = {p.stem for p in (home / ".claude" / "agents").glob("*.md")}
-        assert files == want, files ^ want
+        assert files == want | pinned, files ^ (want | pinned)
+        for name in pinned:
+            text = (home / '.claude' / 'agents' / f'{name}.md').read_text()
+            assert '\nmodel: claude-opus-5-5\n' in text
+            assert f'\neffort: {tw.AGENT_NAME.fullmatch(name).group(2)}\n' in text
         for name in want:
             text = (home / ".claude" / "agents" / f"{name}.md").read_text(encoding="utf-8")
             role, tier = tw.AGENT_NAME.fullmatch(name).groups()
@@ -33,4 +38,4 @@ if __name__ == "__main__":
                 "brief lists claims to test, answer them after your findings, in their own section.") in rev, rev
         assert subprocess.run([sys.executable, TW, "uninstall", "--home", tmp], capture_output=True).returncode == 0
         assert not list((home / ".claude" / "agents").glob("tw-*.md"))
-    print("PASS 13 generated tier agents; effort/model match routes.json; uninstall removes them")
+    print("PASS 13 unchanged tier agents plus 3 exact Opus 5.5 review pins; uninstall removes them")
