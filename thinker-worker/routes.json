@@ -17,7 +17,7 @@
           }
         },
         "leaf": {
-          "models": ["sonnet", "claude-sonnet-5", "claude-sonnet-5-5", "gpt-6-luna"],
+          "models": ["sonnet", "claude-sonnet-5", "claude-sonnet-5-5", "gpt-6-luna", "haiku", "claude-haiku-5-5"],
           "tiers": ["low", "medium", "high"],
           "tools": null
         },
@@ -105,6 +105,44 @@
           "power": 0.25,
           "floor": 0.05
         }
+      }
+    },
+    "model_priors": {
+      "haiku": {
+        "*": "medium",
+        "T1-mechanical": "low",
+        "T2-simple-transform": "low",
+        "T3-moderate-reasoning": "high",
+        "T4-hard-reasoning": "high",
+        "R-research": "medium",
+        "C-coding": "high"
+      },
+      "claude-haiku-5-5": {
+        "*": "medium",
+        "T1-mechanical": "low",
+        "T2-simple-transform": "low",
+        "T3-moderate-reasoning": "high",
+        "T4-hard-reasoning": "high",
+        "R-research": "medium",
+        "C-coding": "high"
+      },
+      "sonnet": {
+        "*": "low",
+        "T1-mechanical": "low",
+        "T2-simple-transform": "low",
+        "T3-moderate-reasoning": "medium",
+        "T4-hard-reasoning": "high",
+        "R-research": "medium",
+        "C-coding": "medium"
+      },
+      "claude-sonnet-5-5": {
+        "*": "low",
+        "T1-mechanical": "low",
+        "T2-simple-transform": "low",
+        "T3-moderate-reasoning": "medium",
+        "T4-hard-reasoning": "high",
+        "R-research": "medium",
+        "C-coding": "medium"
       }
     }
   }
