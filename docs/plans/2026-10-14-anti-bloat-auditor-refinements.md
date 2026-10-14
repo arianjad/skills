@@ -1,10 +1,12 @@
-# Anti-bloat auditor: two focused refinements
+# Anti-bloat auditor: refinements
+
+**Status:** Implemented 2026-10-14 in `48d91bb`. The Codex install was already a junction to the repo source (created 14:31 the same day, outside the implementing session), so step 5.4 needed no change.
 
 **Goal:** Make useful abstraction exceptions a user decision, and replace hash-based validation with checks of the actual conditions that matter, plus three small structure and wording fixes (section 3) and one consolidated decision table for user questions (section 4).
 
 **Design:** User decisions in chat, 2026-10-14. The proposed replacement-cost criterion was rejected and will not be added.
 
-**Scope:** This is a plan only. Leave the skill unchanged until implementation is requested. Preserve its existing audit categories, read-only discovery boundary, scientific correctness requirements, and unrelated wording.
+**Scope:** Preserve its existing audit categories, read-only discovery boundary, scientific correctness requirements, and unrelated wording.
 
 ## File map
 
