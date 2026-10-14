@@ -36,7 +36,7 @@ Make the replacement specific to the requirement rather than substituting anothe
 
 Example to include briefly: a plot-color change should not fail a restart-compatibility check; a changed required state-array shape should report the actual shape mismatch. Do not prescribe a universal policy for timestep changes.
 
-Audit hashes used for validation under this rule. Hashes used only as identifiers are a different use, not automatically a validation finding. This distinction must not become an exemption for a hash that actually gates correctness or compatibility.
+Audit hashes used for validation under this rule. Hashes used only as identifiers (commit SHAs, cache keys, names in a run manifest) are fine and not a finding. Any comparison of a hash against an expected value is validation, including warn-only comparisons that keep running: replace it with the direct check and drop the comparison (user decision, 2026-10-14). This distinction must not become an exemption for a hash that actually gates correctness or compatibility.
 
 **Check:** Walk through the plot-color and incompatible-state-shape cases. The proposed direct check must accept the irrelevant change and detect the relevant mismatch without relying on a digest or mtime. Check that neither standalone prompt still permits a provenance label to excuse hash-based validation.
 
