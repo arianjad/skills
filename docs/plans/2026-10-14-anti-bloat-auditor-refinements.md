@@ -1,6 +1,6 @@
 # Anti-bloat auditor: two focused refinements
 
-**Goal:** Make useful abstraction exceptions a user decision, and replace hash-based validation with checks of the actual conditions that matter.
+**Goal:** Make useful abstraction exceptions a user decision, and replace hash-based validation with checks of the actual conditions that matter, plus three small structure and wording fixes (section 3).
 
 **Design:** User decisions in chat, 2026-10-14. The proposed replacement-cost criterion was rejected and will not be added.
 
@@ -40,7 +40,17 @@ Audit hashes used for validation under this rule. Hashes used only as identifier
 
 **Check:** Walk through the plot-color and incompatible-state-shape cases. The proposed direct check must accept the irrelevant change and detect the relevant mismatch without relying on a digest or mtime. Check that neither standalone prompt still permits a provenance label to excuse hash-based validation.
 
-## 3. Validate and synchronize the focused change
+## 3. Smaller fixes from the Claude review
+
+User approved these in chat, 2026-10-14. Wording and structure only; no new policy.
+
+1. **One return item per category.** In the **Read-only audit prompt**, give each of the five categories its own numbered return item (integrity ceremony, hot loops, abstractions, O(N) scans, telemetry), keeping stack/data flow, literal schemas, and the deletion table as the other items. Telemetry must not sit only in the "Also report" line.
+2. **Checkable wording.** Replace "unsolicited" (category 1 and the implementation prompt) with "not traceable to a documented requirement". Replace "the user's Rule of Three" with "the Rule of Three default"; this paragraph is also rewritten by section 1, so apply both together.
+3. **Narrow the trigger.** In the frontmatter description, replace "optimize scientific and simulation loops" with audit phrasing such as "audit scientific and simulation hot loops for performance costs". The skill audits; it does not take over general optimization requests.
+
+**Check:** `grep -n -i -E "unsolicited|user's rule|optimize" anti-bloat-auditor/SKILL.md` returns nothing (it matches lines 3, 34, 120, 122 before the edit). Count the read-only prompt's return items and confirm a one-to-one mapping onto the five categories.
+
+## 4. Validate and synchronize the focused change
 
 1. Read the complete edited skill and each prompt independently. Confirm the two decisions survive when either prompt is copied without the surrounding skill.
 2. Run `python C:/Users/Arian/.codex/skills/.system/skill-creator/scripts/quick_validate.py anti-bloat-auditor` and `git diff --check -- anti-bloat-auditor/SKILL.md`. Both should pass; these are structural checks, not behavioral proof.
@@ -48,4 +58,4 @@ Audit hashes used for validation under this rule. Hashes used only as identifier
 4. Recheck the installed copy against the pre-edit source. If it is unchanged, synchronize the approved skill and compare the resulting text directly. If it has independent edits, preserve them and resolve the discrepancy before overwriting.
 5. Commit only the scoped repository change as `Refine anti-bloat audit decisions and direct validation`. Report the changed artifacts, checks, and limits. Do not push.
 
-**Completion:** The category guidance and both prompts agree; useful abstraction exceptions ask for informed user direction; validation checks the actual conditions; the rejected replacement-cost addition is absent; the installed copy matches the accepted source.
+**Completion:** The category guidance and both prompts agree; useful abstraction exceptions ask for informed user direction; validation checks the actual conditions; the read-only prompt reports each category separately; the section 3 grep is empty; the rejected replacement-cost addition is absent; the installed copy matches the accepted source.
