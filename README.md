@@ -66,6 +66,14 @@ A standalone adaptation of Superpowers' debugging skill: investigate the root ca
 
 The source is pinned to `obra/superpowers` commit `8ca22dba9a94f28898bbce59f2537ff4d87c747d`. Its MIT license and notice are retained inside the package. See [attribution](systematic-debugging/ATTRIBUTION.md) for the adaptation and [local-use instructions](systematic-debugging/INSTALL.md) for Claude Code, Codex or direct-file use by a local agent. Copy the whole `systematic-debugging/` directory to the receiving harness's skill directory.
 
+## Codebase audits
+
+### anti-bloat-auditor
+
+Audits local codebases, agent repositories, and scientific simulations for unnecessary provenance machinery, abstraction layers, expensive polling, write-only telemetry, and numerical hot-loop overhead. Separates read-only discovery from guided implementation, with source evidence and checks that preserve data and numerical behavior.
+
+The portable artifact is [anti-bloat-auditor/SKILL.md](anti-bloat-auditor/SKILL.md). Copy its directory into your harness's skill folder, or supply the file as instructions to another LLM. Invoke it with a request such as: "Use anti-bloat-auditor to audit this repo read-only and rank the smallest useful simplifications."
+
 ## Adding more
 
 New skills land here in their own subdirectory as I write them. Each follows the same structure: a tool-agnostic `SKILL.md`, optional `references/` for runtime-specific implementation notes.
