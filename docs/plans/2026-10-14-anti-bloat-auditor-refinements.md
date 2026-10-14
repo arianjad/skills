@@ -1,6 +1,6 @@
 # Anti-bloat auditor: two focused refinements
 
-**Goal:** Make useful abstraction exceptions a user decision, and replace hash-based validation with checks of the actual conditions that matter, plus three small structure and wording fixes (section 3).
+**Goal:** Make useful abstraction exceptions a user decision, and replace hash-based validation with checks of the actual conditions that matter, plus three small structure and wording fixes (section 3) and one consolidated decision table for user questions (section 4).
 
 **Design:** User decisions in chat, 2026-10-14. The proposed replacement-cost criterion was rejected and will not be added.
 
@@ -50,7 +50,17 @@ User approved these in chat, 2026-10-14. Wording and structure only; no new poli
 
 **Check:** `grep -n -i -E "unsolicited|user's rule|optimize" anti-bloat-auditor/SKILL.md` returns nothing (it matches lines 3, 34, 120, 122 before the edit). Count the read-only prompt's return items and confirm a one-to-one mapping onto the five categories.
 
-## 4. Validate and synchronize the focused change
+## 4. Consolidate questions into one decision table
+
+User decision, 2026-10-14. Applies to the questions raised by sections 1 and 2. Add it to the skill body and to both standalone prompts.
+
+> Never ask decision questions inline. Collect them into one **decision table** at the end of the report. Group findings that share a pattern and a recommendation into one row per class, for example "12 receipt-hash gates in producers, no nameable defect: delete all?". Split a class only where instances differ in what keeping them buys. Columns: pattern class | instances (count + source anchors) | what keeping it buys | recommendation | effect if left unanswered (left unchanged). In an implementation, finish all unaffected authorized work first, then present the table once.
+
+No cap on the number of rows.
+
+**Check:** Walk through a case with 12 identical receipt-hash gates plus 1 Protocol with a demonstrated checking benefit. It must produce a two-row table at the end of the report, with no inline questions. Confirm that both standalone prompts carry the instruction.
+
+## 5. Validate and synchronize the focused change
 
 1. Read the complete edited skill and each prompt independently. Confirm the two decisions survive when either prompt is copied without the surrounding skill.
 2. Run `python C:/Users/Arian/.codex/skills/.system/skill-creator/scripts/quick_validate.py anti-bloat-auditor` and `git diff --check -- anti-bloat-auditor/SKILL.md`. Both should pass; these are structural checks, not behavioral proof.
@@ -58,4 +68,4 @@ User approved these in chat, 2026-10-14. Wording and structure only; no new poli
 4. Recheck the Codex copy against the pre-edit source (`git show HEAD:anti-bloat-auditor/SKILL.md`). If it is unchanged, remove the copy and create the junction (`mklink /J`, as `skills_private/install.sh` does); then confirm `~/.codex/skills/anti-bloat-auditor/SKILL.md` reads the edited source. If it has independent edits, preserve them and resolve the discrepancy before replacing it.
 5. Commit only the scoped repository change as `Refine anti-bloat audit decisions and direct validation`. Report the changed artifacts, checks, and limits. Do not push.
 
-**Completion:** The category guidance and both prompts agree; useful abstraction exceptions ask for informed user direction; validation checks the actual conditions; the read-only prompt reports each category separately; the section 3 grep is empty; the rejected replacement-cost addition is absent; Codex and Claude both link to the repo source.
+**Completion:** The category guidance and both prompts agree; useful abstraction exceptions ask for informed user direction; validation checks the actual conditions; the read-only prompt reports each category separately; the section 3 grep is empty; decision questions arrive as one end-of-report table grouped per class; the rejected replacement-cost addition is absent; Codex and Claude both link to the repo source.
