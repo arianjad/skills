@@ -9,14 +9,14 @@
 ## File map
 
 - Modify on implementation: `anti-bloat-auditor/SKILL.md` — the category guidance and both standalone prompt templates must express the same decisions.
-- Sync after validation: `C:/Users/Arian/.codex/skills/anti-bloat-auditor/SKILL.md` — the installed copy, after checking it has no independent edits. Do not change other installations or global configuration.
+- Link after validation: `C:/Users/Arian/.codex/skills/anti-bloat-auditor/` is currently a plain copy. Replace it with a junction to `skills_public/anti-bloat-auditor`, matching the other Codex skills, so Claude (already a symlink) and Codex both read the repo source (user decision, 2026-10-14). Do not change other installations or global configuration.
 - This plan is the checkpoint; no helper scripts, frameworks, or new dependencies are needed.
 
 ## 1. Make useful abstraction exceptions a user decision
 
 Update **Abstractions and configuration churn**, the **Read-only audit prompt**, and the Rule of Three paragraph in the **Implementation prompt**.
 
-Keep the rule-of-three default. Replace the conflict between “candidates, not automatic deletion verdicts” and unconditional removal with this instruction:
+Keep the rule-of-three default. Count only implementations used on real code paths; test fakes, mocks, and stubs do not count (user decision, 2026-10-14). Replace the conflict between “candidates, not automatic deletion verdicts” and unconditional removal with this instruction:
 
 > When an abstraction below the rule-of-three threshold has a demonstrated benefit or protects an existing requirement, provide the user with its source location, actual callers, purpose, concrete benefit, and simpler alternative. Explain what retaining or replacing it would change, give a recommendation, and ask for direction before changing that abstraction. Do not silently retain it as an exception or automatically delete it. Honor an already explicit user decision; continue unaffected authorized work.
 
@@ -30,7 +30,7 @@ Update **Integrity and coordination ceremony** and both standalone prompt templa
 
 Use this instruction:
 
-> For each hash-based check, identify the actual condition it is intended to establish. Replace the hash comparison with a direct check of that condition, using the relevant parameters, state, schema, content, or invariant. Report the concrete mismatch and expected versus observed values where applicable. Hash equality or inequality is not a substitute for that validation. Preserve the underlying records needed to perform and explain the check.
+> For each hash-based check, the default is to delete it. When in doubt, remove the check rather than replace it. Replace it only when it guards a nameable defect that has occurred or would plausibly recur. In that case, identify the actual condition it is intended to establish and replace the hash comparison with a direct check of that condition, using the relevant parameters, state, schema, content, or invariant. Report the concrete mismatch and expected versus observed values where applicable. Hash equality or inequality is not a substitute for that validation. Preserve the underlying records needed to perform and explain the check.
 
 Make the replacement specific to the requirement rather than substituting another proxy such as modification time. Where the condition is byte-for-byte identity, compare the actual content; where it is restart compatibility, check the relevant state and parameter constraints. Do not invent which scientific changes are compatible: expose an unresolved requirement for a user decision.
 
@@ -38,7 +38,7 @@ Example to include briefly: a plot-color change should not fail a restart-compat
 
 Audit hashes used for validation under this rule. Hashes used only as identifiers (commit SHAs, cache keys, names in a run manifest) are fine and not a finding. Any comparison of a hash against an expected value is validation, including warn-only comparisons that keep running: replace it with the direct check and drop the comparison (user decision, 2026-10-14). This distinction must not become an exemption for a hash that actually gates correctness or compatibility.
 
-**Check:** Walk through the plot-color and incompatible-state-shape cases. The proposed direct check must accept the irrelevant change and detect the relevant mismatch without relying on a digest or mtime. Check that neither standalone prompt still permits a provenance label to excuse hash-based validation.
+**Check:** Walk through three cases. A receipt-hash gate with no nameable defect behind it must be deleted, not replaced. For a restart check that guards a real state-shape defect, walk through the plot-color and incompatible-state-shape cases. The proposed direct check must accept the irrelevant change and detect the relevant mismatch without relying on a digest or mtime. Check that neither standalone prompt still permits a provenance label to excuse hash-based validation.
 
 ## 3. Smaller fixes from the Claude review
 
@@ -55,7 +55,7 @@ User approved these in chat, 2026-10-14. Wording and structure only; no new poli
 1. Read the complete edited skill and each prompt independently. Confirm the two decisions survive when either prompt is copied without the surrounding skill.
 2. Run `python C:/Users/Arian/.codex/skills/.system/skill-creator/scripts/quick_validate.py anti-bloat-auditor` and `git diff --check -- anti-bloat-auditor/SKILL.md`. Both should pass; these are structural checks, not behavioral proof.
 3. Inspect the final diff. Confirm no replacement-cost criterion, new dependencies, broad rewrite, or unrelated policy changes were introduced.
-4. Recheck the installed copy against the pre-edit source. If it is unchanged, synchronize the approved skill and compare the resulting text directly. If it has independent edits, preserve them and resolve the discrepancy before overwriting.
+4. Recheck the Codex copy against the pre-edit source (`git show HEAD:anti-bloat-auditor/SKILL.md`). If it is unchanged, remove the copy and create the junction (`mklink /J`, as `skills_private/install.sh` does); then confirm `~/.codex/skills/anti-bloat-auditor/SKILL.md` reads the edited source. If it has independent edits, preserve them and resolve the discrepancy before replacing it.
 5. Commit only the scoped repository change as `Refine anti-bloat audit decisions and direct validation`. Report the changed artifacts, checks, and limits. Do not push.
 
-**Completion:** The category guidance and both prompts agree; useful abstraction exceptions ask for informed user direction; validation checks the actual conditions; the read-only prompt reports each category separately; the section 3 grep is empty; the rejected replacement-cost addition is absent; the installed copy matches the accepted source.
+**Completion:** The category guidance and both prompts agree; useful abstraction exceptions ask for informed user direction; validation checks the actual conditions; the read-only prompt reports each category separately; the section 3 grep is empty; the rejected replacement-cost addition is absent; Codex and Claude both link to the repo source.
