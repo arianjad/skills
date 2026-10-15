@@ -89,7 +89,7 @@ Verify consumer-search coverage before calling telemetry unused. Required scient
 
 ## Side bugs noticed while tracing
 
-Do not search for bugs; the audit is about bloat. When tracing a candidate surfaces a correctness defect (a producer/consumer contract mismatch, a check whose failure branch cannot fire, a reference that is not independent of the code it checks, a drifted constant), list it in one line with its source anchor and whether it was verified, just before the decision table. Investigate no further than the tracing already went.
+Bloat stays the focus. When tracing a candidate surfaces a correctness defect (a producer/consumer contract mismatch, a check whose failure branch cannot fire, a reference that is not independent of the code it checks, a drifted constant), list it in one line with its source anchor and whether it was verified, just before the decision table.
 
 ## Decision table
 
@@ -135,7 +135,7 @@ Return:
 7. Write-only telemetry, with the consumer search behind each claim.
 8. A deletion/flattening table:
    File:Line | Bloat Pattern | Runtime/Cognitive Cost | 1-Sentence Flat Replacement
-9. Side bugs noticed while tracing, one line each with anchor and whether verified. Do not search for bugs; list only what tracing surfaced.
+9. Side bugs noticed while tracing, one line each with anchor and whether verified.
 10. A decision table, last. Ask no decision questions anywhere else. One row per class of findings that share a pattern and recommendation; split a class only where instances differ in what keeping them buys:
    Pattern Class | Instances (count + source anchors) | What Keeping It Buys | Recommendation | Effect If Unanswered (left unchanged)
 

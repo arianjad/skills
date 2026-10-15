@@ -76,7 +76,7 @@ No cap on the number of rows.
 
 User decisions in chat, 2026-10-14, after reviewing that audit's skill feedback. Applied to the skill body and both prompts.
 
-1. **Side bugs noticed while tracing.** One line each (anchor, verified or not), placed just before the decision table, with an explicit instruction not to search for bugs. The audit's correctness finds (the missing `labels` column, the non-independent `v1_reference`, assert-free tests) had no slot. They stay a side list so the auditor keeps its focus on bloat.
+1. **Side bugs noticed while tracing.** One line each (anchor, verified or not), placed just before the decision table. The audit's correctness finds (the missing `labels` column, the non-independent `v1_reference`, assert-free tests) had no slot. They stay a side list so the auditor keeps its focus on bloat.
 2. **Requirement provenance.** A documented requirement must trace to the user or an external contract; unattributed agent-written rationale is a candidate and, if sound, a decision-table row.
 3. **Pinned values and tolerances.** Treated like hash comparisons: state the condition the check is trying to establish, check it directly, and expose tolerances without a stated derivation. Published or measured references stay legitimate.
 4. **Cache reuse (option B).** Reuse is decided by comparing the stored inputs directly and reporting which differs; a hash may only name the cache file. Option A (hash as key, audit its coverage) was rejected.
