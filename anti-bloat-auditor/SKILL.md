@@ -17,15 +17,23 @@ For small or quantized coding models, recommend a lightweight read-only discover
 
 ## Audit method
 
-1. Read repository guidance and inspect the stack, entrypoints, data flow, configuration, and literal persisted schemas. Identify scientific contracts, external consumers, and local concurrency.
+1. Read repository guidance and inspect the stack, entrypoints, data flow, configuration, and literal persisted schemas. Identify scientific contracts, external consumers, and local concurrency. Decide which audit categories can apply here.
 2. Trace each candidate through callers, writers, readers, tests, and documented requirements. Search definitions and references, including CLI commands, analysis notebooks, reports, and external interfaces where available.
 3. Estimate the runtime and cognitive cost. Mark profiling measurements separately from suspected costs; source inspection alone does not establish a speedup.
 4. Identify the top friction and propose the smallest replacement. Prefer existing functions, arrays, flat files, and direct CRUD over new infrastructure.
 5. Report search coverage, excluded/generated/vendor paths, queries used for absence claims, inaccessible consumers, and uncertainty. A missing consumer in a partial search is unresolved, not proof of dead code.
 
-During read-only discovery, do not execute project imports, tests, CLI commands, or initialization paths that may create caches, databases, logs, or other files. Read their source instead. Use already available profiles or request a separately authorized run when measurement is needed.
+During read-only discovery, do not execute project imports, tests, CLI commands, or initialization paths that may create caches, databases, logs, or other files. Read their source instead. Static tools that read files without importing or running project code are allowed: text search (`git grep`, `rg`), git history (`git log`, `git blame`), byte comparison (`cmp`, hashing files to find duplicates), and AST-only parsers such as an unused-import scan with Python's `ast`. Use already available profiles or request a separately authorized run when measurement is needed.
+
+A requirement counts as documented only when it traces to the user (text citing them, a recorded decision or ruling) or to an external contract (a published result, a file format another tool reads). Agent-written rationale without that attribution, such as a docstring explaining why something is kept, is a candidate, not a requirement: when its reasoning looks sound, give it a decision-table row noting that no user decision was found.
+
+## Correctness defects found in passing
+
+Report defects first, in their own section, with source anchors and whether each was verified: contract mismatches between a producer and its consumer, tests or checks whose failure branch cannot fire, references that are not independent of the code they check, and drifted copies of a constant. They are not bloat findings, so no category is needed to report them.
 
 ## Five audit categories
+
+Use only the categories that can apply. A category that cannot apply here, such as status and polling scans in a repository with no services, gets one line, `N/A: <reason>`, instead of a search.
 
 ### 1. Integrity and coordination ceremony
 
@@ -33,12 +41,18 @@ Look for:
 
 - SHA256/Blake2 hash chains, Merkle trees, and repeated file-drift hashing not traceable to a documented requirement.
 - Hash comparisons against an expected value, including warn-only comparisons that keep running.
+- Hard-coded numbers, tolerances, counts, or prior outputs used as expected values, such as coordinates pinned from an earlier run, fixed row counts, or exact-match tolerances.
+- Cache reuse decided by a hash or another proxy for the inputs.
 - Single-user SQLite event logs with projectors/replay layers where direct SQLite CRUD, flat records, Parquet, or NumPy arrays would serve the actual operation.
 - Custom lockfiles, resource leases, and heartbeat daemons without demonstrated coordination needs.
 
 For each hash-based check, the default is to delete it. When in doubt, remove the check rather than replace it. Replace it only when it guards a nameable defect that has occurred or would plausibly recur. In that case, identify the actual condition the check is meant to establish and check that condition directly, using the relevant parameters, state, schema, content, or invariant, and report the concrete mismatch with expected versus observed values. Neither hash equality nor another proxy such as modification time substitutes for that check: where the condition is byte-for-byte identity, compare the content; where it is restart compatibility, check the relevant state and parameter constraints. For example, a plot-color change should not fail a restart-compatibility check, while a changed required state-array shape should report the actual shape mismatch. Do not invent which scientific changes are compatible; put an unresolved requirement in the decision table. Preserve the underlying records needed to perform and explain the check.
 
-Hashes used only as identifiers (commit SHAs, cache keys, names in a run manifest) are fine and not a finding. Any comparison of a hash against an expected value is validation, whatever it is called: a provenance, recovery, or integrity label does not exempt it.
+Hashes used only as identifiers (commit SHAs, cache file names, names in a run manifest) are fine and not a finding. Any comparison of a hash against an expected value is validation, whatever it is called: a provenance, recovery, or integrity label does not exempt it.
+
+Treat a pinned value or tolerance the same way. State the condition the check is actually trying to establish, check that condition directly, and flag every tolerance without a stated derivation. A gate that fails when an upstream calculation legitimately re-optimizes is checking chronology, not correctness. A value from an external contract, such as a published table or a measured reference, is a legitimate expected value.
+
+A cache reuse decision is a check whose essence is "same inputs". List every input that changes the cached result, store those inputs with the cache, and decide reuse by comparing them directly, reporting which input differs. A hash may name the cache file but never decides reuse. Where the inputs are too large to store, put the cache in the decision table.
 
 For event logs, locks, leases, and heartbeats, check who relies on replay, audit history, or coordination before proposing removal. Recovery contracts with a real consumer and locks preventing real local races can be legitimate; compare their cost against the requirement, not against a blanket ban.
 
@@ -59,7 +73,7 @@ Preserve sequential dependence, random-number generation and ordering requiremen
 
 Look for:
 
-- ABC, Protocol, Factory, Registry, Provider, Manager, or Base classes with fewer than three concrete implementations used on real code paths. Test fakes, mocks, and stubs do not count.
+- ABC, Protocol, Factory, Registry, Provider, Manager, or Base classes, or strategies selected by string, dict, or enum dispatch, with fewer than three concrete implementations used on real code paths. Test fakes, mocks, and stubs do not count; strategies reached only from benchmarks go in the decision table.
 - Thin wrappers containing only initialization and one forwarding method.
 - YAML -> Pydantic -> dataclass -> dict conversion chains and unused configuration knobs.
 
@@ -94,10 +108,12 @@ SYSTEM INSTRUCTION: READ-ONLY OVER-ENGINEERING & PERFORMANCE AUDIT
 
 Audit [repository/path] for a [single-owner/local/scientific or stated deployment] workflow. Read applicable repository guidance. This prompt is task-scoped and does not override harness policies or permissions.
 
-Inspect source without writes, migrations, refactoring, or iterative coding loops. Do not execute project imports, tests, initialization, or commands that may write caches, logs, databases, or other state. Use source inspection and existing measurement artifacts.
+Inspect source without writes, migrations, refactoring, or iterative coding loops. Do not execute project imports, tests, initialization, or commands that may write caches, logs, databases, or other state. Static tools that read files without importing or running project code are allowed: git grep/rg, git log/blame, cmp or file hashing to find duplicates, and AST-only parsers. Use source inspection and existing measurement artifacts.
 
-Investigate all five categories:
-- Integrity ceremony: hash chains, hash comparisons against expected values (including warn-only), event sourcing, custom locks/leases/heartbeats.
+A requirement counts as documented only when it traces to the user (text citing them, a recorded decision) or to an external contract (a published result, a file format another tool reads). Agent-written rationale without that attribution is a candidate; when its reasoning looks sound, give it a decision-table row noting that no user decision was found.
+
+Investigate the five categories. A category that cannot apply here (for example, polling scans in a repository with no services) gets one line, "N/A: <reason>", instead of a search.
+- Integrity ceremony: hash chains, hash comparisons against expected values (including warn-only), pinned values and tolerances used as expected values, cache reuse decided by a hash, event sourcing, custom locks/leases/heartbeats.
 - Scientific hot-loop validation, serialization, I/O, allocation, and host/device costs where applicable.
 - Single-implementation abstractions and configuration conversion churn.
 - O(N) health/status/startup/polling scans, whole-log reads, and rehashing.
@@ -105,21 +121,22 @@ Investigate all five categories:
 
 Treat patterns as candidates. Trace callers, writers, readers, concurrency, and contracts. Do not infer a measured bottleneck from syntax alone. Do not propose scientific vectorization that changes sequential dependence, RNG/order requirements, precision, physical model, units, or memory limits.
 
-Hash checks: the default is to delete them; when in doubt, recommend removal rather than replacement. Recommend replacement only for a check that guards a nameable defect that has occurred or would plausibly recur, and then name the direct check of the actual condition (parameters, state, schema, content, or invariant) with expected versus observed values. Neither a hash nor modification time substitutes for that check, and a provenance, recovery, or integrity label does not exempt a hash comparison. Hashes used only as identifiers (commit SHAs, cache keys, manifest names) are not findings.
+Hash checks: the default is to delete them; when in doubt, recommend removal rather than replacement. Recommend replacement only for a check that guards a nameable defect that has occurred or would plausibly recur, and then name the direct check of the actual condition (parameters, state, schema, content, or invariant) with expected versus observed values. Neither a hash nor modification time substitutes for that check, and a provenance, recovery, or integrity label does not exempt a hash comparison. Hashes used only as identifiers (commit SHAs, cache file names, manifest names) are not findings. Treat pinned values and tolerances the same way: state the condition the check is trying to establish, check it directly, and flag every tolerance without a stated derivation; a published table or measured reference is a legitimate expected value. Cache reuse is a check whose essence is "same inputs": recommend storing every input that changes the cached result and comparing those inputs directly, reporting which one differs, with a hash used at most as a file name.
 
-Abstractions: count only implementations on real code paths; test fakes, mocks, and stubs do not count. Below three, flattening is the default. If one has a demonstrated benefit or protects an existing requirement, recommend neither silent retention nor automatic deletion; put it in the decision table with source location, callers, purpose, benefit, simpler alternative, and a recommendation.
+Abstractions: count only implementations on real code paths, including strategies selected by string, dict, or enum dispatch; test fakes, mocks, and stubs do not count, and benchmark-only strategies go in the decision table. Below three, flattening is the default. If one has a demonstrated benefit or protects an existing requirement, recommend neither silent retention nor automatic deletion; put it in the decision table with source location, callers, purpose, benefit, simpler alternative, and a recommendation.
 
 Return:
-1. Stack, entrypoints, and data flow.
-2. Literal schemas and state structures, with source anchors.
-3. Integrity ceremony: hash checks (deletion, or the direct check that replaces one), event sourcing, locks/leases/heartbeats, and their real consumers.
-4. Hot-loop bottlenecks if applicable; separate measured evidence from hypotheses.
-5. Single-implementation abstractions and configuration churn.
-6. O(N) health/status/startup/polling scans.
-7. Write-only telemetry, with the consumer search behind each claim.
-8. A deletion/flattening table:
+1. Correctness defects found in passing, first: producer/consumer contract mismatches, tests or checks whose failure branch cannot fire, references not independent of the code they check, drifted constants. Anchor each and say whether it was verified.
+2. Stack, entrypoints, and data flow.
+3. Literal schemas and state structures, with source anchors.
+4. Integrity ceremony: hash checks and pinned-value checks (deletion, or the direct check that replaces one), cache reuse tests, event sourcing, locks/leases/heartbeats, and their real consumers.
+5. Hot-loop bottlenecks if applicable; separate measured evidence from hypotheses.
+6. Single-implementation abstractions and configuration churn.
+7. O(N) health/status/startup/polling scans.
+8. Write-only telemetry, with the consumer search behind each claim.
+9. A deletion/flattening table:
    File:Line | Bloat Pattern | Runtime/Cognitive Cost | 1-Sentence Flat Replacement
-9. A decision table, last. Ask no decision questions anywhere else. One row per class of findings that share a pattern and recommendation; split a class only where instances differ in what keeping them buys:
+10. A decision table, last. Ask no decision questions anywhere else. One row per class of findings that share a pattern and recommendation; split a class only where instances differ in what keeping them buys:
    Pattern Class | Instances (count + source anchors) | What Keeping It Buys | Recommendation | Effect If Unanswered (left unchanged)
 
 Also report the top friction, retained requirements, search scope and queries for absence claims, excluded/inaccessible paths, evidence, and uncertainty. Include only candidates supported by inspected source. Stop after the report; do not implement changes.
@@ -140,9 +157,9 @@ Deployment assumption: single-user, trusted localhost unless the user states oth
 
 Default design: flat functions, direct SQLite CRUD where persistence is needed, and suitable numeric vectorization. Remove hash chains, event sourcing, and distributed-lock ceremony not traceable to a documented requirement from the named scope after verifying their consumers. Retain necessary local race protection. Explicit documented user requirements may be retained and surfaced rather than deleted.
 
-Hash checks: delete by default; when in doubt, remove the check rather than replace it. Replace one only when it guards a nameable defect that has occurred or would plausibly recur, using a direct check of the actual condition (parameters, state, schema, content, or invariant) that reports expected versus observed values. Do not substitute modification time or another proxy. A provenance, recovery, or integrity label does not exempt a hash comparison, including a warn-only one. Hashes used only as identifiers (commit SHAs, cache keys, manifest names) stay. Do not invent which scientific changes are compatible; put that question in the decision table.
+Hash checks: delete by default; when in doubt, remove the check rather than replace it. Replace one only when it guards a nameable defect that has occurred or would plausibly recur, using a direct check of the actual condition (parameters, state, schema, content, or invariant) that reports expected versus observed values. Do not substitute modification time or another proxy. A provenance, recovery, or integrity label does not exempt a hash comparison, including a warn-only one. Hashes used only as identifiers (commit SHAs, cache file names, manifest names) stay. Apply the same rule to pinned values and tolerances used as expected values: check the condition they stand for directly; a published table or measured reference stays as a legitimate expected value. Decide cache reuse by comparing the stored inputs that change the cached result, reporting which one differs, never by a hash. Do not invent which scientific changes are compatible; put that question in the decision table.
 
-Apply the Rule of Three default: do not introduce ABC/Protocol/Factory/Base classes unless three or more concrete implementations exist on real code paths; test fakes, mocks, and stubs do not count. Flatten existing ones below the threshold by default. When one has a demonstrated benefit or protects an existing requirement, leave it unchanged and put it in the decision table with its source location, actual callers, purpose, concrete benefit, simpler alternative, what retaining or replacing it would change, and a recommendation; do not silently retain it or automatically delete it. Honor explicit user decisions and documented requirements already given, and state their cost. Count implementations, not hypothetical future extensions. Preserve only compatibility required by callers and contracts.
+Apply the Rule of Three default: do not introduce ABC/Protocol/Factory/Base classes or string/dict/enum strategy dispatch unless three or more concrete implementations exist on real code paths; test fakes, mocks, and stubs do not count. Flatten existing ones below the threshold by default. When one has a demonstrated benefit or protects an existing requirement, leave it unchanged and put it in the decision table with its source location, actual callers, purpose, concrete benefit, simpler alternative, what retaining or replacing it would change, and a recommendation; do not silently retain it or automatically delete it. Honor explicit user decisions and documented requirements already given, and state their cost; a requirement counts as documented only when it traces to the user or an external contract, not to unattributed agent-written rationale. Count implementations, not hypothetical future extensions. Preserve only compatibility required by callers and contracts.
 
 Keep pure numeric kernels free of Pydantic validation, deepcopy, JSON, logging, database writes, and dynamic growing-array concatenation. Move necessary validation and logging to boundaries. Preserve sequential dependence, RNG/order requirements, precision, physical model, units, reproducibility requirements, and memory limits.
 

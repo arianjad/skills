@@ -71,3 +71,16 @@ No cap on the number of rows.
 5. Commit only the scoped repository change as `Refine anti-bloat audit decisions and direct validation`. Report the changed artifacts, checks, and limits. Do not push.
 
 **Completion:** The category guidance and both prompts agree; useful abstraction exceptions ask for informed user direction; validation checks the actual conditions; the read-only prompt reports each category separately; the section 3 grep is empty; decision questions arrive as one end-of-report table grouped per class; the rejected replacement-cost addition is absent; Codex and Claude both link to the repo source.
+
+## 6. Round 2, from the first live audit (C2V-Molecules, 2026-10-14)
+
+User decisions in chat, 2026-10-14, after reviewing that audit's skill feedback. Applied to the skill body and both prompts.
+
+1. **Correctness defects first.** A dedicated section, ranked before the bloat findings: contract mismatches, checks that cannot fail, references that are not independent, drifted constants. The audit's most useful results (the missing `labels` column, the non-independent `v1_reference`, assert-free tests) had no slot.
+2. **Requirement provenance.** A documented requirement must trace to the user or an external contract; unattributed agent-written rationale is a candidate and, if sound, a decision-table row.
+3. **Pinned values and tolerances.** Treated like hash comparisons: state the condition the check is trying to establish, check it directly, and expose tolerances without a stated derivation. Published or measured references stay legitimate.
+4. **Cache reuse (option B).** Reuse is decided by comparing the stored inputs directly and reporting which differs; a hash may only name the cache file. Option A (hash as key, audit its coverage) was rejected.
+5. **Static tools allowed** in read-only discovery (text search, git history, byte comparison, AST-only parsing); inapplicable categories get one `N/A` line.
+6. **String/dict/enum dispatch** counts as an abstraction; benchmark-only strategies go to the decision table.
+
+Not changed: the literal-schemas section stays a full inventory (narrowing would defer to docs that may be stale); no new "duplicated surfaces" category until a second audit shows it; per-claim absence queries stay.
