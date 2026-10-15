@@ -27,10 +27,6 @@ During read-only discovery, do not execute project imports, tests, CLI commands,
 
 A requirement counts as documented only when it traces to the user (text citing them, a recorded decision or ruling) or to an external contract (a published result, a file format another tool reads). Agent-written rationale without that attribution, such as a docstring explaining why something is kept, is a candidate, not a requirement: when its reasoning looks sound, give it a decision-table row noting that no user decision was found.
 
-## Correctness defects found in passing
-
-Report defects first, in their own section, with source anchors and whether each was verified: contract mismatches between a producer and its consumer, tests or checks whose failure branch cannot fire, references that are not independent of the code they check, and drifted copies of a constant. They are not bloat findings, so no category is needed to report them.
-
 ## Five audit categories
 
 Use only the categories that can apply. A category that cannot apply here, such as status and polling scans in a repository with no services, gets one line, `N/A: <reason>`, instead of a search.
@@ -91,6 +87,10 @@ Trace telemetry writers to active UI, analysis, reports, alerts, tests, or opera
 
 Verify consumer-search coverage before calling telemetry unused. Required scientific records and historical readable logs are not disposable merely because no live UI reads them. Propose removing or reducing future writes while preserving evidence and required diagnostics.
 
+## Side bugs noticed while tracing
+
+Do not search for bugs; the audit is about bloat. When tracing a candidate surfaces a correctness defect (a producer/consumer contract mismatch, a check whose failure branch cannot fire, a reference that is not independent of the code it checks, a drifted constant), list it in one line with its source anchor and whether it was verified, just before the decision table. Investigate no further than the tracing already went.
+
 ## Decision table
 
 Never ask decision questions inline. Collect them into one decision table at the end of the report. Group findings that share a pattern and a recommendation into one row per class, for example "12 receipt-hash gates in producers, no nameable defect: delete all?". Split a class only where instances differ in what keeping them buys. Columns:
@@ -126,16 +126,16 @@ Hash checks: the default is to delete them; when in doubt, recommend removal rat
 Abstractions: count only implementations on real code paths, including strategies selected by string, dict, or enum dispatch; test fakes, mocks, and stubs do not count, and benchmark-only strategies go in the decision table. Below three, flattening is the default. If one has a demonstrated benefit or protects an existing requirement, recommend neither silent retention nor automatic deletion; put it in the decision table with source location, callers, purpose, benefit, simpler alternative, and a recommendation.
 
 Return:
-1. Correctness defects found in passing, first: producer/consumer contract mismatches, tests or checks whose failure branch cannot fire, references not independent of the code they check, drifted constants. Anchor each and say whether it was verified.
-2. Stack, entrypoints, and data flow.
-3. Literal schemas and state structures, with source anchors.
-4. Integrity ceremony: hash checks and pinned-value checks (deletion, or the direct check that replaces one), cache reuse tests, event sourcing, locks/leases/heartbeats, and their real consumers.
-5. Hot-loop bottlenecks if applicable; separate measured evidence from hypotheses.
-6. Single-implementation abstractions and configuration churn.
-7. O(N) health/status/startup/polling scans.
-8. Write-only telemetry, with the consumer search behind each claim.
-9. A deletion/flattening table:
+1. Stack, entrypoints, and data flow.
+2. Literal schemas and state structures, with source anchors.
+3. Integrity ceremony: hash checks and pinned-value checks (deletion, or the direct check that replaces one), cache reuse tests, event sourcing, locks/leases/heartbeats, and their real consumers.
+4. Hot-loop bottlenecks if applicable; separate measured evidence from hypotheses.
+5. Single-implementation abstractions and configuration churn.
+6. O(N) health/status/startup/polling scans.
+7. Write-only telemetry, with the consumer search behind each claim.
+8. A deletion/flattening table:
    File:Line | Bloat Pattern | Runtime/Cognitive Cost | 1-Sentence Flat Replacement
+9. Side bugs noticed while tracing, one line each with anchor and whether verified. Do not search for bugs; list only what tracing surfaced.
 10. A decision table, last. Ask no decision questions anywhere else. One row per class of findings that share a pattern and recommendation; split a class only where instances differ in what keeping them buys:
    Pattern Class | Instances (count + source anchors) | What Keeping It Buys | Recommendation | Effect If Unanswered (left unchanged)
 
