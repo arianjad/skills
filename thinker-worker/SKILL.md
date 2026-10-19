@@ -1,13 +1,13 @@
 ---
 name: thinker-worker
-description: Coordinate a substantial task with Astra or Fable planning and acceptance, explicit Sol, Opus, or Sonnet execution, Astra/Fable review, Astra/Fable/Opus ideation, and Sol 6.1 review from either harness. Use when the user requests this thinker/worker mode, or asks to add, update, or archive a model in its routing (a new model release); ordinary tasks retain their existing routing.
+description: Coordinate a substantial task with Astra or Fable planning and acceptance, explicit Sol, Opus, or Sonnet execution, Astra/Fable review, Astra/Fable/Opus ideation, and Sol 6.1 review from either harness. Use at a session's first delegation (a standing instruction in the user's global rules, or an explicit request for thinker/worker mode), and when asked to add, update, or archive a model in its routing (a new model release). Work a few tool calls settle stays inline.
 ---
 
 # Thinker/worker
 
 Opus 5.5 independent review uses the supported `tw.py claude --role independent-review --model claude-opus-5-5` wrapper. It selects the generated `tw-independent-review-{medium,high,xhigh}-opus55` definition, checks its exact bytes and rejects project-local shadows. The wrapper verifies returned model/effort evidence before acceptance. A bare hook admits the dedicated agent name; it does not attest its definition. Generic `opus` remains unadmitted for independent review. See [Codex routing](references/codex.md) and [Claude routing](references/claude.md).
 
-Use this mode for the current task when the user invokes it. Preserve a manually chosen front-end model and effort. If that choice conflicts with the intended thinker role, explain the conflict; only an explicit user instruction deactivates the mode. Do not change global defaults or infer that this skill switched the running model.
+Use this mode whenever the session delegates: a standing instruction in the user's global rules counts as the invocation, as does an explicit request. Preserve a manually chosen front-end model and effort. If that choice conflicts with the intended thinker role, explain the conflict; only an explicit user instruction deactivates the mode. Do not change global defaults or infer that this skill switched the running model.
 
 The coordinator (Astra in Codex, Fable in Claude Code) owns framing, planning, dispatch, adversarial review, changed assumptions, and final acceptance. Sol 6.1, Opus, or Sonnet owns substantial bounded execution. The coordinator may read sources, run deterministic checks, and handle small bookkeeping directly. Reuse a compliant worker where useful; before continuation, check its actual identity, role, model/effort evidence, and assignment. An unknown or preactivation child is not qualified by a new prompt. Workers do not launch children unless the coordinator has explicitly authorized a bounded exception; the fresh-dispatch guard does not prove caller identity on every surface.
 
