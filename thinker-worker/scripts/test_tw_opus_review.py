@@ -1,6 +1,6 @@
 """User-authorized Opus 5.5 review admission; existing guards remain intact."""
 import json
-import tw
+import tw_core as tw
 from test_tw_routes import claude, codex, R
 from test_tw_receipt import AUTH, REV, W
 

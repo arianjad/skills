@@ -2,7 +2,7 @@
 
 `routes.json` in the skill's source repository (`~/Code/skills_public/thinker-worker`) is the one place a model is admitted.
 Edit it only with `tw.py model`, which validates the result before writing and keeps the file in canonical form (a
-test fails on a hand edit that is not canonical). Scope: the Claude/Codex dispatch router in `tw.py`. The decision
+test fails on a hand edit that is not canonical). Scope: the Claude/Codex dispatch router in `tw_core.py`. The decision
 backends (`router.backends`) never see the model, and no other router is touched.
 
 Run from the source repo root: `python thinker-worker/scripts/tw.py <command>`.
@@ -36,7 +36,7 @@ Run from the source repo root: `python thinker-worker/scripts/tw.py <command>`.
 4. **Verify.** `tw.py models --harness claude` and `--harness codex` show the result; run every
    `thinker-worker/scripts/test_tw_*.py`; commit (the message names the prior source); `tw.py upgrade`; `tw.py check`.
    Push, and `git pull` + `tw.py upgrade` on the other machine, only after the user approves the push.
-5. **Review.** A change to `tw.py` itself gets an independent review from another model family. A config-only change
+5. **Review.** A change to `tw.py` or `tw_core.py` itself gets an independent review from another model family. A config-only change
    through `tw.py model` does not.
 6. **Evidence.** `tw.py promote --harness claude --model <id>` reports per-class verdicts from receipts once the model
    has labeled dispatches. Revise its priors with `model set --prior` when the evidence disagrees.

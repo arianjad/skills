@@ -8,7 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 
-import tw
+import tw_core as tw
 from test_tw_hook import pinned_routes, run_main
 from test_tw_receipt import HDR, REV, SESSION, hook, receipts
 
@@ -109,7 +109,7 @@ if __name__ == "__main__":
         code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF + " v2"})
         assert code == 0 and out == "", out
         last = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])  # the torn fragment swallows the next row
-        assert last["kind"] == "route" and last["ticket"] == tw.ticket(BRIEF + " v2")[0], last
+        assert last["kind"] == "route" and last["ticket"] == tw.ticket(BRIEF + " v2"), last
 
     with tempfile.TemporaryDirectory() as home:  # post-admission failure: admit stands, error row logged
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION, "--store-bodies"])
@@ -129,7 +129,7 @@ if __name__ == "__main__":
         f = Path(home) / "b.md"
         f.write_text(BRIEF, encoding="utf-8")
         code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f)])
-        assert code == 0 and json.loads(out)["ticket"] == tw.ticket(BRIEF)[0], out
+        assert code == 0 and json.loads(out)["ticket"] == tw.ticket(BRIEF), out
         # `route` shows why: each backend's answer or error, the combined probabilities, the gate, and eps
         rs = json.loads(json.dumps(tw.load_routes()))
         rs["router"].update(backends=["s", "gone"], classes={"*": {"mode": "advisory", "explore": 0.0}})
@@ -147,36 +147,14 @@ if __name__ == "__main__":
         assert got["gate"] == "margin" and got["source"] == "coordinator" and got["eps"] == 0.0, got
         assert abs(got["combined"]["low"] - 0.55) < 1e-5, got   # absent tiers floored at 1e-6
 
-    # D19: every route row carries a snapshot of both plan meters, read locally (Claude: the status-line log; Codex: the
-    # newest rollout's `limit_id: codex` rate_limits); a missing or unreadable meter is None and routing is unaffected
+    # A route row with no backend asked carries no backend fields, and none of the dropped fields
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF})
-        assert receipts(home, "claude")[-1]["quota"] == {"claude": None, "codex": None}, receipts(home, "claude")[-1]
-        h = Path(home)
-        (h / ".claude").mkdir()
-        meter = lambda pct, at: json.dumps({"at": at, "model": "m", "five_hour": {"used_percentage": 30, "resets_at": 1},
-                                            "seven_day": {"used_percentage": pct, "resets_at": 2}})
-        (h / ".claude" / "usage-meter.jsonl").write_text(meter(24, "t1") + "\n" + meter(25, "t2") + "\n")
-        old, new = h / ".codex/sessions/2026/09/27", h / ".codex/sessions/2026/09/28"
-        for d in (old, new):
-            d.mkdir(parents=True)
-        tl = lambda lid, pct, ts: json.dumps({"timestamp": ts, "type": "event_msg", "payload": {"type": "token_count",
-                                              "rate_limits": {"limit_id": lid, "primary": {"used_percent": pct,
-                                              "window_minutes": 10080, "resets_at": 9}, "secondary": None}}})
-        (old / "rollout-old.jsonl").write_text(tl("codex", 5.0, "t0") + "\n")
-        (new / "rollout-new.jsonl").write_text(tl("codex", 21.0, "t3") + "\n" + tl("codex_bengalfox", 50.0, "t4") + "\n"
-                                               + '{"type": "other"}\n')
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF + " q"})
-        q = receipts(home, "claude")[-1]["quota"]
-        assert q["claude"] == {"at": "t2", "five_hour": {"used_percentage": 30, "resets_at": 1},
-                               "seven_day": {"used_percentage": 25, "resets_at": 2}}, q
-        assert q["codex"] == {"at": "t3", "primary": {"used_percent": 21.0, "window_minutes": 10080, "resets_at": 9},
-                              "secondary": None}, q
-        (h / ".claude" / "usage-meter.jsonl").write_text("not json\n")
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF + " r"})
-        row = receipts(home, "claude")[-1]
-        assert row["kind"] == "route" and row["quota"]["claude"] is None and row["quota"]["codex"]["at"] == "t3", row
+        dispatch, row = receipts(home, "claude")[-2:]
+        assert row["kind"] == "route" and not set(row) & {"quota", "digest", "explore", "backends", "combined",
+                                                          "combined_mean", "gate", "ms", "body_chars_sent"}, row
+        assert dispatch["kind"] == "dispatch" and "brief_checks" not in dispatch, dispatch
 
     r0 = json.loads(json.dumps(tw.load_routes()))  # no backend: explore one tier below the coordinator
     r0["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": 1.0}})
@@ -244,7 +222,7 @@ if __name__ == "__main__":
     decay = {"c": 0.5, "power": 0.25, "floor": 0.05}
     r1 = json.loads(json.dumps(REAL_LOAD()))
     r1["router"].update(backends=[], classes={"*": {"mode": "advisory", "explore": decay}})
-    coin = lambda b: tw.coin(tw.ticket(b)[0])
+    coin = lambda b: tw.coin(tw.ticket(b))
     mid = next(b for b in (BRIEF + f" d{i}" for i in range(500)) if 0.3 < coin(b) < 0.5)   # explored iff eps > coin
     r = tw.route(r1, "claude", "worker", fields, mid, "high", t=1)
     assert (r["source"], r["eps"], r["explore"]) == ("explore", 0.5, decay), r
@@ -285,7 +263,7 @@ if __name__ == "__main__":
     os.environ["TW_ROUTES"] = str(tw.source_root() / "routes.json")  # a real-home override file is never read
     shipped = tw.load_routes()  # no backend, every class advisory with decaying exploration (eps 0.5 at t=1)
     assert shipped["router"]["backends"] == [] and shipped["router"]["classes"]["*"] == {"mode": "advisory", "explore": decay}
-    coin = lambda b: tw.coin(tw.ticket(b)[0])      # the draw route() and act() use
+    coin = lambda b: tw.coin(tw.ticket(b))      # the draw route() and act() use
     briefs = ["TW-Role: worker\n" + HDR.replace("destructive", "none") + f"shipped {i}" for i in range(200)]
     under, over = next(b for b in briefs if coin(b) < 0.2), next(b for b in briefs if coin(b) >= 0.5)  # t=1, t=2
     with tempfile.TemporaryDirectory() as home:

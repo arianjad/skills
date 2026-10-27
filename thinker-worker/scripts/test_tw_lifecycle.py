@@ -5,11 +5,12 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 from unittest.mock import patch
 
-import tw
+import tw_core as tw
 
 
 def quiet(fn, *args, **kwargs):
@@ -53,8 +54,7 @@ def upgrade_conflicts(scenarios=("replace", "remove", "manifest", "directory", "
                     blocked.unlink()
                     blocked.mkdir()
                 else:
-                    (blocked / "tw.py").unlink()
-                    blocked.rmdir()
+                    shutil.rmtree(blocked)
                     blocked.write_bytes(b"user file\n")
                 refused(tw.upgrade, home)
                 assert target.read_bytes() == b"older release\n", "preflight must precede every write"

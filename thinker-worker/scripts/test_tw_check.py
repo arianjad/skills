@@ -119,7 +119,7 @@ if __name__ == "__main__":
             assert outcome(home, tid)[0] == 0
             c = kinds(home, "check")[-1]
             assert (c["tool_use_id"], c["label"], c["unknown_reason"]) == (tid, "unknown", "cwd missing"), c
-        import tw
+        import tw_core as tw
 
         def boom(argv, *a, **k):  # only the check's own launch fails; the --version probe runs
             if "-c" in argv:
@@ -194,7 +194,7 @@ if __name__ == "__main__":
 
     # R6 (Astra review finding 6): a failed kill (taskkill exit 1, as under Access denied) still returns within the
     # bound, and the row says kill_failed instead of implying the tree died
-    import tw
+    import tw_core as tw
     with tempfile.TemporaryDirectory() as work:
         pidf = (Path(work) / "pid.txt").as_posix()
         t0 = time.monotonic()

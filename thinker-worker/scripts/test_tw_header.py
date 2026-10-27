@@ -1,6 +1,6 @@
 """Guard requires a routing header on every plaintext role; receipts turn it into labeled routing data.
 Run: python test_tw_header.py"""
-import tw
+import tw_core as tw
 
 R = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
 AUTH = "TW-Authorization: t\nTW-Scope: t\n"

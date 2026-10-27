@@ -8,7 +8,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import tw
+import tw_core as tw
 from test_tw_hook import pinned_routes
 from test_tw_receipt import HDR
 
@@ -252,7 +252,7 @@ if __name__ == "__main__":
                     code, out = hook(home, "claude", "Agent", {"subagent_type": "tw-worker-low", "prompt": plain})
                     again = receipts(home, "claude")[-1]
                     assert out == "" and again["source"] == "cached:bayes" and len(calls) == n, (out, again)
-                    assert again["backends"] == {} and again["gate"] is None, again
+                    assert "backends" not in again and "gate" not in again, again  # nothing asked
                 else:
                     assert out == "" and (row["source"], row["action"], row["eligible"]) == ("coordinator", None, False), row
     finally:
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     # D3 (design D14): exploration applies to the final pick, whichever source produced it: one tier below it on the
     # role's ladder (never below the cheapest), draw_propensity eps / 1 - eps / 1.0 as before
     decay = {"c": 0.5, "power": 0.25, "floor": 0.05}
-    coin = lambda b: tw.coin(tw.ticket(b)[0])
+    coin = lambda b: tw.coin(tw.ticket(b))
     mid = next(b for b in (plain + f" d{i}" for i in range(500)) if 0.3 < coin(b) < 0.5)   # explored iff eps > coin
     tw.BACKENDS.update(med=stub({"low": 0.05, "medium": 0.9, "high": 0.05}), lo=stub({"low": 0.9, "medium": 0.1}),
                        top=stub({"high": 0.05, "xhigh": 0.95}))
@@ -325,10 +325,10 @@ if __name__ == "__main__":
             hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": plain})
             hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": plain})
             first, again = [x for x in receipts(home, "claude") if x["kind"] == "route"]
-            assert close(first["combined_mean"], mean(A, B)) and again["combined_mean"] is None, (first, again)
+            assert close(first["combined_mean"], mean(A, B)) and "combined_mean" not in again, (first, again)
     finally:
         tw.load_routes = real_load
-    print("PASS backends D4: combined_mean logged (gate pass and miss), None with no answer or cached")
+    print("PASS backends D4: combined_mean logged (gate pass and miss), None with no answer, absent on a cached row")
 
     # Astra round-3 R3: the shipped Laya adapter validates its predictor's probabilities before normalizing, so a
     # malformed prediction reaches route() as a failed backend (HTTP 502), never as a confident pick. Composed path:
