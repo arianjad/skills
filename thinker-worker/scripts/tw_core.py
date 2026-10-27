@@ -33,6 +33,7 @@ import uuid
 
 OWNER = "thinker-worker-v1"
 HARNESSES = ("codex", "claude")
+GUARDED_TOOLS = {"codex": {"spawn_agent", "collaborationspawn_agent", "Agent"}, "claude": {"Agent"}}  # tw.py copies it
 SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "references/add-model.md",
                "scripts/tw.py", "scripts/tw_core.py")
 TIERS = ("low", "medium", "high", "xhigh")
@@ -1135,11 +1136,15 @@ def promote(home: Path, harness: str, cls: str | None = None, model: str | None 
     return [{"class": c, "model": m, **arms(maps, g, margin, draws, seed)} for (c, m), g in groups.items()]
 
 
+def receipt_files(home: Path, harness: str) -> list[Path]:
+    return list((state_root(home) / "receipts" / harness).glob("*.jsonl"))
+
+
 def harness_rows(home: Path, harness: str) -> list[dict]:
     """Every receipt row of the harness, preserving session-file order (torn lines skipped).
     The receipt filename supplies the session join key, including rows without session_id."""
     return [{**r, "_session_file": p.stem}
-            for p in (state_root(home) / "receipts" / harness).glob("*.jsonl") for r in read_rows(p)]
+            for p in receipt_files(home, harness) for r in read_rows(p)]
 
 
 def dispatch_key(r: dict) -> tuple[str, str | None]:
@@ -1196,13 +1201,12 @@ def arms(maps: dict, group: list[dict], margin: float, draws: int, seed: int) ->
             "n_advisor_excluded": n_adv, "n_excluded_identity": n_id, "n_check": src["check"], "n_coordinator": src["coordinator"], "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
 
 
-def ticket(brief: str) -> tuple[str, str]:
-    """(12-hex ticket, full digest) of the brief without TW-Route/TW-Override lines. The brief only, not the model
+def ticket(brief: str) -> str:
+    """12-hex digest of the brief without TW-Route/TW-Override lines. The brief only, not the model
     (B2 reversed 2026-09-28): one decision per brief, so following model-step advice reuses it."""
     norm = "\n".join(x.rstrip() for x in brief.split("\n")
                      if not x.startswith(("TW-Route:", "TW-Override:"))).strip()
-    digest = sha(norm.encode("utf-8"))
-    return digest[:12], digest
+    return sha(norm.encode("utf-8"))[:12]
 
 
 def coin(tick: str) -> float:
@@ -1325,7 +1329,7 @@ def class_count(home: Path, harness: str, cls: str, routes: dict) -> int:
         cap = math.inf
     # ponytail: below the cap this still rereads the harness's receipts per dispatch; a per-class counter file if slow
     n = 0
-    for p in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
+    for p in receipt_files(home, harness):
         n += sum(1 for r in read_rows(p) if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
         if n >= cap:
             return cap
@@ -1392,7 +1396,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
     pol = {**pol, "tiers": model_tiers(pol, model)}
-    tick, digest = ticket(brief)
+    tick = ticket(brief)
     mode, explore = class_mode(routes, fields["TW-Class"])
     pinned = flagged(brief, "TW-Pin") if pinned is None else pinned
     eps = 0.0 if pinned else epsilon(explore, t)  # a user pin is never explored
@@ -1405,7 +1409,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
                 "confidence": 0.0 if moved else prior["confidence"],
                 "provenance": prior.get("provenance"),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
-                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "draw_propensity": 1.0,
+                "ticket": tick, "mode": mode, "explore": explore, "eps": 0.0, "draw_propensity": 1.0,
                 "draws": [], "backends": {}, "combined": None, "combined_mean": None, "gate": None}
     start = time.monotonic()
     backends = ask_backends(cfg, pol, fields, brief)
@@ -1444,7 +1448,6 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         if explored:
             found = {**found, **alt}
     return {**found, "body_chars_sent": sent, "ms": round((time.monotonic() - start) * 1000), "ticket": tick,
-            "digest": digest,
             "mode": mode, "explore": explore, "eps": eps,
             "draw_propensity": eps if explored else 1 - eps if drawn else 1.0, "draws": draws,
             "backends": backends, "combined": combined, "combined_mean": mean, "gate": gate}
@@ -1628,7 +1631,7 @@ def hook(home: Path, harness: str, owner: str) -> None:
         denial("hook envelope must be an object")
         return
     tool = envelope.get("tool_name")
-    if tool not in ({"spawn_agent", "collaborationspawn_agent", "Agent"} if harness == "codex" else {"Agent"}):
+    if tool not in GUARDED_TOOLS[harness]:
         return
     session = envelope.get("session_id")
     try:
@@ -1693,9 +1696,9 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         brief = inp.get("message" if harness == "codex" else "prompt")
         model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
         pinned = flagged(brief, "TW-Pin")
-        cached = prior_route(home, harness, session, ticket(brief)[0], rows)
-        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached,
-                  1 + class_count(home, harness, d.fields["TW-Class"], routes), pinned, model)
+        cached = prior_route(home, harness, session, ticket(brief), rows)
+        t = 1 if cached is not None or pinned else 1 + class_count(home, harness, d.fields["TW-Class"], routes)  # route() ignores t then
+        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, t, pinned, model)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
@@ -1995,11 +1998,11 @@ def machines(home: Path, ledger_dir: Path | None) -> None:
         print(f"No install ledgers in {ledger_dir}")
     for d in docs:
         stale = newest is not None and d in live and d.get("tw_sha256") != newest.get("tw_sha256")
-        note = ("STALE (newest tw.py is on " + newest["machine_id"] + ") -> run: " + UPGRADE_COMMAND
+        note = ("STALE (newest code is on " + newest["machine_id"] + ") -> run: " + UPGRADE_COMMAND
                 if stale else "current" if d in live else "")
         print(" ".join(["*" if d["machine_id"] == me else " ", d["machine_id"], str(d.get("os")),
                         str(d.get("status")), "updated", str(d.get("updated_at")),
-                        "tw.py", str(d.get("tw_sha256", ""))[:12], note]).rstrip())
+                        "code", str(d.get("tw_sha256", ""))[:12], note]).rstrip())
 
 
 def load_manifest(home: Path) -> dict:

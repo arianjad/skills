@@ -11,7 +11,8 @@ from pathlib import Path
 
 import tw
 import tw_core
-from test_tw_hook import W_MIN, pinned_routes
+from test_tw_hook import W_MIN, envelope, pinned_routes
+from test_tw_receipt import receipts
 
 TW = str(Path(__file__).with_name("tw.py"))
 SESSION = "launcher-session"
@@ -35,13 +36,16 @@ def core(home, harness, payload):
 
 
 def env(tool="Agent", session=SESSION, prompt=W_MIN):
-    return {"session_id": session, "tool_name": tool, "hook_event_name": "PreToolUse", "tool_use_id": "t1",
-            "cwd": "/tmp", "tool_input": {"subagent_type": "tw-worker-high", "prompt": prompt}}
+    return envelope(session, {"subagent_type": "tw-worker-high", "prompt": prompt}, tool, "t1", cwd="/tmp")
 
 
-def check_owner():
-    assert tw.OWNER == tw_core.OWNER
-    print("PASS launcher: OWNER matches tw_core")
+def check_copies():
+    assert tw.OWNER == tw_core.OWNER and tw.GUARDED_TOOLS == tw_core.GUARDED_TOOLS
+    assert set(tw.GUARDED_TOOLS) == set(tw_core.HARNESSES)
+    with tempfile.TemporaryDirectory() as tmp:
+        for home in (Path(tmp), Path(tmp) / "a" / ".."):
+            assert Path(tw.record_path(str(home), "codex", "s")) == tw_core.record_path(home.resolve(), "codex", "s")
+    print("PASS launcher: OWNER, GUARDED_TOOLS and record_path match tw_core")
 
 
 def check_fast_path_matches_core():
@@ -91,8 +95,7 @@ def check_subprocess():
         good = json.dumps(env(session="active-session")).encode()
         for payload in (good, b"\xef\xbb\xbf" + good):  # stdin replayed to tw_core: admitted (shadow), receipts written
             assert run(payload) == ""
-        rows = [json.loads(x) for p in (home / ".thinker-worker" / "receipts" / "claude").glob("*.jsonl")
-                for x in p.read_text(encoding="utf-8").splitlines()]
+        rows = receipts(home, "claude")
         assert [(r["kind"], r.get("decision")) for r in rows] == [("dispatch", "admit"), ("route", None)] * 2, rows
         bad_header = json.dumps(env(session="active-session", prompt="TW-Role: worker\nx")).encode()
         for payload, why in ((bad_header, "routing header needs"), (b"{", "malformed hook JSON")):
@@ -104,6 +107,6 @@ def check_subprocess():
 
 
 if __name__ == "__main__":
-    check_owner()
+    check_copies()
     check_fast_path_matches_core()
     check_subprocess()
