@@ -48,8 +48,8 @@ def check_transport():
         if os.name == "nt" and shutil.which("powershell"):
             installed = home / ".codex/skills/thinker-worker/scripts/tw.py"
             installed.parent.mkdir(parents=True)
-            for name in ("tw.py", "tw_core.py"):
-                shutil.copy2(Path(__file__).with_name(name), installed.with_name(name))
+            for rel in tw.CODE_FILES:
+                shutil.copy2(tw.source_root() / rel, installed.parent.parent / rel)
             r = subprocess.run(["cmd", "/C", tw.portable_windows_command("codex")],
                                input=raw, capture_output=True, env=hook_env(home, True))
             assert r.returncode == 0 and not r.stdout.strip(), (r.stdout, r.stderr)

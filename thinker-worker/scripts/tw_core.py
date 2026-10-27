@@ -27,15 +27,16 @@ import tempfile
 import threading
 import time
 from datetime import datetime, timezone
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 import uuid
 
 
 OWNER = "thinker-worker-v1"
-HARNESSES = ("codex", "claude")
 GUARDED_TOOLS = {"codex": {"spawn_agent", "collaborationspawn_agent", "Agent"}, "claude": {"Agent"}}  # tw.py copies it
+HARNESSES = tuple(GUARDED_TOOLS)
+CODE_FILES = ("scripts/tw.py", "scripts/tw_core.py")
 SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "references/add-model.md",
-               "scripts/tw.py", "scripts/tw_core.py")
+               *CODE_FILES)
 TIERS = ("low", "medium", "high", "xhigh")
 AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh)(?:-opus55)?")
 OPUS_REVIEW_MODEL = "claude-opus-5-5"
@@ -1386,12 +1387,13 @@ def combine(answers: dict, tiers: list[str], weights: dict) -> dict:
 
 
 def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
-          prior: dict | None = None, t: int = 1, pinned: bool | None = None, model: str | None = None) -> dict:
+          prior: dict | None = None, t: int | Callable[[], int] = 1, pinned: bool | None = None,
+          model: str | None = None) -> dict:
     """Fail-open router (design D11, D14): every backend is asked in parallel (ask_backends); the valid answers are
     combined (combine) and the combined pick decides (source "bayes") if its top1 - top2 >= router.combine.margin
     (gate "pass"), else the coordinator's tier stands (gate "margin"; None when no backend answered). A ticket whose
     coin falls below eps goes one tier below that pick (source "explore"). eps is the class's explore at the class's
-    t-th routed dispatch (epsilon), 0 when cached or pinned. pinned: the brief's TW-Pin flag, computed here unless
+    t-th routed dispatch (epsilon), 0 when cached or pinned; t may be a function, called only to compute eps. pinned: the brief's TW-Pin flag, computed here unless
     the caller passes it. model: the dispatch's model; its `model_tiers` entry is the ladder (the role's by default)."""
     cfg = routes["router"]
     pol = routes["harnesses"][harness]["roles"][role]
@@ -1399,7 +1401,6 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     tick = ticket(brief)
     mode, explore = class_mode(routes, fields["TW-Class"])
     pinned = flagged(brief, "TW-Pin") if pinned is None else pinned
-    eps = 0.0 if pinned else epsilon(explore, t)  # a user pin is never explored
     if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
         # the ticket omits the model (D17): a decision cached on another model is clamped into this model's ladder;
         # a clamped tier was never picked, so it carries no confidence and its probs name only itself
@@ -1411,6 +1412,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
                 "ticket": tick, "mode": mode, "explore": explore, "eps": 0.0, "draw_propensity": 1.0,
                 "draws": [], "backends": {}, "combined": None, "combined_mean": None, "gate": None}
+    eps = 0.0 if pinned else epsilon(explore, t() if callable(t) else t)  # a user pin is never explored
     start = time.monotonic()
     backends = ask_backends(cfg, pol, fields, brief)
     ok = {n: b for n, b in backends.items() if "tier" in b}
@@ -1697,8 +1699,8 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
         pinned = flagged(brief, "TW-Pin")
         cached = prior_route(home, harness, session, ticket(brief), rows)
-        t = 1 if cached is not None or pinned else 1 + class_count(home, harness, d.fields["TW-Class"], routes)  # route() ignores t then
-        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached, t, pinned, model)
+        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached,
+                  lambda: 1 + class_count(home, harness, d.fields["TW-Class"], routes), pinned, model)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
@@ -1961,8 +1963,8 @@ def default_ledger_dir(home: Path) -> Path:
 
 
 def tw_sha256() -> str:
-    """The code's version for `machines`: tw.py and tw_core.py together."""
-    return sha(b"".join((source_root() / "scripts" / n).read_bytes() for n in ("tw.py", "tw_core.py")))
+    """The code's version for `machines`: CODE_FILES together."""
+    return sha(b"".join((source_root() / rel).read_bytes() for rel in CODE_FILES))
 
 
 def write_ledger(ledger_dir: Path, mid: str, status: str, flags: dict, hooks: dict) -> None:

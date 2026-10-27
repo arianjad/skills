@@ -72,7 +72,7 @@ def upgrade_in_place():
         assert all((home / rel).read_bytes() == data for rel, data in current.items()), "files now the new source"
         assert run_tw("check", "--home", str(home)).returncode == 0, "manifest matches the upgraded files"
         assert (home / ".claude" / "settings.json").read_bytes() == settings, "hook entries untouched"
-        assert json.loads(ledger.read_text(encoding="utf-8"))["tw_sha256"] == tw.sha(Path(TW).read_bytes() + Path(TW).with_name("tw_core.py").read_bytes()), \
+        assert json.loads(ledger.read_text(encoding="utf-8"))["tw_sha256"] == tw.tw_sha256(), \
             "upgrade refreshes this machine's ledger"
         st = run_tw("status", "--home", str(home), "--harness", "claude", "--session", "s-1")
         assert st.returncode == 0 and "inactive" not in st.stdout.lower(), st.stdout      # activation kept

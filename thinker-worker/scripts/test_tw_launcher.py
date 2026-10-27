@@ -24,7 +24,7 @@ def argv(home, harness="claude", owner=tw.OWNER):
 
 def core(home, harness, payload):
     """tw_core.hook's stdout and whether it wrote anything under ~/.thinker-worker beyond the activation records."""
-    before = {p for p in (home / ".thinker-worker").rglob("*")}
+    before = set((home / ".thinker-worker").rglob("*"))
     out, old = io.StringIO(), sys.stdin
     sys.stdin = io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8")
     try:
@@ -32,7 +32,7 @@ def core(home, harness, payload):
             tw_core.hook(home, harness, tw.OWNER)
     finally:
         sys.stdin = old
-    return out.getvalue(), {p for p in (home / ".thinker-worker").rglob("*")} != before
+    return out.getvalue(), set((home / ".thinker-worker").rglob("*")) != before
 
 
 def env(tool="Agent", session=SESSION, prompt=W_MIN):
@@ -41,7 +41,6 @@ def env(tool="Agent", session=SESSION, prompt=W_MIN):
 
 def check_copies():
     assert tw.OWNER == tw_core.OWNER and tw.GUARDED_TOOLS == tw_core.GUARDED_TOOLS
-    assert set(tw.GUARDED_TOOLS) == set(tw_core.HARNESSES)
     with tempfile.TemporaryDirectory() as tmp:
         for home in (Path(tmp), Path(tmp) / "a" / ".."):
             assert Path(tw.record_path(str(home), "codex", "s")) == tw_core.record_path(home.resolve(), "codex", "s")
