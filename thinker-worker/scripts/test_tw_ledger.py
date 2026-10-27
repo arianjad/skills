@@ -37,7 +37,7 @@ def seam_a_install_writes_ledger():
         doc = json.loads((led / "pc-a.json").read_text(encoding="utf-8"))
         assert doc["machine_id"] == "pc-a" and doc["status"] == "installed", doc
         assert doc["os"] == platform.system(), doc["os"]
-        assert doc["tw_sha256"] == hashlib.sha256(TW.read_bytes()).hexdigest()
+        assert doc["tw_sha256"] == hashlib.sha256(TW.read_bytes() + TW.with_name("tw_core.py").read_bytes()).hexdigest()
         assert doc["flags"] == {"portable": True, "harness": ["claude"], "python_cmd": "python3"}, doc["flags"]
         [entry] = owned(home / ".claude" / "settings.json")
         assert doc["hooks"] == {"claude": {"entry": entry, "mode": "written"}}, doc["hooks"]

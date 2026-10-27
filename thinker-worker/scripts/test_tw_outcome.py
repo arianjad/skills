@@ -50,7 +50,7 @@ if __name__ == "__main__":
     # R2 (Astra review finding 2): only a dispatch that ran is labeled or has its TW-Check run. A gate-denied
     # dispatch, a router-advised one (denied at the hook), and a codex-exec dispatch without a cost row (codex never
     # ran) exit 2, run nothing and write nothing.
-    import tw
+    import tw_core as tw
     from test_tw_check import brief, dispatch
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])

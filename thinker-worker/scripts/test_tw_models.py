@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
-import tw
+import tw_core as tw
 
 R = tw.load_routes(tw.source_root() / "routes.json")
 

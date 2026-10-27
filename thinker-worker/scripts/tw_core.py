@@ -3,6 +3,7 @@
 
 Receipts store the validated routing header (each value cut at 256 chars) and never the brief body or a secret. The hook is a guardrail for
 native fresh dispatch; it cannot establish effective child model or permissions.
+Run it through tw.py, the small entry point the hook calls (see its docstring).
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ import uuid
 OWNER = "thinker-worker-v1"
 HARNESSES = ("codex", "claude")
 SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "references/add-model.md",
-               "scripts/tw.py")
+               "scripts/tw.py", "scripts/tw_core.py")
 TIERS = ("low", "medium", "high", "xhigh")
 AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh)(?:-opus55)?")
 OPUS_REVIEW_MODEL = "claude-opus-5-5"
@@ -572,8 +573,7 @@ def receipt(home: Path, harness: str, session: str, envelope: dict, d: Decision)
              "reason": d.reason, "role": d.role, "requested_model": small(d.model),
              "tier": d.tier, "effective_model": None, "effective_effort": None,
              # full TW-Check (not cut at 256) and where it runs; `outcome` executes it
-             "check": (d.fields or {}).get(CHECK_KEY), "cwd": envelope["cwd"] if isinstance(envelope.get("cwd"), str) else None,
-             "brief_checks": "unavailable-encrypted-v2" if harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent" else "plaintext-route"}
+             "check": (d.fields or {}).get(CHECK_KEY), "cwd": envelope["cwd"] if isinstance(envelope.get("cwd"), str) else None}
     append_receipt(home, harness, session, entry)
 
 
@@ -1314,12 +1314,22 @@ def epsilon(explore: float | dict, t: int) -> float:
 
 def class_count(home: Path, harness: str, cls: str, routes: dict) -> int:
     """Non-pinned route rows of a class across every receipt file of the harness; 0 without a scan when the class's
-    explore is a plain number (epsilon ignores t then)."""
-    if not isinstance(class_mode(routes, cls)[1], dict):
+    explore is a plain number (epsilon ignores t then). Counting stops where the schedule reaches its floor, since
+    every later t gives the same ε."""
+    explore = class_mode(routes, cls)[1]
+    if not isinstance(explore, dict) or explore["power"] == 0:
         return 0
-    # ponytail: rereads all receipts per dispatch; a per-class counter file if this ever gets slow
-    return sum(1 for r in harness_rows(home, harness)
-               if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
+    try:
+        cap = math.ceil((explore["c"] / explore["floor"]) ** (1 / explore["power"]))
+    except (ZeroDivisionError, OverflowError):  # floor 0, or a floor too far to reach: count everything
+        cap = math.inf
+    # ponytail: below the cap this still rereads the harness's receipts per dispatch; a per-class counter file if slow
+    n = 0
+    for p in (state_root(home) / "receipts" / harness).glob("*.jsonl"):
+        n += sum(1 for r in read_rows(p) if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
+        if n >= cap:
+            return cap
+    return n
 
 
 def prior_route(home: Path, harness: str, session: str, tick: str, rows: list[dict] | None = None) -> dict | None:
@@ -1673,40 +1683,6 @@ def hook(home: Path, harness: str, owner: str) -> None:
                           f"you dispatched {d.tier} (fine if deliberate)"}}))
 
 
-def quota(home: Path) -> dict:
-    """Both plan meters as last seen locally (design D19), raw: Claude from the status line's log
-    (~/.claude/usage-meter.jsonl, last line), Codex from the newest rollout line whose rate_limits has limit_id
-    "codex". A meter that is missing or unreadable is None; this never raises."""
-    out = {"claude": None, "codex": None}
-    try:
-        r = json.loads((home / ".claude" / "usage-meter.jsonl").read_text(encoding="utf-8").splitlines()[-1])
-        out["claude"] = {"at": r["at"], "five_hour": r.get("five_hour"), "seven_day": r.get("seven_day")}
-    except (OSError, ValueError, IndexError, KeyError, TypeError):
-        pass
-    try:
-        # ponytail: newest 3 day folders, newest 5 files each, last 256 KiB of each; widen if Codex idles longer
-        days = sorted((home / ".codex" / "sessions").glob("*/*/*"), reverse=True)[:3]
-        for f in (f for d in days for f in sorted(d.glob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime,
-                                                   reverse=True)[:5]):
-            with open(f, "rb") as fh:
-                fh.seek(max(0, f.stat().st_size - 256 * 1024))
-                tail = fh.read().decode("utf-8", "replace").splitlines()
-            for line in reversed(tail):
-                if '"limit_id": "codex"' not in line and '"limit_id":"codex"' not in line:
-                    continue
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                rl = (r.get("payload") or {}).get("rate_limits") or {}
-                if rl.get("limit_id") == "codex":
-                    out["codex"] = {"at": r.get("timestamp"), "primary": rl.get("primary"), "secondary": rl.get("secondary")}
-                    return out
-    except (OSError, ValueError, TypeError):
-        pass
-    return out
-
-
 def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, routes: dict, record: dict,
            via: str | None = None, rows: list[dict] | None = None) -> tuple[dict | None, dict | None]:
     """Post-admission routing shared by the hook and `tw.py codex` (via="codex-exec"): route(), act(), and the route
@@ -1724,18 +1700,16 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
                "coordinator_tier": d.tier, "router_tier": r["tier"],
                "prior_tier": prior(routes, harness, d.role, d.fields["TW-Class"], model),
-               "agent_model": model, "quota": quota(home),
+               "agent_model": model,
                "probs": r["probs"],
-               "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "eps": r["eps"],
-               "propensity": None, "draw_propensity": r["draw_propensity"], "ms": r["ms"],
-               "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
+               "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "eps": r["eps"],
+               "propensity": None, "draw_propensity": r["draw_propensity"], "ticket": r["ticket"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
-               "pinned": pinned,
-               # every configured backend's answer ({tier, probs, ms}) or {error}, logged whether or not the gate
-               # passed; {} on a cached row
-               "backends": r["backends"], "combined": r["combined"], "combined_mean": r["combined_mean"],
-               "gate": r["gate"]}
+               "pinned": pinned}
+        if r["backends"]:  # every asked backend's answer ({tier, probs, ms}) or {error}, logged whether or not the
+            # gate passed; omitted with no backend configured and on a cached row (nothing was asked)
+            row.update({k: r[k] for k in ("backends", "combined", "combined_mean", "gate", "ms", "body_chars_sent")})
         if via:
             row["via"] = via
         try:  # an act() bug still records the router's decision (propensity stays None: executed action unknown)
@@ -1983,6 +1957,11 @@ def default_ledger_dir(home: Path) -> Path:
     return home / ".claude" / "thinker-worker-installs"  # inside the git-synced ~/.claude
 
 
+def tw_sha256() -> str:
+    """The code's version for `machines`: tw.py and tw_core.py together."""
+    return sha(b"".join((source_root() / "scripts" / n).read_bytes() for n in ("tw.py", "tw_core.py")))
+
+
 def write_ledger(ledger_dir: Path, mid: str, status: str, flags: dict, hooks: dict) -> None:
     path = ledger_dir / f"{mid}.json"
     old = path.read_bytes() if path.exists() else None
@@ -1991,7 +1970,7 @@ def write_ledger(ledger_dir: Path, mid: str, status: str, flags: dict, hooks: di
     doc = {"machine_id": mid, "os": platform.system(), "status": status,
            "installed_at": prior.get("installed_at", stamp) if status == "installed" else prior.get("installed_at"),
            "updated_at": stamp,
-           "tw_sha256": sha((source_root() / "scripts" / "tw.py").read_bytes()),
+           "tw_sha256": tw_sha256(),
            "flags": flags, "hooks": hooks}
     atomic_write(path, canonical_json(doc), old)
 

@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
-import tw
+import tw_core as tw
 from test_tw_receipt import REV, AUTH, W
 
 R=tw.load_routes(tw.source_root()/'routes.json')

@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import tw
+import tw_core as tw
 
 S = "55555555-6666-7777-8888-999999999999"
 OPUS = "claude-opus-5-5"  # an executed model id, as a Claude cost row records it

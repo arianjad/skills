@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import tw
+import tw_core as tw
 from test_tw_hook import hook_env, pinned_routes
 
 
@@ -25,7 +25,7 @@ def check_transport():
                "message": "opaque ciphertext", "task_name": "transport_probe"},
                "cwd": "C:/Users/test/\u03a3\u201d\U0001d44b"}
         raw = json.dumps(inp, ensure_ascii=False).encode("utf-8")
-        argv = [sys.executable, str(Path(tw.__file__)), "hook", "--home", str(home),
+        argv = [sys.executable, str(Path(__file__).with_name("tw.py")), "hook", "--home", str(home),
                 "--harness", "codex", "--owner", tw.OWNER]
         env = {**os.environ, "PYTHONIOENCODING": "cp1252:strict"}
 
@@ -48,7 +48,8 @@ def check_transport():
         if os.name == "nt" and shutil.which("powershell"):
             installed = home / ".codex/skills/thinker-worker/scripts/tw.py"
             installed.parent.mkdir(parents=True)
-            shutil.copy2(tw.__file__, installed)
+            for name in ("tw.py", "tw_core.py"):
+                shutil.copy2(Path(__file__).with_name(name), installed.with_name(name))
             r = subprocess.run(["cmd", "/C", tw.portable_windows_command("codex")],
                                input=raw, capture_output=True, env=hook_env(home, True))
             assert r.returncode == 0 and not r.stdout.strip(), (r.stdout, r.stderr)

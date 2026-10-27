@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # run_bounded feeds stdin through a pipe, not a temp-file handle: on Windows a file handle was lost through npm's
     # codex.CMD -> node shim ("No prompt provided via stdin", RaX session 2026-09-28) while a pipe survived. 1 MiB
     # exceeds any pipe buffer, so a writer that blocks before the child reads would hang here instead of passing.
-    import tw
+    import tw_core as tw
     probe = ("import os, stat, sys; d = sys.stdin.buffer.read(); "
              "print(stat.S_ISFIFO(os.fstat(0).st_mode), len(d), d[:3] == b'abc')")
     ran = tw.run_bounded([sys.executable, "-c", probe], None, b"abc" + b"x" * (1 << 20), 30)
@@ -203,7 +203,7 @@ if __name__ == "__main__":
         # over the shipped routes.json lists the backend AND runs classes active (explore kept), so a gated pick
         # rewrites on the Codex path. The kev url is pointed at a local stub, never the real server.
         import re
-        import tw
+        import tw_core as tw
         from test_tw_backends import Stub, answer
         root = Path(TW).parent.parent
         enable = re.search(r"enable one with the user override, e\.g\. `([^`]+)`",

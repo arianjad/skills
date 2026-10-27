@@ -9,7 +9,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import tw
+import tw_core as tw
 from test_tw_hook import W_MIN, pinned_routes, run_main
 from test_tw_receipt import SESSION, hook, receipts
 

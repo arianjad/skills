@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import tw
+import tw_core as tw
 
 TW = str(Path(__file__).with_name("tw.py"))
 

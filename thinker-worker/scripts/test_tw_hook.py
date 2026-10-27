@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-import tw
+import tw_core as tw
 
 W_MIN = "TW-Role: worker\nTW-Class: C-coding\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"  # admitted worker brief
 

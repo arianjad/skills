@@ -9,7 +9,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-import tw
+import tw_core as tw
 
 
 def quiet(fn, *args, **kwargs):
@@ -53,7 +53,8 @@ def upgrade_conflicts(scenarios=("replace", "remove", "manifest", "directory", "
                     blocked.unlink()
                     blocked.mkdir()
                 else:
-                    (blocked / "tw.py").unlink()
+                    for f in blocked.iterdir():
+                        f.unlink()
                     blocked.rmdir()
                     blocked.write_bytes(b"user file\n")
                 refused(tw.upgrade, home)

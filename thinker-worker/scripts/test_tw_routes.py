@@ -1,6 +1,6 @@
 """Role policy comes from routes.json: Claude tier agents tw-<role>-<tier>, Codex model + effort tiers.
 Run: python test_tw_routes.py"""
-import tw
+import tw_core as tw
 from test_tw_receipt import AUTH, HDR, REV, W
 
 R = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file

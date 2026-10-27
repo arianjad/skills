@@ -4,7 +4,7 @@ Run: python test_tw_promote_sessions.py
 import tempfile
 from pathlib import Path
 
-import tw
+import tw_core as tw
 
 MODEL = "claude-opus-5-5"
 
