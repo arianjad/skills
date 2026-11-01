@@ -193,7 +193,8 @@ if __name__ == "__main__":
     got = tw.route(r0, "claude", "worker", f, "x", "high", cached, model="sonnet")  # clamped: no borrowed evidence
     assert (got["tier"], got["probs"], got["confidence"]) == ("high", {"high": 1.0}, 0.0), got
     cached = {"router_tier": "xhigh", "probs": {"xhigh": 0.9, "high": 0.1}, "confidence": 0.9, "source": "bayes"}
-    got = tw.route(r0, "claude", "worker", f, "x", "high", cached, model="sonnet")  # in the ladder: kept as cached
+    enabled = json.loads(json.dumps(r0)); enabled["router"]["backends"] = ["table"]
+    got = tw.route(enabled, "claude", "worker", f, "x", "high", cached, model="sonnet")  # enabled cache keeps evidence
     assert (got["tier"], got["probs"], got["confidence"]) == ("xhigh", cached["probs"], 0.9), got
     assert tw.prior(r0, "claude", "worker", "T1-mechanical", "sonnet") == "high"
     r0["router"]["classes"]["*"]["explore"] = 0.0

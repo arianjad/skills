@@ -1322,11 +1322,27 @@ def class_count(home: Path, harness: str, cls: str, routes: dict) -> int:
                if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
 
 
-def prior_route(home: Path, harness: str, session: str, tick: str, rows: list[dict] | None = None) -> dict | None:
+def model_derived_route(row: dict) -> bool:
+    """Whether a cached pick depends on a backend, including exploration around a gated model pick.
+    Old fresh rows retain gate/provenance; old cached exploration may have lost both. Treat that orphan
+    conservatively, while explicit new attribution preserves coordinator-only exploration across caches.
+    """
+    source = row.get("source") or "coordinator"
+    origin = source.split(":")[-1]  # tolerate repeated cached: prefixes in historical receipts
+    if origin == "bayes" or row.get("gate") == "pass" or row.get("provenance"):
+        return True
+    if isinstance(row.get("model_derived"), bool):
+        return row["model_derived"]
+    return origin == "explore" and source != origin
+
+
+def prior_route(home: Path, harness: str, session: str, tick: str, rows: list[dict] | None = None,
+                *, allow_models: bool = True) -> dict | None:
     for row in read_rows(receipts_path(home, harness, session)) if rows is None else rows:
         if (row.get("kind") == "route" and row.get("ticket") == tick
-                and row.get("source") not in ("coordinator", "cached:coordinator")):
-            return row  # the first bayes or exploration decision for this brief; coordinator picks are recomputed
+                and (row.get("source") or "coordinator").split(":")[-1] != "coordinator"
+                and (allow_models or not model_derived_route(row))):
+            return row  # first eligible decision; skip model history without changing receipts
     return None
 
 
@@ -1386,6 +1402,8 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
     mode, explore = class_mode(routes, fields["TW-Class"])
     pinned = flagged(brief, "TW-Pin") if pinned is None else pinned
     eps = 0.0 if pinned else epsilon(explore, t)  # a user pin is never explored
+    if prior is not None and not cfg["backends"] and model_derived_route(prior):
+        prior = None  # direct callers also obey disabled backends; ordinary exploration remains enabled
     if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
         # the ticket omits the model (D17): a decision cached on another model is clamped into this model's ladder;
         # a clamped tier was never picked, so it carries no confidence and its probs name only itself
@@ -1393,7 +1411,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         moved = tier != prior["router_tier"]
         return {"tier": tier, "probs": {tier: 1.0} if moved else prior["probs"],
                 "confidence": 0.0 if moved else prior["confidence"],
-                "provenance": prior.get("provenance"),
+                "provenance": prior.get("provenance"), "model_derived": model_derived_route(prior),
                 "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
                 "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "draw_propensity": 1.0,
                 "draws": [], "backends": {}, "combined": None, "combined_mean": None, "gate": None}
@@ -1433,7 +1451,7 @@ def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord
         draws = [(eps, alt), (1 - eps, {k: found[k] for k in ("tier", "probs", "confidence", "source")})]
         if explored:
             found = {**found, **alt}
-    return {**found, "body_chars_sent": sent, "ms": round((time.monotonic() - start) * 1000), "ticket": tick,
+    return {**found, "model_derived": gate == "pass", "body_chars_sent": sent, "ms": round((time.monotonic() - start) * 1000), "ticket": tick,
             "digest": digest,
             "mode": mode, "explore": explore, "eps": eps,
             "draw_propensity": eps if explored else 1 - eps if drawn else 1.0, "draws": draws,
@@ -1717,7 +1735,8 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
         brief = inp.get("message" if harness == "codex" else "prompt")
         model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
         pinned = flagged(brief, "TW-Pin")
-        cached = prior_route(home, harness, session, ticket(brief)[0], rows)
+        cached = prior_route(home, harness, session, ticket(brief)[0], rows,
+                             allow_models=bool(routes["router"]["backends"]))
         r = route(routes, harness, d.role, d.fields, brief, d.tier, cached,
                   1 + class_count(home, harness, d.fields["TW-Class"], routes), pinned, model)
         row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
@@ -1729,6 +1748,7 @@ def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, 
                "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "eps": r["eps"],
                "propensity": None, "draw_propensity": r["draw_propensity"], "ms": r["ms"],
                "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
+               "model_derived": r["model_derived"],
                "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
                "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
                "pinned": pinned,
