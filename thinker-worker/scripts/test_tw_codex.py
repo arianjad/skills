@@ -96,8 +96,8 @@ if __name__ == "__main__":
         r = run(home, env, "codex", "--session", "s1", "--role", "independent-review", "--tier", "high", "--model",
                 "gpt-6-astra", "--brief-file", str(brief), "--cd", tmp, "--out", str(home / "x.md"))
         assert r.returncode != 0 and "--out" in r.stderr, r                               # no --out option
-        assert a[:2] == ["--search", "exec"] and a[a.index("-m") + 1] == "gpt-6-astra", a
-        assert "model_reasoning_effort=medium" in a and a[a.index("-s") + 1] == "workspace-write", a
+        assert a[:4] == ["--search", "--ask-for-approval", "never", "exec"] and a[a.index("-m") + 1] == "gpt-6-astra", a
+        assert "model_reasoning_effort=medium" in a and a[a.index("-s") + 1] == "danger-full-access", a
         assert call["stdin"].startswith("Review the assigned artifact") and call["stdin"].endswith(REV), call["stdin"][:80]
 
         rows = receipts(home, "claude")

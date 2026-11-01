@@ -574,6 +574,8 @@ def receipt(home: Path, harness: str, session: str, envelope: dict, d: Decision)
              # full TW-Check (not cut at 256) and where it runs; `outcome` executes it
              "check": (d.fields or {}).get(CHECK_KEY), "cwd": envelope["cwd"] if isinstance(envelope.get("cwd"), str) else None,
              "brief_checks": "unavailable-encrypted-v2" if harness == "codex" and envelope.get("tool_name") == "collaborationspawn_agent" else "plaintext-route"}
+    if "permissions" in envelope:
+        entry["permissions"] = envelope["permissions"]
     append_receipt(home, harness, session, entry)
 
 
@@ -776,11 +778,41 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
 CODEX_USAGE = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
 
 
-def codex_cmd(exe: str, model: str, tier: str, cd: Path, out: Path, sandbox: str = "workspace-write",
-              search: bool = True) -> list[str]:
-    # Defaults (tw.py codex): same reach as a Claude child, may write (temp files, scripts) and search the web.
-    return [exe, *(["--search"] if search else []), "exec", "-m", model, "-c", f"model_reasoning_effort={tier}",
-            "-s", sandbox, "--json", "--skip-git-repo-check", "-C", str(cd), "-o", str(out), "-"]
+def worker_permissions(backend: str, sandbox: str | None = None,
+                       approval_policy: str | None = None, permission_mode: str | None = None) -> dict:
+    """Backend-specific dispatch defaults, not a claim about enforced runtime permissions."""
+    if backend == "codex":
+        if sandbox is not None and sandbox not in ("read-only", "workspace-write", "danger-full-access"):
+            raise Conflict("unsupported Codex sandbox")
+        if approval_policy is not None and approval_policy not in ("never", "on-request"):
+            raise Conflict("unsupported Codex approval policy")
+        if permission_mode is not None:
+            raise Conflict("Claude permission mode cannot be mapped implicitly to Codex")
+        requested = {"sandbox": sandbox, "approval_policy": approval_policy}
+        resolved = {"sandbox": "danger-full-access" if sandbox is None else sandbox,
+                    "approval_policy": "never" if approval_policy is None else approval_policy}
+    elif backend == "claude":
+        if sandbox is not None or approval_policy is not None:
+            raise Conflict("Codex permission controls cannot be mapped implicitly to Claude")
+        if permission_mode is not None and permission_mode not in ("manual", "acceptEdits", "bypassPermissions", "plan", "auto", "dontAsk"):
+            raise Conflict("unsupported Claude permission mode")
+        requested = {"permission_mode": permission_mode}
+        resolved = {"permission_mode": "bypassPermissions" if permission_mode is None else permission_mode}
+    else:
+        raise Conflict("unknown worker permission backend")
+    return {"backend": backend, "requested": requested, "resolved": resolved,
+            "source": {key: "wrapper-default" if value is None else "explicit-override" for key,value in requested.items()},
+            "effective": {"status": "unverified", "settings": None},
+            "boundary": "host-enforced restrictions and separate model-use approvals remain in force"}
+
+
+def codex_cmd(exe: str, model: str, tier: str, cd: Path, out: Path, sandbox: str = "danger-full-access",
+              search: bool = True, approval_policy: str = "never") -> list[str]:
+    # Full Access is this explicit pair of Codex controls, not a Claude permission-mode alias.
+    permissions = worker_permissions("codex", sandbox, approval_policy)["resolved"]
+    return [exe, *(["--search"] if search else []), "--ask-for-approval", permissions["approval_policy"],
+            "exec", "-m", model, "-c", f"model_reasoning_effort={tier}",
+            "-s", permissions["sandbox"], "--json", "--skip-git-repo-check", "-C", str(cd), "-o", str(out), "-"]
 
 
 def codex_evidence(home: Path, events: str) -> dict:
@@ -806,11 +838,14 @@ def codex_evidence(home: Path, events: str) -> dict:
     return ev
 
 
-def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_file: Path, cd: Path) -> int:
+def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_file: Path, cd: Path,
+              sandbox: str | None = None, approval_policy: str | None = None) -> int:
     """Claude coordinator -> a Codex model via `codex exec`. Same gate as a native dispatch (decide() on a synthetic
     Agent call with the model), plus: the model must also be in some Codex role's models. Receipts get a dispatch row
     and a cost row with effective model/effort. `-o` (Codex's closing message) always goes to state, never to a
     caller path: pointed at the brief's deliverable it overwrote the child's report at exit (incident 2026-09-28)."""
+    permissions = worker_permissions("codex", sandbox, approval_policy)
+    resolved = permissions["resolved"]
     record = activation(home, "claude", session)
     if record is None:
         raise Conflict(f"claude session {session} is not activated for thinker-worker")
@@ -826,6 +861,7 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     d = decide("claude", env, routes)
     if d.admitted and not is_codex_model(routes, model):
         d = d._replace(admitted=False, reason=f"model {model} is not a Codex model")
+    env["permissions"] = permissions
     receipt(home, "claude", session, env, d)
     if not d.admitted:
         raise Conflict(d.reason)
@@ -842,7 +878,7 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     out.parent.mkdir(parents=True, exist_ok=True)
     timeout = env_timeout("TW_CODEX_TIMEOUT")
     # on timeout the whole tree is killed: codex.CMD -> node -> codex.exe -> sandbox helpers
-    ran = run_bounded(codex_cmd(exe, model, tier, cd, out), None, (AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
+    ran = run_bounded(codex_cmd(exe, model, tier, cd, out, resolved["sandbox"], approval_policy=resolved["approval_policy"]), None, (AGENT_TEXT[role][1] + "\n\n" + brief).encode("utf-8"),
                       timeout)
     code, timed_out, kill_failed, stdout, stderr = ran["code"], ran["timed_out"], ran["kill_failed"], ran["out"], ran["err"]
     if timed_out:
@@ -854,14 +890,14 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     append_receipt(home, "claude", session, {"kind": "cost", "at": now(), "harness": "claude", "session_id": session,
                                              "tool_use_id": tool_use_id, "via": "codex-exec", "exit_code": code,
                                              "timed_out": timed_out, "kill_failed": kill_failed,
-                                             "requested_effort": tier, **ev})
+                                             "requested_effort": tier, "permissions": permissions, **ev})
     if row and row["action"] == "rewrite":  # verified like race_check: did the child run the router's pick?
         append_receipt(home, "claude", session, {"kind": "race", "at": now(), "harness": "claude",
                                                  "session_id": session, "tool_use_id": tool_use_id,
                                                  "lost": ev["effort"] != tier, "agent_type": None, "via": "codex-exec",
                                                  "effective_effort": ev["effort"]})  # unknown effort counts as lost
     print(json.dumps({"tool_use_id": tool_use_id, "last_message": str(out), "exit_code": code, "timed_out": timed_out,
-                      "effective_model": ev["model"], "effective_effort": ev["effort"], "thread_id": ev["thread_id"]}))
+                      "effective_model": ev["model"], "effective_effort": ev["effort"], "thread_id": ev["thread_id"], "permissions": permissions}))
     if code != 0:
         print(stderr[-2000:], file=sys.stderr)
     return 1 if timed_out else code
@@ -899,11 +935,13 @@ def record_cost(home: Path, harness: str, session: str, tool_use_id: str, rows: 
 
 
 def claude_run(home: Path, role: str, tier: str, brief_file: Path, cd: Path, model: str | None = None,
-               relay_model: str = "sonnet", permission_mode: str = "bypassPermissions") -> tuple[int, dict]:
+               relay_model: str = "sonnet", permission_mode: str | None = None) -> tuple[int, dict]:
     """Any shell (Codex) -> a guarded native Claude dispatch. A fresh session is activated, then a `claude -p` relay
     makes exactly one native Agent call; the PreToolUse hook gates it and writes the receipts as for any dispatch.
     Returns (exit code, result): 0 ran, 1 failed run, 2 denied or advised. The result carries executed evidence from
     the child's transcript, never the relay's or the child's self-report."""
+    permissions = worker_permissions("claude", permission_mode=permission_mode)
+    permission_mode = permissions["resolved"]["permission_mode"]
     brief = Path(brief_file).expanduser().resolve().read_text(encoding="utf-8")
     agent = agent_name(role, tier)
     routes = load_routes()
@@ -930,6 +968,8 @@ def claude_run(home: Path, role: str, tier: str, brief_file: Path, cd: Path, mod
         raise Conflict("claude CLI not found on PATH")
     session = str(uuid.uuid4())
     activate(home, "claude", session)
+    append_receipt(home, "claude", session, {"kind": "permissions", "at": now(), "harness": "claude",
+        "session_id": session, "via": "claude-relay", "permissions": permissions})
     relay = "\n".join([
         "Relay only. Make exactly one foreground Agent tool call with these parameters and nothing else:",
         f"subagent_type: {agent}", *([f"model: {native_model}"] if native_model else []),
@@ -951,7 +991,7 @@ def claude_run(home: Path, role: str, tier: str, brief_file: Path, cd: Path, mod
     result = {"session_id": session, "tool_use_id": tool_use_id, "decision": None if state == "none" else state,
               "reason": disp.get("reason") if disp else None, "agent_type": cost.get("agent_type"),
               "effective_model": cost.get("model"), "effective_effort": cost.get("effort"), "exit_code": ran["code"],
-              "timed_out": ran["timed_out"], "kill_failed": ran["kill_failed"], "last_message": str(out)}
+              "timed_out": ran["timed_out"], "kill_failed": ran["kill_failed"], "last_message": str(out), "permissions": permissions}
     if state in ("deny", "advise"):
         return 2, result
     if pinned_opus and (result["effective_model"] != OPUS_REVIEW_MODEL or result["effective_effort"] != tier):
@@ -2335,6 +2375,10 @@ def main() -> int:
             p.add_argument("--model", required=True)
             p.add_argument("--brief-file", type=Path, required=True)
             p.add_argument("--cd", type=Path, default=Path.cwd(), help="the child's working root (default: cwd)")
+            p.add_argument("--sandbox", choices=("read-only", "workspace-write", "danger-full-access"), default=None,
+                           help="Codex sandbox (default danger-full-access); explicit narrower values are preserved")
+            p.add_argument("--approval-policy", choices=("never", "on-request"), default=None,
+                           help="Codex approval policy (default never); enforced host restrictions still apply")
         if name == "claude":  # any shell (Codex) -> guarded native Claude dispatch via a `claude -p` relay
             p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
             p.add_argument("--tier", choices=TIERS, required=True)
@@ -2344,7 +2388,7 @@ def main() -> int:
             p.add_argument("--relay-model", default="sonnet", help="the relay session's model (it only relays)")
             # -p cannot answer a permission prompt, so anything not pre-approved is refused (reads outside --cd, most
             # Bash): default bypassPermissions (Arian's own defaultMode); auto lets a classifier refuse risky actions
-            p.add_argument("--permission-mode", default="bypassPermissions",
+            p.add_argument("--permission-mode", default=None,
                            help="claude -p --permission-mode for the relay and its child (default bypassPermissions; "
                                 "auto, acceptEdits, ...)")
         if name == "spool":  # run outside the sandbox: executes jobs sandboxed Codex threads drop in spool/inbox
@@ -2429,7 +2473,7 @@ def main() -> int:
                 print(json.dumps(v))
         elif args.command == "codex":
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
-                             args.cd.expanduser().resolve())
+                             args.cd.expanduser().resolve(), args.sandbox, args.approval_policy)
         elif args.command == "claude":
             code, result = claude_run(home, args.role, args.tier, args.brief_file, args.cd, args.model,
                                       args.relay_model, args.permission_mode)
