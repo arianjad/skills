@@ -4,16 +4,18 @@ import tempfile
 from unittest.mock import patch
 import tw
 from test_tw_receipt import REV, AUTH, W
+from test_tw_routes import narrowed
 
 R=tw.load_routes(tw.source_root()/'routes.json')
 
-def decision(agent, model=None, brief=REV):
-    return tw.decide('claude',{'tool_name':'Agent','tool_input':dict(subagent_type=agent,model=model,prompt=brief)},R)
+def decision(agent, model=None, brief=REV, routes=R):
+    return tw.decide('claude',{'tool_name':'Agent','tool_input':dict(subagent_type=agent,model=model,prompt=brief)},routes)
 
-for tier in ('medium','high','xhigh'):
+for tier in tw.TIERS:
     d=decision(f'tw-independent-review-{tier}-opus55')
     assert d.admitted and d.model=='claude-opus-5-5' and d.tier==tier
-assert not decision('tw-independent-review-low-opus55').admitted
+assert not decision('tw-independent-review-low-opus55',routes=narrowed(R)).admitted   # outside a narrowed ladder
+assert not decision('tw-independent-review-ultra-opus55').admitted
 assert not decision('tw-independent-review-high-opus55','opus').admitted
 assert not decision('tw-independent-review-high-opus55','fable').admitted
 assert not decision('tw-independent-review-high-opus55',brief=REV.replace(AUTH,'')).admitted

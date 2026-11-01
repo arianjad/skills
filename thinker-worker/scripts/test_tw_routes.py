@@ -1,26 +1,44 @@
 """Role policy comes from routes.json: Claude tier agents tw-<role>-<tier>, Codex model + effort tiers.
 Run: python test_tw_routes.py"""
+import json
+
 import tw
 from test_tw_receipt import AUTH, HDR, REV, W
 
 R = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
+
+
+def narrowed(doc: dict) -> dict:
+    """A test-local copy with narrower ladders (the pre-2026-11-01 shipped ones), so the logic that enforces a role's
+    tiers and a model's `model_tiers` stays exercised now that the shipped roles admit every tier on every model."""
+    d = json.loads(json.dumps(doc))
+    for h in ("claude", "codex"):
+        roles = d["harnesses"][h]["roles"]
+        roles["worker"]["tiers"] = ["low", "medium", "high", "xhigh"]
+        roles["leaf"]["tiers"] = ["low", "medium", "high"]
+        roles["independent-review"]["tiers"] = ["medium", "high", "xhigh"]
+    d["harnesses"]["claude"]["roles"]["worker"]["model_tiers"] = {"sonnet": ["high", "xhigh"]}
+    return d
+
+
+N = narrowed(R)
 LEAF = "TW-Role: leaf\n" + HDR + "x"
 IDEA = "TW-Role: ideation\n" + AUTH + HDR + "x"
 
 
-def claude(brief, st, model=None, **extra):
+def claude(brief, st, model=None, routes=None, **extra):
     inp = {"subagent_type": st, "prompt": brief, **extra}
     if model:
         inp["model"] = model
-    return tw.decide("claude", {"tool_input": inp}, R)
+    return tw.decide("claude", {"tool_input": inp}, routes or R)
 
 
-def codex(brief, model, effort=None, v2=False):
+def codex(brief, model, effort=None, v2=False, routes=None):
     inp = {"message": brief, "model": model, "fork_turns": "none"}
     if effort:
         inp["reasoning_effort"] = effort
     return tw.decide("codex", {"tool_name": "collaborationspawn_agent" if v2 else "spawn_agent",
-                               "tool_input": inp}, R)
+                               "tool_input": inp}, routes or R)
 
 
 CASES = [
@@ -30,21 +48,34 @@ CASES = [
     ("claude per-call model mismatch", claude(W, "tw-worker-high", "not-a-model").admitted, False),
     ("sonnet worker high", claude(W, "tw-worker-high", "sonnet").admitted, True),
     ("sonnet worker xhigh", claude(W, "tw-worker-xhigh", "sonnet").admitted, True),
-    ("sonnet worker medium refused", claude(W, "tw-worker-medium", "sonnet").admitted, False),
-    ("sonnet worker low refused", claude(W, "tw-worker-low", "sonnet").reason,
+    ("sonnet worker medium (every model, every tier)", claude(W, "tw-worker-medium", "sonnet").admitted, True),
+    ("sonnet worker low", claude(W, "tw-worker-low", "sonnet").admitted, True),
+    ("sonnet worker max", claude(W, "tw-worker-max", "sonnet").admitted, True),
+    ("narrowed: sonnet worker medium refused", claude(W, "tw-worker-medium", "sonnet", N).admitted, False),
+    ("narrowed: sonnet worker low refused", claude(W, "tw-worker-low", "sonnet", N).reason,
      "tier low is outside worker's tiers ['high', 'xhigh'] on sonnet"),
+    ("narrowed: opus keeps the role ladder", claude(W, "tw-worker-low", "opus", N).admitted, True),
+    ("haiku worker", claude(W, "tw-worker-high", "haiku").admitted, True),
+    ("haiku 5.5 review", claude(REV, "tw-independent-review-max", "claude-haiku-5-5").admitted, True),
     ("worker agent file stays opus", R["harnesses"]["claude"]["roles"]["worker"]["models"][0], "opus"),
     ("leaf sonnet 5.5 id", claude(LEAF, "tw-leaf-medium", "claude-sonnet-5-5").admitted, True),
-    ("no max tier", claude(W, "tw-worker-max").admitted, False),
+    ("worker max", claude(W, "tw-worker-max").admitted, True),
+    ("worker max tier recorded", claude(W, "tw-worker-max").tier, "max"),
+    ("no tier beyond max", claude(W, "tw-worker-ultra").admitted, False),
+    ("narrowed: worker max outside role", claude(W, "tw-worker-max", routes=N).admitted, False),
     ("role/agent mismatch", claude(W, "tw-leaf-low").admitted, False),
-    ("leaf tier outside role", claude(LEAF, "tw-leaf-xhigh").admitted, False),
+    ("leaf xhigh", claude(LEAF, "tw-leaf-xhigh").admitted, True),
+    ("leaf max", claude(LEAF, "tw-leaf-max", "haiku").admitted, True),
+    ("narrowed: leaf tier outside role", claude(LEAF, "tw-leaf-xhigh", routes=N).admitted, False),
     ("leaf high", claude(LEAF, "tw-leaf-high").admitted, True),
     ("leaf medium", claude(LEAF, "tw-leaf-medium").admitted, True),
     ("old hand-written agent refused", claude(W, "thinker-worker-opus", "opus").admitted, False),
     ("miners are not a route", claude(W, "effortmining:miner-high", "opus").admitted, False),
     ("review tier agent", claude(REV, "tw-independent-review-high").admitted, True),
     ("review medium allowed", claude(REV, "tw-independent-review-medium").admitted, True),
-    ("review low below floor", claude(REV, "tw-independent-review-low").admitted, False),
+    ("review low", claude(REV, "tw-independent-review-low").admitted, True),
+    ("review max", claude(REV, "tw-independent-review-max").admitted, True),
+    ("narrowed: review low below floor", claude(REV, "tw-independent-review-low", routes=N).admitted, False),
     ("native review on astra refused (tw.py codex)", claude(REV, "tw-independent-review-high", "gpt-6-astra").admitted, False),
     ("native review on sol 6.1 refused (tw.py codex)", claude(REV, "tw-independent-review-high", "gpt-6.1-sol").admitted, False),
     ("sol 6.1 review pipeline", tw.decide("claude", {"tool_name": "codex", "tool_input": {
@@ -62,16 +93,23 @@ CASES = [
     ("role line split on \\n only", claude("TW-Role: worker " + HDR + "x", "tw-worker-high").admitted, False),
     ("codex worker sol high", codex(W, "gpt-6-sol", "high").admitted, True),
     ("codex worker terra", codex(W, "gpt-5.6-terra", "medium").admitted, True),
-    ("codex max refused", codex(W, "gpt-6-sol", "max").admitted, False),
+    ("codex worker max", codex(W, "gpt-6-sol", "max").admitted, True),
+    ("codex worker terra 6.1 max", codex(W, "gpt-6.1-terra", "max").admitted, True),
+    ("codex tier beyond max refused", codex(W, "gpt-6-sol", "ultra").admitted, False),
+    ("narrowed: codex max refused", codex(W, "gpt-6-sol", "max", routes=N).admitted, False),
     ("codex worker effort required", codex(W, "gpt-6-sol").admitted, False),
     ("codex review effort required", codex(REV, "gpt-6-astra").admitted, False),
-    ("codex review low below floor", codex(REV, "gpt-6-astra", "low").admitted, False),
-    ("sol 6.1 review low refused", codex(REV, "gpt-6.1-sol", "low").admitted, False),
+    ("codex review low", codex(REV, "gpt-6-astra", "low").admitted, True),
+    ("codex review terra 6.1", codex(REV, "gpt-6.1-terra", "high").admitted, True),
+    ("narrowed: codex review low below floor", codex(REV, "gpt-6-astra", "low", routes=N).admitted, False),
+    ("narrowed: sol 6.1 review low refused", codex(REV, "gpt-6.1-sol", "low", routes=N).admitted, False),
     ("codex ideation medium", codex(IDEA, "gpt-6-astra", "medium").admitted, True),
     ("codex ideation on sol", codex(IDEA, "gpt-6-sol", "high").admitted, False),
     ("codex leaf luna low", codex(LEAF, "gpt-6-luna", "low").admitted, True),
     ("codex leaf luna high", codex(LEAF, "gpt-6-luna", "high").admitted, True),
-    ("codex leaf luna xhigh refused", codex(LEAF, "gpt-6-luna", "xhigh").admitted, False),
+    ("codex leaf luna xhigh", codex(LEAF, "gpt-6-luna", "xhigh").admitted, True),
+    ("codex leaf terra 6.1 max", codex(LEAF, "gpt-6.1-terra", "max").admitted, True),
+    ("narrowed: codex leaf luna xhigh refused", codex(LEAF, "gpt-6-luna", "xhigh", routes=N).admitted, False),
     ("v2 astra needs effort", codex("<cipher>", "gpt-6-astra", v2=True).admitted, False),
     ("v2 astra high, role null", codex("<cipher>", "gpt-6-astra", "high", v2=True)[:3:2], (True, None)),
     ("v2 sol 6.1 shared-model role inferred as worker", codex("<cipher>", "gpt-6.1-sol", "medium", v2=True).role, "worker"),
@@ -79,14 +117,14 @@ CASES = [
 ]
 
 CASES += [(f"sol 6.1 review {tier}", codex(REV, "gpt-6.1-sol", tier).admitted, True)
-          for tier in ("medium", "high", "xhigh")]
+          for tier in tw.TIERS]
 
 if __name__ == "__main__":
     bad = [(name, got, want) for name, got, want in CASES if got != want]
     for b in bad:
         print("FAIL", b)
     assert not bad
-    import json, tempfile
+    import tempfile
     from pathlib import Path
     good = {"backends": [], "budget_s": 2.0, "classes": {"*": {"mode": "shadow"}},
             "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"},
@@ -98,12 +136,13 @@ if __name__ == "__main__":
                            ({**good, "budget_s": True}, False), ({**good, "classes": {}}, False),
                            ({**good, "classes": {"*": {}}}, False),
                            ({**good, "risk_floor": {"physics": "high"}}, False),                         # every flag needs a floor
-                           ({**good, "risk_floor": {**good["risk_floor"], "physics": "max"}}, False),    # a real tier
+                           ({**good, "risk_floor": {**good["risk_floor"], "physics": "ultra"}}, False),  # a real tier
+                           ({**good, "risk_floor": {**good["risk_floor"], "physics": "max"}}, True),
                            ({k: v for k, v in good.items() if k != "risk_floor"}, False),
                            ({k: v for k, v in good.items() if k != "priors"}, False),                    # priors required
                            ({**good, "priors": {"C-coding": "high"}}, False),                            # "*" required
                            ({**good, "priors": {"*": "medium", "C-cooding": "high"}}, False),            # unknown class
-                           ({**good, "priors": {"*": "max"}}, False),                                    # a real tier
+                           ({**good, "priors": {"*": "ultra"}}, False),                                  # a real tier
                            ({**good, "classes": {"*": {"mode": "bogus"}}}, False),                       # a real mode
                            ({**good, "classes": {"*": {"mode": "shadow"}, "X": {"mode": "shadow"}}}, False),
                            ({**good, "classes": {"*": {"mode": "shadow", "explore": 1.5}}}, False),
@@ -127,7 +166,8 @@ if __name__ == "__main__":
                            ({**good, "combine": {}}, False),
                            ({**good, "combine": {"margin": 0.2, "weights": {"kev": -1}}}, False),
                            ({**good, "options": {"low": "l", "medium": "m"}}, True),
-                           ({**good, "options": {"max": "m"}}, False),
+                           ({**good, "options": {"max": "m"}}, True),
+                           ({**good, "options": {"ultra": "m"}}, False),
                            ({**good, "options": {"low": ""}}, False)]:
             doc = {**R, "router": router}
             if router is None:
@@ -162,8 +202,10 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as tmp:  # every tier list is a ladder: non-empty, unique, in TIERS order
         for mt, ok in (({"sonnet": ["high", "xhigh"]}, True), ({"sonnet": ["xhigh", "high"]}, False),
                        ({"sonnet": ["high", "high"]}, False), ({"sonnet": []}, False), ({"sonnet": "high"}, False),
-                       ({"sonnet": ["max"]}, False), ({"not-a-model": ["high"]}, False), ([], False)):
+                       ({"sonnet": ["max"]}, False), ({"sonnet": ["ultra"]}, False), ({"not-a-model": ["high"]}, False),
+                       ([], False)):
             doc = json.loads(json.dumps(R))
+            doc["harnesses"]["claude"]["roles"]["worker"]["tiers"] = ["low", "medium", "high", "xhigh"]  # max: outside
             doc["harnesses"]["claude"]["roles"]["worker"]["model_tiers"] = mt
             p = Path(tmp) / "mt.json"
             p.write_text(json.dumps(doc), encoding="utf-8")
@@ -182,21 +224,32 @@ if __name__ == "__main__":
             raise AssertionError("reversed role tiers accepted")
         except tw.Conflict:
             pass
-    assert tw.prior(R, "claude", "independent-review", "T1-mechanical") == "medium"    # clamped to the review ladder
+    assert tw.prior(R, "claude", "independent-review", "T1-mechanical") == "low"       # the shipped review ladder has low
+    assert tw.prior(N, "claude", "independent-review", "T1-mechanical") == "medium"    # clamped to a narrowed ladder
     assert tw.prior(R, "codex", "ideation", "T1-mechanical") == "medium"
 
     from test_tw_hook import envelope, pinned_routes, run_main
     hdr = "TW-Class: {}\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"
     with pinned_routes(), tempfile.TemporaryDirectory() as tmp:     # route CLI: prior tier, exploration pinned off
         for cls, role, want in (("C-coding", "worker", "high"), ("T1-mechanical", "worker", "low"),
-                                ("T1-mechanical", "independent-review", "medium")):
+                                ("T1-mechanical", "independent-review", "low")):
             f = Path(tmp) / "b.md"
             f.write_text(f"TW-Role: {role}\n" + hdr.format(cls), encoding="utf-8")
             code, out = run_main(["route", "--harness", "claude", "--role", role, "--brief-file", str(f)])
             assert code == 0 and json.loads(out)["tier"] == want, (cls, role, out)
         f.write_text("TW-Role: worker\n" + hdr.format("T1-mechanical"), encoding="utf-8")  # --model: its ladder
         code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "sonnet"])
-        assert code == 0 and json.loads(out)["tier"] == "high", out
+        assert code == 0 and json.loads(out)["tier"] == "low", out                   # shipped: sonnet has every tier
+        nf = Path(tmp) / "narrowed.json"
+        nf.write_text(json.dumps(narrowed(tw.load_routes())), encoding="utf-8")       # the pinned shadow doc, narrowed
+        old_pin = os.environ["TW_ROUTES"]
+        os.environ["TW_ROUTES"] = str(nf)
+        try:
+            code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f),
+                                  "--model", "sonnet"])
+            assert code == 0 and json.loads(out)["tier"] == "high", out              # clamped into sonnet's ladder
+        finally:
+            os.environ["TW_ROUTES"] = old_pin
         code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "not-a-model"])
         assert code == 2, out
         code, out = run_main(["activate", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
@@ -241,7 +294,7 @@ if __name__ == "__main__":
                         json.dumps({"router": {"table": {"path": "x"}}}), json.dumps({"router": {"budget_s": 5}}),
                         json.dumps({"router": {"cutoff": 0.5}}), json.dumps({"router": {"mine": {"url": "http://x"}}}),
                         json.dumps({"router": {"combine": {"margin": 2}}}), json.dumps({"router": {"kev": {"url": 1}}}),
-                        json.dumps({"router": {"priors": {"C-coding": "max"}}}),
+                        json.dumps({"router": {"priors": {"C-coding": "ultra"}}}),
                         json.dumps({"router": {"classes": {"C-coding": {"mode": "bogus"}}}}), "[]"):
                 doc = loaded(bad)
                 assert doc.get("_override_error") and "_override" not in doc, (bad, doc)

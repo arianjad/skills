@@ -31,6 +31,7 @@ def loads(doc: dict) -> bool:
 
 # S1: model_priors[model][class] > model_priors[model]["*"] > router.priors, clamped to the model's tiers
 doc = with_model_priors({"gpt-6-sol": {"*": "low", "C-coding": "medium"}, "sonnet": {"*": "low"}})
+doc["harnesses"]["claude"]["roles"]["worker"]["model_tiers"] = {"sonnet": ["high", "xhigh"]}  # a narrowed model
 assert tw.prior(doc, "claude", "worker", "C-coding", "gpt-6-sol") == "medium"          # class entry
 assert tw.prior(doc, "claude", "worker", "T4-hard-reasoning", "gpt-6-sol") == "low"    # model "*" beats class prior
 assert tw.prior(doc, "claude", "worker", "T4-hard-reasoning", "opus") == "high"        # no entry: class prior
@@ -40,7 +41,8 @@ print("PASS S1 per-model priors")
 
 # S2: validation
 assert loads(with_model_priors({"gpt-6-sol": {"*": "low"}}))
-for bad in ({"not-a-model": {"*": "low"}}, {"gpt-6-sol": {"*": "max"}}, {"gpt-6-sol": {"Z-class": "low"}},
+assert loads(with_model_priors({"gpt-6-sol": {"*": "max"}}))                          # max is a tier
+for bad in ({"not-a-model": {"*": "low"}}, {"gpt-6-sol": {"*": "ultra"}}, {"gpt-6-sol": {"Z-class": "low"}},
             {"gpt-6-sol": "low"}, []):
     assert not loads(with_model_priors(bad)), bad
 print("PASS S2 model_priors validated")
@@ -80,20 +82,31 @@ with override(OV):
     assert code == 0, out
     lines = {(x["role"], x["model"]): x for x in map(json.loads, out.splitlines())}
     assert lines[("worker", "gpt-6-sol")] == {
-        "harness": "claude", "role": "worker", "model": "gpt-6-sol", "tiers": ["low", "medium", "high", "xhigh"],
+        "harness": "claude", "role": "worker", "model": "gpt-6-sol", "tiers": list(tw.TIERS),
         "priors": {"C-coding": {"tier": "xhigh", "source": "override"}}, "default": False, "via": "tw.py codex"}
     assert {k: v for k, v in lines[("worker", "sonnet")].items() if k != "priors"} == {  # shipped priors may change
-        "harness": "claude", "role": "worker", "model": "sonnet", "tiers": ["high", "xhigh"],
+        "harness": "claude", "role": "worker", "model": "sonnet", "tiers": list(tw.TIERS),
         "default": False, "via": "native"}
     assert lines[("worker", "opus")]["default"] is True                      # the agent file's pin
     assert lines[("independent-review", "gpt-6-astra")]["default"] is True   # router.defaults
-    assert lines[("leaf", "sonnet")]["tiers"] == ["low", "medium", "high"]
+    assert lines[("leaf", "sonnet")]["tiers"] == list(tw.TIERS)
+    assert lines[("worker", "haiku")]["tiers"] == list(tw.TIERS) and ("leaf", "gpt-6.1-terra") in lines
+from test_tw_routes import narrowed
+with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ):     # a model_tiers entry is what's listed
+    nf = Path(tmp) / "narrowed.json"
+    nf.write_text(json.dumps(narrowed(R)), encoding="utf-8")
+    os.environ["TW_ROUTES"] = str(nf)
+    code, out = run_main(["models", "--harness", "claude"])
+    lines = {(x["role"], x["model"]): x for x in map(json.loads, out.splitlines())}
+    assert code == 0 and lines[("worker", "sonnet")]["tiers"] == ["high", "xhigh"], out
+    assert lines[("leaf", "sonnet")]["tiers"] == ["low", "medium", "high"], out
 print("PASS S3 models listing")
 
 # S5: the shipped routes.json is in canonical form, so script edits and hand edits cannot drift apart
 text = (tw.source_root() / "routes.json").read_text(encoding="utf-8")
 assert text == tw.dump_routes(json.loads(text)), "routes.json is not canonical: run tw.dump_routes over it"
-assert '"sonnet": ["high", "xhigh"]' in text                                 # scalar lists stay on one line
+assert '"tiers": ["low", "medium", "high", "xhigh", "max"]' in text          # scalar lists stay on one line
+assert '"sonnet": ["high", "xhigh"]' in tw.dump_routes(narrowed(R))           # model_tiers lists too
 print("PASS S5 canonical routes.json")
 
 
@@ -113,7 +126,7 @@ with tempfile.TemporaryDirectory() as tmp:
     want = json.loads(json.dumps(base))
     w = want["harnesses"]["claude"]["roles"]["worker"]
     w["models"].append("gpt-9-test")
-    w["model_tiers"]["gpt-9-test"] = ["medium", "high"]
+    w.setdefault("model_tiers", {})["gpt-9-test"] = ["medium", "high"]
     want["router"].setdefault("model_priors", {})["gpt-9-test"] = {"*": "medium", "C-coding": "high"}
     assert doc == want, doc
     assert p.read_text(encoding="utf-8") == tw.dump_routes(want)              # written canonical
@@ -121,7 +134,7 @@ with tempfile.TemporaryDirectory() as tmp:
     code, out, _ = model_cmd(p, "set", "--harness", "claude", "--role", "worker", "--model", "gpt-9-test",
                              "--tiers", "medium,high", "--prior", "*=medium", "--prior", "C-coding=high")
     assert code == 0 and p.read_text(encoding="utf-8") == before and "unchanged" in out, out   # idempotent
-    for bad in (["--tiers", "high,medium"], ["--tiers", "max"], ["--prior", "C-coding=max"], ["--prior", "Z=low"],
+    for bad in (["--tiers", "high,medium"], ["--tiers", "ultra"], ["--prior", "C-coding=ultra"], ["--prior", "Z=low"],
                 ["--role", "nope"]):
         args = ["set", "--harness", "claude", "--role", "worker", "--model", "gpt-9-test", *bad]
         code, out, _ = model_cmd(p, *args)
@@ -159,8 +172,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert tw.decide("codex", codex, doc).admitted
     for h in ("claude", "codex"):
         assert doc["harnesses"][h]["roles"]["worker"] == base["harnesses"][h]["roles"]["worker"]
-    assert tw.model_tiers(doc["harnesses"]["claude"]["roles"]["worker"], "sonnet") == ["high", "xhigh"]
-    for bad in ("high,medium", "low,max", "low,low", ""):
+    assert tw.model_tiers(doc["harnesses"]["claude"]["roles"]["worker"], "sonnet") == list(tw.TIERS)
+    for bad in ("high,medium", "low,ultra", "low,low", ""):
         code, out, _ = model_cmd(p, "set", "--harness", "claude", "--role", "leaf", "--model", "sonnet",
                                  "--role-tiers", bad)
         assert code == 2 and p.read_bytes() == before, (bad, out)
@@ -183,7 +196,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", rec["date"]), rec
     assert rec == {"date": rec["date"],
                    "roles": {"claude/worker": ["high", "xhigh"], "codex/worker": ["high", "xhigh"],
-                             "claude/independent-review": ["medium", "high", "xhigh"]},
+                             "claude/independent-review": list(tw.TIERS)},
                    "model_priors": {"C-coding": "high"}, "default_for": ["independent-review"]}, rec
     del doc["archived"]
     want = json.loads(json.dumps(base))

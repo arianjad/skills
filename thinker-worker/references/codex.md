@@ -1,6 +1,6 @@
 # Codex routing
 
-Opus 5.5 (`claude-opus-5-5`) is also admitted for independent review through the Claude pipeline below, at the existing medium/high/xhigh tiers. It remains a Claude model, not a native Codex model. Use a read-only, independently authored review brief with explicit authorization/scope; preserve permission checks and verify executed model/effort. Arian authorized this narrow addition on 2026-10-05; default reviewers and other role controls are unchanged.
+Opus 5.5 (`claude-opus-5-5`) is also admitted for independent review through the Claude pipeline below, at every independent-review tier (low through max). It remains a Claude model, not a native Codex model. Use a read-only, independently authored review brief with explicit authorization/scope; preserve permission checks and verify executed model/effort. Arian authorized this narrow addition on 2026-10-05; default reviewers and other role controls are unchanged.
 
 For that exact review model the wrapper selects the generated `tw-independent-review-<tier>-opus55` definition (full model ID pinned in YAML) and omits the per-call model field, because Claude's native field coerces it to `opus`. The generic alias remains unadmitted for review. The wrapper checks the installed definition/local shadows and reports failure if actual transcript model or effort is wrong/unknown; preflight alone does not establish execution identity. Existing review agents/defaults and permissions are unchanged.
 

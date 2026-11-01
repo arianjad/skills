@@ -6,14 +6,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import tw
+from test_tw_routes import narrowed
 
 BRIEF = "TW-Role: worker\nTW-Class: C-coding\nTW-Deliverable: artifact\nTW-Accept: checked\nTW-Risk: none\nDo the task"
 FIELDS, _ = tw.header_fields(BRIEF)
 BASE = tw.load_routes(tw.source_root() / "routes.json")
 
 
-def config(enabled=False, explore=0):
-    cfg = copy.deepcopy(BASE)
+def config(enabled=False, explore=0, narrow=False):
+    cfg = narrowed(BASE) if narrow else copy.deepcopy(BASE)   # narrowed: leaf low..high, so a cached xhigh clamps
     cfg["router"].update(backends=["kev"] if enabled else [],
                          classes={"*": {"mode": "active", "explore": explore}})
     return cfg
@@ -53,13 +54,15 @@ class DisabledCache(unittest.TestCase):
     def test_exploration_only_cache_and_clamp(self):
         for row in [old("explore", gate="margin", provenance=None),
                     old("cached:cached:explore", model_derived=False)]:
-            r = run(config(), row, role="leaf")
+            r = run(config(narrow=True), row, role="leaf")
             self.assertEqual((r["source"], r["tier"]), ("cached:explore", "high"))
             self.assertFalse(r["model_derived"])
             self.assertEqual(r["eps"], 0)
+            r = run(config(), row, role="leaf")                  # the shipped leaf ladder has xhigh: kept
+            self.assertEqual((r["source"], r["tier"]), ("cached:explore", "xhigh"))
 
     def test_enabled_cache_keeps_behavior(self):
-        r = run(config(enabled=True), old("cached:cached:bayes"), role="leaf")
+        r = run(config(enabled=True, narrow=True), old("cached:cached:bayes"), role="leaf")
         self.assertEqual((r["source"], r["tier"]), ("cached:bayes", "high"))
         self.assertTrue(r["model_derived"])
 

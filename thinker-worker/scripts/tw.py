@@ -34,8 +34,8 @@ OWNER = "thinker-worker-v1"
 HARNESSES = ("codex", "claude")
 SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "references/add-model.md",
                "scripts/tw.py")
-TIERS = ("low", "medium", "high", "xhigh")
-AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh)(?:-opus55)?")
+TIERS = ("low", "medium", "high", "xhigh", "max")
+AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh|max)(?:-opus55)?")
 OPUS_REVIEW_MODEL = "claude-opus-5-5"
 VALUE_MAX = 1000  # per header value at the gate; receipts truncate at 256
 ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")

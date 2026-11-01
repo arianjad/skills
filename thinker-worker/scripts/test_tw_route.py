@@ -11,6 +11,7 @@ from pathlib import Path
 import tw
 from test_tw_hook import pinned_routes, run_main
 from test_tw_receipt import HDR, REV, SESSION, hook, receipts
+from test_tw_routes import narrowed
 
 BRIEF = "TW-Role: worker\n" + HDR + "SECRET-BODY do it"
 
@@ -35,8 +36,10 @@ if __name__ == "__main__":
         r = tw.route(routes_with(cal), "claude", "worker", fields, BRIEF, "high")
         assert (r["source"], r["tier"], r["mode"], r["gate"]) == ("bayes", "xhigh", "shadow", "pass"), r  # n = 1
         assert r["backends"]["table"]["tier"] == "xhigh" and r["provenance"].startswith("table: calibration "), r
+        r = tw.route(narrowed(routes_with(cal)), "claude", "leaf", fields, BRIEF, "low")
+        assert r["tier"] == "high" and r["backends"]["table"]["tier"] == "high", r  # xhigh clamped into leaf low..high
         r = tw.route(routes_with(cal), "claude", "leaf", fields, BRIEF, "low")
-        assert r["tier"] == "high" and r["backends"]["table"]["tier"] == "high", r  # xhigh clamped into leaf tiers
+        assert r["tier"] == "xhigh" and r["backends"]["table"]["tier"] == "xhigh", r  # shipped leaf ladder has xhigh
         r = tw.route(routes_with(Path(tmp) / "missing.json"), "claude", "worker", fields, BRIEF, "high")
         assert (r["source"], r["tier"], r["confidence"]) == ("coordinator", "high", 0.0), r
         tw.BACKENDS["bad"] = lambda *a: {"tier": "low", "probs": {"low": 0.7}, "confidence": 0.9}
@@ -74,8 +77,15 @@ if __name__ == "__main__":
                     bodies = list(Path(home).rglob("bodies/*/*.md"))
                     assert (len(bodies) == 1 and "SECRET-BODY" in bodies[0].read_text(encoding="utf-8")) if store else not bodies
 
-            # backend error is recorded on the route row; the pick falls back to the coordinator
+            # a max pick is a worker tier: logged with its agent (shadow)
             cal.write_text(json.dumps({"classes": {"C-coding": {"recommended_tier": "max"}}}), encoding="utf-8")
+            with tempfile.TemporaryDirectory() as home:
+                run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+                assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")
+                row = receipts(home, "claude")[-1]
+                assert (row["source"], row["router_tier"], row["router_agent"]) == ("bayes", "max", "tw-worker-max"), row
+            # backend error is recorded on the route row; the pick falls back to the coordinator
+            cal.write_text(json.dumps({"classes": {"C-coding": {"recommended_tier": "ultra"}}}), encoding="utf-8")
             with tempfile.TemporaryDirectory() as home:
                 run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
                 assert hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": BRIEF}) == (0, "")
@@ -186,17 +196,23 @@ if __name__ == "__main__":
     assert tw.route(r0, "claude", "worker", f, "x", "low")["source"] == "coordinator"       # cheapest: never explored
     assert tw.route(r0, "claude", "independent-review", f, "x", "xhigh")["tier"] == "high"  # the role's own ladder
     assert tw.route(r0, "claude", "leaf", f, "x", "medium")["tier"] == "low"
+    assert tw.route(r0, "claude", "independent-review", f, "x", "medium")["tier"] == "low"   # shipped review has low
+    assert tw.route(r0, "claude", "worker", f, "x", "max")["tier"] == "xhigh"                # max explores to xhigh
+    assert tw.route(r0, "claude", "worker", f, "x", "high", model="sonnet")["tier"] == "medium"  # shipped: every tier
+    rn = narrowed(r0)                                # a test-local ladder: review medium..xhigh, sonnet high, xhigh
+    assert tw.route(rn, "claude", "independent-review", f, "x", "medium")["source"] == "coordinator"  # its cheapest
     # a Sonnet worker's ladder is its model_tiers (high, xhigh): explored down to high, never below
-    assert tw.route(r0, "claude", "worker", f, "x", "xhigh", model="sonnet")["tier"] == "high"
-    assert tw.route(r0, "claude", "worker", f, "x", "high", model="sonnet")["source"] == "coordinator"
+    assert tw.route(rn, "claude", "worker", f, "x", "xhigh", model="sonnet")["tier"] == "high"
+    assert tw.route(rn, "claude", "worker", f, "x", "high", model="sonnet")["source"] == "coordinator"
     cached = {"router_tier": "medium", "probs": {"medium": 1.0}, "confidence": 0.0, "source": "explore"}
-    got = tw.route(r0, "claude", "worker", f, "x", "high", cached, model="sonnet")  # clamped: no borrowed evidence
+    got = tw.route(rn, "claude", "worker", f, "x", "high", cached, model="sonnet")  # clamped: no borrowed evidence
     assert (got["tier"], got["probs"], got["confidence"]) == ("high", {"high": 1.0}, 0.0), got
     cached = {"router_tier": "xhigh", "probs": {"xhigh": 0.9, "high": 0.1}, "confidence": 0.9, "source": "bayes"}
-    enabled = json.loads(json.dumps(r0)); enabled["router"]["backends"] = ["table"]
+    enabled = json.loads(json.dumps(rn)); enabled["router"]["backends"] = ["table"]
     got = tw.route(enabled, "claude", "worker", f, "x", "high", cached, model="sonnet")  # enabled cache keeps evidence
     assert (got["tier"], got["probs"], got["confidence"]) == ("xhigh", cached["probs"], 0.9), got
-    assert tw.prior(r0, "claude", "worker", "T1-mechanical", "sonnet") == "high"
+    assert tw.prior(rn, "claude", "worker", "T1-mechanical", "sonnet") == "high"
+    assert tw.prior(r0, "claude", "worker", "T1-mechanical", "sonnet") == "low"
     r0["router"]["classes"]["*"]["explore"] = 0.0
     assert tw.route(r0, "claude", "worker", f, "x", "high")["source"] == "coordinator"
 

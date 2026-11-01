@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from test_tw_codex import TW, run
+from test_tw_routes import narrowed
 HDR = "TW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\n"
 WORK = "TW-Role: worker\n" + HDR + "print 42"
 FAKE = r'''
@@ -64,6 +65,7 @@ if __name__ == "__main__":
         shipped = json.loads((Path(TW).parent.parent / "routes.json").read_text(encoding="utf-8"))
         shipped["router"]["classes"] = {"*": {"mode": "shadow", "explore": 0.0}}
         (home / "routes.json").write_text(json.dumps(shipped), encoding="utf-8")
+        (home / "narrowed.json").write_text(json.dumps(narrowed(shipped)), encoding="utf-8")  # sonnet: high, xhigh
         env = {**os.environ, "PATH": str(bin_) + os.pathsep + os.environ["PATH"], "FAKE_HOME": tmp, "TW": TW,
                "TW_ROUTES": str(home / "routes.json")}
         brief = home / "brief.md"
@@ -91,12 +93,16 @@ if __name__ == "__main__":
         assert [x["kind"] for x in rows if x["kind"] in ("dispatch", "cost")] == ["dispatch", "cost"], rows
         print("PASS claude: relay argv, fresh activated session, dispatch + cost receipts, executed model/effort")
 
-        # gate failures cost no relay session: bad brief, Codex model, tier outside the model's tiers
-        for text, tier, extra, why in ((HDR + "no role line", "low", (), "first brief line"),
-                                       (WORK, "low", ("--model", "gpt-6.1-sol"), "Codex model"),
-                                       (WORK, "low", ("--model", "sonnet"), "tier low is outside")):
+        # gate failures cost no relay session: bad brief, Codex model, tier outside the model's tiers (a test-local
+        # narrowed routes doc: the shipped one gives every model every tier)
+        for text, tier, extra, why, routes in (
+                (HDR + "no role line", "low", (), "first brief line", "routes.json"),
+                (WORK, "low", ("--model", "gpt-6.1-sol"), "Codex model", "routes.json"),
+                (WORK, "low", ("--model", "sonnet"), "tier low is outside", "narrowed.json")):
             (home / "call.json").unlink(missing_ok=True)
+            env["TW_ROUTES"] = str(home / routes)
             r = claude(text, tier, "worker", *extra)
+            env["TW_ROUTES"] = str(home / "routes.json")
             assert r.returncode == 2 and why in r.stderr and not (home / "call.json").exists(), (why, r)
         print("PASS claude: pre-gate denials exit 2 without launching claude")
 

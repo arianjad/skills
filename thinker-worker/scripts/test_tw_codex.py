@@ -138,8 +138,13 @@ if __name__ == "__main__":
         assert [x["label"] for x in receipts(home, "claude") if x["kind"] == "check"] == ["pass"], receipts(home, "claude")
 
         (home / "call.json").unlink()
+        from test_tw_routes import narrowed               # review medium..xhigh: low is outside (shipped admits it)
+        (home / "narrowed.json").write_text(json.dumps(narrowed(shipped)), encoding="utf-8")
+        env["TW_ROUTES"] = str(home / "narrowed.json")
+        r = codex(REV, "low", "gpt-6-astra", "independent-review")
+        env["TW_ROUTES"] = str(home / "routes.json")
+        assert r.returncode == 2 and "outside" in r.stderr, r.stderr
         for text, tier, model, role, why in (
-                (REV, "low", "gpt-6-astra", "independent-review", "outside"),
                 (WORK, "high", "gpt-6-astra", "independent-review", "subagent_type must be tw-worker"),
                 (REV.replace("TW-Scope: t\n", ""), "high", "gpt-6-astra", "independent-review",
                  "TW-Authorization and TW-Scope"),

@@ -13,8 +13,9 @@ TW = str(Path(__file__).with_name("tw.py"))
 if __name__ == "__main__":
     routes = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
     want = {tw.agent_name(r, t) for r, p in routes["harnesses"]["claude"]["roles"].items() for t in p["tiers"]}
-    assert len(want) == 13 and "tw-leaf-high" in want, want
-    pinned = {f'tw-independent-review-{t}-opus55' for t in ('medium','high','xhigh')}
+    assert len(want) == 18 and {"tw-leaf-high", "tw-worker-max", "tw-leaf-max", "tw-independent-review-max"} <= want, want
+    assert "tw-ideation-max" not in want                # ideation stays medium..xhigh
+    pinned = {f'tw-independent-review-{t}-opus55' for t in tw.TIERS}
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
         r = subprocess.run([sys.executable, TW, "install", "--home", tmp, "--python", sys.executable,
@@ -32,10 +33,10 @@ if __name__ == "__main__":
             assert f"\neffort: {tier}\n" in text and f"\nname: {name}\n" in text, name
             assert f"\nmodel: {routes['harnesses']['claude']['roles'][role]['models'][0]}\n" in text, name
             assert "tools:" not in text, name               # tools: null = full access (Arian 2026-09-26)
-            assert not re.search(r"effort: (max|ultra)", text), name
+            assert not re.search(r"effort: ultra", text), name   # only TIERS names reach the frontmatter
         rev = (home / ".claude" / "agents" / "tw-independent-review-high.md").read_text(encoding="utf-8")
         assert ("Do your own pass against the acceptance criteria before reading any coordinator hypotheses; if the "
                 "brief lists claims to test, answer them after your findings, in their own section.") in rev, rev
         assert subprocess.run([sys.executable, TW, "uninstall", "--home", tmp], capture_output=True).returncode == 0
         assert not list((home / ".claude" / "agents").glob("tw-*.md"))
-    print("PASS 13 unchanged tier agents plus 3 exact Opus 5.5 review pins; uninstall removes them")
+    print("PASS 18 tier agents (max included) plus 5 exact Opus 5.5 review pins; uninstall removes them")

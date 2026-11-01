@@ -8,22 +8,18 @@
     "claude": {
       "roles": {
         "worker": {
-          "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5", "gpt-6.1-sol"],
-          "tiers": ["low", "medium", "high", "xhigh"],
-          "tools": null,
-          "model_tiers": {
-            "sonnet": ["high", "xhigh"],
-            "claude-sonnet-5-5": ["high", "xhigh"]
-          }
+          "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5", "gpt-6.1-sol", "gpt-6.1-terra", "haiku", "claude-haiku-5-5"],
+          "tiers": ["low", "medium", "high", "xhigh", "max"],
+          "tools": null
         },
         "leaf": {
-          "models": ["sonnet", "claude-sonnet-5", "claude-sonnet-5-5", "gpt-6-luna", "haiku", "claude-haiku-5-5"],
-          "tiers": ["low", "medium", "high"],
+          "models": ["sonnet", "claude-sonnet-5", "claude-sonnet-5-5", "gpt-6-luna", "haiku", "claude-haiku-5-5", "gpt-6.1-terra"],
+          "tiers": ["low", "medium", "high", "xhigh", "max"],
           "tools": null
         },
         "independent-review": {
-          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "claude-opus-5-5"],
-          "tiers": ["medium", "high", "xhigh"],
+          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "claude-opus-5-5", "gpt-6.1-terra", "haiku", "claude-haiku-5-5"],
+          "tiers": ["low", "medium", "high", "xhigh", "max"],
           "tools": null
         },
         "ideation": {
@@ -36,16 +32,16 @@
     "codex": {
       "roles": {
         "worker": {
-          "models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-sol"],
-          "tiers": ["low", "medium", "high", "xhigh"]
+          "models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-sol", "gpt-6.1-terra"],
+          "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "leaf": {
-          "models": ["gpt-6-luna"],
-          "tiers": ["low", "medium", "high"]
+          "models": ["gpt-6-luna", "gpt-6.1-terra"],
+          "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "independent-review": {
-          "models": ["gpt-6-astra", "gpt-6.1-sol"],
-          "tiers": ["medium", "high", "xhigh"]
+          "models": ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra"],
+          "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "ideation": {
           "models": ["gpt-6-astra"],
@@ -73,7 +69,8 @@
       "low": "Direct execution of a specified method; limited alternative search.",
       "medium": "Work through dependent steps and perform ordinary verification, when the brief already fixes what to do.",
       "high": "Compare plausible approaches, investigate failures, and check assumptions, or decide what the task needs when that is part of the work.",
-      "xhigh": "Sustain extensive alternative search and adversarial checking."
+      "xhigh": "Sustain extensive alternative search and adversarial checking.",
+      "max": "Spend the most reasoning available: exhaustive search and repeated adversarial checking."
     },
     "budget_s": 2.0,
     "defaults": {

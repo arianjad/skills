@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tw
 from test_tw_hook import pinned_routes
 from test_tw_receipt import HDR
+from test_tw_routes import narrowed
 
 BODY = "B" * 40 + "TAIL-NOT-SENT"
 BRIEF = "TW-Role: worker\n" + HDR + "TW-Check: python -c pass\n" + BODY
@@ -61,8 +62,10 @@ if __name__ == "__main__":
     pin = pinned_routes()
     pin.__enter__()
     fields, _ = tw.header_fields(BRIEF)
-    worker = SHIPPED["harnesses"]["claude"]["roles"]["worker"]
-    leaf = SHIPPED["harnesses"]["claude"]["roles"]["leaf"]
+    shipped_worker = SHIPPED["harnesses"]["claude"]["roles"]["worker"]
+    assert shipped_worker["tiers"] == list(tw.TIERS), shipped_worker                # max is a worker tier
+    worker = narrowed(SHIPPED)["harnesses"]["claude"]["roles"]["worker"]       # low..xhigh: "max" is a stray option
+    leaf = narrowed(SHIPPED)["harnesses"]["claude"]["roles"]["leaf"]           # low..high
     opts = SHIPPED["router"]["options"]
     assert set(opts) == set(tw.TIERS) and opts["low"].startswith("Direct execution"), opts
 
@@ -83,6 +86,9 @@ if __name__ == "__main__":
         tw.backend_jev({"url": s.url, "options": opts, "timeout": 2.0}, leaf, fields, BRIEF)  # default body_chars 1500
         q = s.seen[-1][1]["questions"]["tier"]
         assert list(q["criteria"]) == ["low", "medium", "high"] and "TAIL-NOT-SENT" in s.seen[-1][1]["state"], q
+        out = tw.backend_jev({"url": s.url, "options": opts, "timeout": 2.0}, shipped_worker, fields, BRIEF)
+        assert list(s.seen[-1][1]["questions"]["tier"]["criteria"]) == list(tw.TIERS), s.seen[-1]   # max offered
+        assert abs(out["probs"]["max"] - 0.3 / 1.2) < 1e-9, out                  # and kept on the shipped ladder
     finally:
         s.close()
     s = Stub(answer({"high": 0.0, "xhigh": 0.0, "low": 0.0, "medium": 0.0}))   # no mass on the role's tiers
@@ -167,7 +173,7 @@ if __name__ == "__main__":
             return {"tier": tier, "probs": probs, "confidence": probs[tier], "body_chars_sent": 7}
         return fn
 
-    def expect(answers, weights=None, tiers=("low", "medium", "high", "xhigh")):   # the rule, written out
+    def expect(answers, weights=None, tiers=tuple(shipped_worker["tiers"])):   # the rule, written out
         import math
         w = {k: (weights or {}).get(k, 1 / len(answers)) for k in answers}
         un = {t: math.exp(sum(w[k] * math.log(max(p.get(t, 0.0), 1e-6)) for k, p in answers.items())) for t in tiers}
@@ -281,9 +287,12 @@ if __name__ == "__main__":
     r = rx(["top"], 1.0)                                         # above the coordinator: explored to xhigh - 1 = high
     assert (r["source"], r["tier"]) == ("explore", "high"), r
     tw.BACKENDS["rev"] = stub({"medium": 0.9, "high": 0.1})
-    r = tw.route(routes_with(backends=["rev"], classes={"*": {"mode": "advisory", "explore": 1.0}}),
-                 "claude", "independent-review", fields, mid, "high")   # medium is review's cheapest tier
+    r = tw.route(narrowed(routes_with(backends=["rev"], classes={"*": {"mode": "advisory", "explore": 1.0}})),
+                 "claude", "independent-review", fields, mid, "high")   # medium is the narrowed review's cheapest tier
     assert (r["source"], r["tier"]) == ("bayes", "medium"), r
+    r = tw.route(routes_with(backends=["rev"], classes={"*": {"mode": "advisory", "explore": 1.0}}),
+                 "claude", "independent-review", fields, mid, "high")   # shipped review ladder starts at low
+    assert (r["source"], r["tier"]) == ("explore", "low"), r
     try:  # through the hook: an explored bayes pick is advised as exploration; a re-dispatch reuses it
         rr = routes_with(backends=["med"], classes={"*": {"mode": "advisory", "explore": decay}})
         tw.load_routes = lambda path=None: rr
@@ -311,7 +320,7 @@ if __name__ == "__main__":
     print("PASS backends D3: exploration around the final pick (bayes or coordinator), ladder floor, propensity, hook")
 
     # D4: the arithmetic mean of the valid answers is logged next to the acting (bayes) combination, never acted on
-    mean = lambda *ps: {t: sum(p.get(t, 0.0) for p in ps) / len(ps) for t in ("low", "medium", "high", "xhigh")}
+    mean = lambda *ps: {t: sum(p.get(t, 0.0) for p in ps) / len(ps) for t in shipped_worker["tiers"]}
     r = tw.route(routes_with(backends=["a", "b", "nope"]), "claude", "worker", fields, BRIEF, "high")
     assert close(r["combined_mean"], mean(A, B)) and r["source"] == "bayes", r
     r = tw.route(routes_with(backends=["c", "d"]), "claude", "worker", fields, BRIEF, "high")   # margin miss: logged too
