@@ -2,7 +2,7 @@
   "schema": 1,
   "$override": {
     "path": "TW_ROUTES_OVERRIDE, else ~/.thinker-worker/routes.json (machine-local, survives reinstalls)",
-    "may_set": ["router.priors", "router.model_priors", "router.classes", "router.risk_floor", "router.defaults", "router.backends", "router.combine", "router.options", "router.<jev backend block>"]
+    "may_set": ["router.priors", "router.model_priors", "router.defaults"]
   },
   "harnesses": {
     "claude": {
@@ -51,36 +51,9 @@
     }
   },
   "router": {
-    "backends": [],
-    "kev": {
-      "kind": "jev",
-      "url": "http://127.0.0.1:8766/v1/systemone",
-      "body_chars": 1500
-    },
-    "laya": {
-      "kind": "jev",
-      "url": "http://127.0.0.1:8767/v1/systemone",
-      "body_chars": 1100
-    },
-    "combine": {
-      "margin": 0.2
-    },
-    "options": {
-      "low": "Direct execution of a specified method; limited alternative search.",
-      "medium": "Work through dependent steps and perform ordinary verification, when the brief already fixes what to do.",
-      "high": "Compare plausible approaches, investigate failures, and check assumptions, or decide what the task needs when that is part of the work.",
-      "xhigh": "Sustain extensive alternative search and adversarial checking.",
-      "max": "Spend the most reasoning available: exhaustive search and repeated adversarial checking."
-    },
-    "budget_s": 2.0,
     "defaults": {
       "independent-review": "gpt-6-astra",
       "ideation": "fable"
-    },
-    "risk_floor": {
-      "physics": "medium",
-      "destructive": "medium",
-      "external": "medium"
     },
     "priors": {
       "*": "medium",
@@ -90,19 +63,6 @@
       "T4-hard-reasoning": "high",
       "R-research": "medium",
       "C-coding": "high"
-    },
-    "table": {
-      "path": "~/Code/effortmining/bench/state/calibration.json"
-    },
-    "classes": {
-      "*": {
-        "mode": "advisory",
-        "explore": {
-          "c": 0.5,
-          "power": 0.25,
-          "floor": 0.05
-        }
-      }
     },
     "model_priors": {
       "haiku": {

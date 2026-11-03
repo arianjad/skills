@@ -126,49 +126,13 @@ if __name__ == "__main__":
     assert not bad
     import tempfile
     from pathlib import Path
-    good = {"backends": [], "budget_s": 2.0, "classes": {"*": {"mode": "shadow"}},
-            "risk_floor": {"physics": "high", "destructive": "medium", "external": "medium"},
-            "priors": {"*": "medium"}, "combine": {"margin": 0.2}}
-    dec = {"c": 0.5, "power": 0.25, "floor": 0.05}
+    good = {"priors": {"*": "medium"}}
     with tempfile.TemporaryDirectory() as tmp:
-        for router, ok in [(good, True), (None, False), ([], False), ({**good, "backends": "table"}, False),
-                           ({**good, "budget_s": 0}, False), ({**good, "budget_s": "2"}, False),
-                           ({**good, "budget_s": True}, False), ({**good, "classes": {}}, False),
-                           ({**good, "classes": {"*": {}}}, False),
-                           ({**good, "risk_floor": {"physics": "high"}}, False),                         # every flag needs a floor
-                           ({**good, "risk_floor": {**good["risk_floor"], "physics": "ultra"}}, False),  # a real tier
-                           ({**good, "risk_floor": {**good["risk_floor"], "physics": "max"}}, True),
-                           ({k: v for k, v in good.items() if k != "risk_floor"}, False),
+        for router, ok in [(good, True), (None, False), ([], False),
                            ({k: v for k, v in good.items() if k != "priors"}, False),                    # priors required
                            ({**good, "priors": {"C-coding": "high"}}, False),                            # "*" required
                            ({**good, "priors": {"*": "medium", "C-cooding": "high"}}, False),            # unknown class
-                           ({**good, "priors": {"*": "ultra"}}, False),                                  # a real tier
-                           ({**good, "classes": {"*": {"mode": "bogus"}}}, False),                       # a real mode
-                           ({**good, "classes": {"*": {"mode": "shadow"}, "X": {"mode": "shadow"}}}, False),
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": 1.5}}}, False),
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": dec}}}, True),     # decaying
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "floor": 1.5}}}}, False),
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "c": 0}}}}, False),
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "power": -1}}}}, False),
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "c": True}}}}, False),
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {"c": 0.5, "power": 0.25}}}}, False),
-                           ({**good, "classes": {"*": {"mode": "shadow", "explore": {**dec, "x": 1}}}}, False),
-                           # decision-model blocks (design D11): jev backends, combine margin/weights, option wording
-                           ({**good, "backends": ["kev"], "kev": {"kind": "jev", "url": "http://x/v1/systemone",
-                                                                  "body_chars": 1500}}, True),
-                           ({**good, "kev": {"kind": "jev", "url": 8766}}, False),
-                           ({**good, "kev": {"kind": "jev", "url": "http://x", "body_chars": 0}}, False),
-                           ({**good, "kev": {"kind": "jev", "url": "http://x", "body_chars": True}}, False),
-                           ({**good, "backends": [1]}, False),
-                           ({**good, "combine": {"margin": 0.2, "weights": {"kev": 0.5}}}, True),
-                           ({k: v for k, v in good.items() if k != "combine"}, False),                   # required
-                           ({**good, "combine": {"margin": 1.5}}, False),
-                           ({**good, "combine": {}}, False),
-                           ({**good, "combine": {"margin": 0.2, "weights": {"kev": -1}}}, False),
-                           ({**good, "options": {"low": "l", "medium": "m"}}, True),
-                           ({**good, "options": {"max": "m"}}, True),
-                           ({**good, "options": {"ultra": "m"}}, False),
-                           ({**good, "options": {"low": ""}}, False)]:
+                           ({**good, "priors": {"*": "ultra"}}, False)]:                                 # a real tier
             doc = {**R, "router": router}
             if router is None:
                 del doc["router"]
@@ -182,15 +146,15 @@ if __name__ == "__main__":
                 assert "bad router block" in str(exc), exc
             assert got == ok, router
     import os
-    with tempfile.TemporaryDirectory() as tmp:           # TW_ROUTES (tests pin shadow); an explicit path wins
+    with tempfile.TemporaryDirectory() as tmp:           # TW_ROUTES (tests pin their routing); an explicit path wins
         env_file, arg_file = Path(tmp) / "env.json", Path(tmp) / "arg.json"
-        for p, mode in ((env_file, "shadow"), (arg_file, "active")):
-            p.write_text(json.dumps({**R, "router": {**R["router"], "classes": {"*": {"mode": mode}}}}), encoding="utf-8")
+        for p, tier in ((env_file, "low"), (arg_file, "high")):
+            p.write_text(json.dumps({**R, "router": {**R["router"], "priors": {"*": tier}}}), encoding="utf-8")
         old = os.environ.get("TW_ROUTES")
         os.environ["TW_ROUTES"] = str(env_file)
         try:
-            assert tw.load_routes()["router"]["classes"]["*"]["mode"] == "shadow"
-            assert tw.load_routes(arg_file)["router"]["classes"]["*"]["mode"] == "active"
+            assert tw.load_routes()["router"]["priors"] == {"*": "low"}
+            assert tw.load_routes(arg_file)["router"]["priors"] == {"*": "high"}
         finally:
             os.environ.pop("TW_ROUTES") if old is None else os.environ.__setitem__("TW_ROUTES", old)
     # switch-on T4c: tier priors live in router.priors; no role carries a `default`
@@ -230,31 +194,10 @@ if __name__ == "__main__":
 
     from test_tw_hook import envelope, pinned_routes, run_main
     hdr = "TW-Class: {}\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"
-    with pinned_routes(), tempfile.TemporaryDirectory() as tmp:     # route CLI: prior tier, exploration pinned off
-        for cls, role, want in (("C-coding", "worker", "high"), ("T1-mechanical", "worker", "low"),
-                                ("T1-mechanical", "independent-review", "low")):
-            f = Path(tmp) / "b.md"
-            f.write_text(f"TW-Role: {role}\n" + hdr.format(cls), encoding="utf-8")
-            code, out = run_main(["route", "--harness", "claude", "--role", role, "--brief-file", str(f)])
-            assert code == 0 and json.loads(out)["tier"] == want, (cls, role, out)
-        f.write_text("TW-Role: worker\n" + hdr.format("T1-mechanical"), encoding="utf-8")  # --model: its ladder
-        code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "sonnet"])
-        assert code == 0 and json.loads(out)["tier"] == "low", out                   # shipped: sonnet has every tier
-        nf = Path(tmp) / "narrowed.json"
-        nf.write_text(json.dumps(narrowed(tw.load_routes())), encoding="utf-8")       # the pinned shadow doc, narrowed
-        old_pin = os.environ["TW_ROUTES"]
-        os.environ["TW_ROUTES"] = str(nf)
-        try:
-            code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f),
-                                  "--model", "sonnet"])
-            assert code == 0 and json.loads(out)["tier"] == "high", out              # clamped into sonnet's ladder
-        finally:
-            os.environ["TW_ROUTES"] = old_pin
-        code, out = run_main(["route", "--harness", "claude", "--role", "worker", "--brief-file", str(f), "--model", "not-a-model"])
-        assert code == 2, out
+    with pinned_routes(), tempfile.TemporaryDirectory() as tmp:     # activate/status print the priors
         code, out = run_main(["activate", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
         assert code == 0 and "C-coding=high" in out and "T1-mechanical=low" in out, out
-        assert "Tier priors (installed routes.json): *=medium," in out and "risk floors: physics=medium" in out, out
+        assert "Tier priors (installed routes.json): *=medium," in out and "risk floors" not in out, out
         code, out = run_main(["status", "--home", tmp, "--harness", "claude", "--session", "s-priors"])
         assert code == 0 and "C-coding=high" in out and "T1-mechanical=low" in out, out
 
@@ -272,30 +215,18 @@ if __name__ == "__main__":
             assert doc["router"]["priors"]["C-coding"] == "medium" and doc["router"]["priors"]["T1-mechanical"] == "low"
             assert doc["_override"] == str(ov) and "_override_error" not in doc, doc
             assert tw.prior(doc, "claude", "worker", "C-coding") == "medium"
-            doc = loaded(json.dumps({"router": {"classes": {"C-coding": {"explore": 0.5}}}}))   # partial entry
-            assert tw.class_mode(doc, "C-coding") == ("advisory", 0.5), doc["router"]["classes"]  # inherits "*" mode
-            assert tw.class_mode(doc, "T1-mechanical") == ("advisory", dec)     # the shipped "*" schedule
-            doc = loaded(json.dumps({"router": {"classes": {"*": {"mode": "shadow"}, "C-coding": {"explore": 0.5}}}}))
-            assert tw.class_mode(doc, "C-coding") == ("shadow", 0.5), doc["router"]["classes"]
-            doc = loaded(json.dumps({"router": {"risk_floor": {"physics": "xhigh"}}}))
-            assert doc["router"]["risk_floor"] == {"physics": "xhigh", "destructive": "medium", "external": "medium"}
-            # decision models (design D11): router.backends replaces; per-backend jev blocks, combine, options merge
-            doc = loaded(json.dumps({"router": {"backends": ["kev"], "kev": {"url": "http://127.0.0.1:9/v1/systemone"},
-                                                "combine": {"margin": 0.1}, "options": {"low": "terse"}}}))
-            rt = doc["router"]
-            assert "_override_error" not in doc and rt["backends"] == ["kev"], doc.get("_override_error")
-            assert rt["kev"] == {**R["router"]["kev"], "url": "http://127.0.0.1:9/v1/systemone"}, rt["kev"]
-            assert rt["combine"] == {"margin": 0.1} and rt["laya"] == R["router"]["laya"], rt
-            assert rt["options"] == {**R["router"]["options"], "low": "terse"}, rt["options"]
-            doc = loaded(json.dumps({"router": {"backends": ["mine"], "mine": {"kind": "jev", "url": "http://x"}}}))
-            assert doc["router"]["mine"] == {"kind": "jev", "url": "http://x"} and "_override_error" not in doc, doc
+            # retired router keys (an override written for the removed router) are ignored and named, not errors
+            doc = loaded(json.dumps({"router": {"backends": [], "classes": {"*": {"mode": "active"}},
+                                                "T4-hard-reasoning": {"explore": 0}, "priors": {"C-coding": "medium"}}}))
+            assert "_override_error" not in doc, doc.get("_override_error")
+            assert doc["router"]["priors"]["C-coding"] == "medium"
+            assert doc["_override_ignored"] == ["T4-hard-reasoning", "backends", "classes"], doc["_override_ignored"]
+            assert "ignored override keys: T4-hard-reasoning, backends, classes" in tw.priors_line(doc)
+            assert set(doc["router"]) == {"priors", "model_priors", "defaults"}, set(doc["router"])
             # fails open: any bad override leaves the installed doc unchanged and says why
-            for bad in (json.dumps({"harnesses": {}}), json.dumps({"router": {"backends": "kev"}}), "{not json",
-                        json.dumps({"router": {"table": {"path": "x"}}}), json.dumps({"router": {"budget_s": 5}}),
-                        json.dumps({"router": {"cutoff": 0.5}}), json.dumps({"router": {"mine": {"url": "http://x"}}}),
-                        json.dumps({"router": {"combine": {"margin": 2}}}), json.dumps({"router": {"kev": {"url": 1}}}),
+            for bad in (json.dumps({"harnesses": {}}), "{not json", json.dumps({"router": {"priors": "high"}}),
                         json.dumps({"router": {"priors": {"C-coding": "ultra"}}}),
-                        json.dumps({"router": {"classes": {"C-coding": {"mode": "bogus"}}}}), "[]"):
+                        json.dumps({"router": {"defaults": {"worker": "not-a-model"}}}), "[]"):
                 doc = loaded(bad)
                 assert doc.get("_override_error") and "_override" not in doc, (bad, doc)
                 assert doc["router"] == R["router"] and doc["harnesses"] == R["harnesses"], bad
@@ -315,17 +246,15 @@ if __name__ == "__main__":
             assert code == 0 and "Tier priors (override ignored: " in out, out
             code, out = run_main(["status", "--home", tmp, "--harness", "claude", "--session", session])
             assert code == 0 and "override ignored" in out, out
-            coin = lambda b: tw.coin(tw.ticket(b)[0])
-            brief = next(b for b in ("TW-Role: worker\n" + hdr.format("C-coding") + str(i) for i in range(50))
-                         if coin(b) >= 0.5)                   # shipped eps at t=1 is 0.5: stay unexplored
+            brief = "TW-Role: worker\n" + hdr.format("C-coding")
             env = envelope(session, {"subagent_type": "tw-worker-high", "prompt": brief}, tool_use_id="t1")
             code, out = run_main(["hook", "--home", tmp, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))
             assert code == 0 and out == "", out
             rows = tw.read_rows(tw.receipts_path(Path(tmp), "claude", session))
-            assert [r["kind"] for r in rows] == ["dispatch", "error", "route"] and rows[0]["decision"] == "admit", rows
+            assert [r["kind"] for r in rows] == ["dispatch", "error"] and rows[0]["decision"] == "admit", rows
             assert rows[1]["where"] == "override" and "override" in rows[1]["error"], rows[1]
     finally:
         for k, v in saved.items():
             os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
-    print(f"PASS {len(CASES)} route-policy cases; router block validated; priors, route CLI, activate/status line, "
-          "user override (merge, fail-open, pinned-out)")
+    print(f"PASS {len(CASES)} route-policy cases; router block validated; priors, activate/status line, "
+          "user override (merge, retired keys ignored, fail-open, pinned-out)")

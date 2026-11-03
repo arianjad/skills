@@ -31,11 +31,10 @@ def run_main(argv, stdin=""):
 
 @contextlib.contextmanager
 def pinned_routes():
-    """TW_ROUTES -> a temp copy of the shipped routes.json with every class shadow, explore 0, so a hook test is
-    independent of the shipped mode. Set in os.environ, so subprocesses (portable tests) inherit it."""
+    """TW_ROUTES -> a temp copy of the shipped routes.json, so a hook test ignores any user override file. Set in
+    os.environ, so subprocesses (portable tests) inherit it."""
     with tempfile.TemporaryDirectory() as tmp:
         doc = json.loads((tw.source_root() / "routes.json").read_text(encoding="utf-8"))
-        doc["router"]["classes"] = {"*": {"mode": "shadow", "explore": 0.0}}
         path = os.path.join(tmp, "routes.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(doc, f)

@@ -71,7 +71,7 @@ with override({"router": {"model_priors": {"not-a-model": {"*": "low"}}}}):
 
 # S2: routes.json says an override exists and lists exactly what it may set
 note = R["$override"]
-assert set(note["may_set"]) == {f"router.{k}" for k in tw.OVERRIDABLE} | {"router.<jev backend block>"}, note
+assert set(note["may_set"]) == {f"router.{k}" for k in tw.OVERRIDABLE}, note
 assert "TW_ROUTES_OVERRIDE" in note["path"] and ".thinker-worker/routes.json" in note["path"], note
 print("PASS S2 override may set model_priors; routes.json names the override")
 

@@ -69,9 +69,9 @@ def agent_name(role: str, tier: str) -> str:
     return f"tw-{role}-{tier}"
 
 
-MODES = ("shadow", "advisory", "active")
-# The router keys the user override file may set, plus any per-backend block of kind "jev" (see merge_override)
-OVERRIDABLE = {"priors", "model_priors", "classes", "risk_floor", "defaults", "backends", "combine", "options"}
+# The router keys the user override file may set; any other key (a retired router setting) is ignored and named by
+# activate/status, so an override written for the old router keeps working.
+OVERRIDABLE = {"priors", "model_priors", "defaults"}
 
 
 def load_routes(path: Path | None = None) -> dict:
@@ -93,36 +93,26 @@ def load_routes(path: Path | None = None) -> dict:
 
 
 def merge_override(doc: dict, ov_path: Path) -> dict:
-    """Key by key over the installed router block: `backends` (a list) replaces; every other key is an object merged
-    over the installed one (a per-backend block is allowed if it, or the installed block of that name, has kind
-    "jev"); a class entry inherits the merged "*" entry. The merged doc is validated like the installed one."""
+    """Key by key over the installed router block: each OVERRIDABLE key is an object merged over the installed one
+    (model_priors per model). The merged doc is validated like the installed one."""
     ov = read_json(ov_path, None)
     rt = ov.get("router") if isinstance(ov, dict) else None
     if (not isinstance(ov, dict) or set(ov) != {"router"} or not isinstance(rt, dict)
-            or not all(k in OVERRIDABLE or is_jev(v) or is_jev(doc["router"].get(k)) for k, v in rt.items())
-            or not all(isinstance(v, list if k == "backends" else dict) for k, v in rt.items())
-            or not all(isinstance(v, dict) for v in rt.get("classes", {}).values())):
-        raise Conflict("may set only router." + ", router.".join(sorted(OVERRIDABLE - {"backends"}))
-                       + " and jev backend blocks (each an object) and router.backends (a list)")
+            or not all(isinstance(rt[k], dict) for k in OVERRIDABLE & set(rt))):
+        raise Conflict("may set only router." + ", router.".join(sorted(OVERRIDABLE)) + " (each an object)")
     merged = json.loads(json.dumps(doc))
     mr = merged["router"]
-    for k, v in rt.items():
+    for k in sorted(OVERRIDABLE & set(rt)):
+        v = rt[k]
         if k == "model_priors":  # per model: the override's table merges over the installed one
             mr[k] = {**mr.get(k, {}), **{m: {**mr.get(k, {}).get(m, {}), **t} for m, t in v.items()}}
-        elif k != "classes":
-            mr[k] = v if k == "backends" else {**mr.get(k, {}), **v}
-    star = {**mr["classes"]["*"], **rt.get("classes", {}).get("*", {})}
-    for cls, entry in rt.get("classes", {}).items():
-        mr["classes"][cls] = star if cls == "*" else {**star, **mr["classes"].get(cls, {}), **entry}
+        else:
+            mr[k] = {**mr.get(k, {}), **v}
     check_routes(merged, ov_path)
     merged["_override"] = str(ov_path)
+    merged["_override_ignored"] = sorted(set(rt) - OVERRIDABLE)
     merged["_override_model_priors"] = rt.get("model_priors", {})  # which prior values came from the override
     return merged
-
-
-def is_jev(block: object) -> bool:
-    """A router block for a decision model behind /v1/systemone (backend_jev)."""
-    return isinstance(block, dict) and block.get("kind") == "jev"
 
 
 def is_codex_model(routes: dict, model: object) -> bool:
@@ -138,7 +128,7 @@ def model_tiers(pol: dict, model: str | None) -> list[str]:
 def check_routes(doc: object, path: Path) -> None:
     if not isinstance(doc, dict) or doc.get("schema") != 1:
         raise Conflict(f"routes.json missing or not schema 1: {path}")
-    def ladder(ts: object, allowed: list) -> bool:  # non-empty, unique, in TIERS order: the router steps by position
+    def ladder(ts: object, allowed: list) -> bool:  # non-empty, unique, in TIERS order
         return (isinstance(ts, list) and bool(ts) and all(t in allowed for t in ts)
                 and [TIERS.index(t) for t in ts] == sorted({TIERS.index(t) for t in ts}))
 
@@ -149,41 +139,10 @@ def check_routes(doc: object, path: Path) -> None:
                     or any(m not in pol["models"] or not ladder(ts, pol["tiers"]) for m, ts in mt.items())):
                 raise Conflict(f"routes.json: bad policy for {harness}/{role}")
 
-    def num(v: object) -> bool:
-        return not isinstance(v, bool) and isinstance(v, (int, float))
-
-    def good_explore(ex: object) -> bool:  # a constant in [0, 1], or a decaying schedule (see epsilon)
-        if isinstance(ex, dict):
-            return (set(ex) == {"c", "power", "floor"} and all(num(v) for v in ex.values())
-                    and ex["c"] > 0 and ex["power"] >= 0 and 0 <= ex["floor"] <= 1)
-        return num(ex) and 0 <= ex <= 1
-
-    def good_class(name: object, entry: object) -> bool:
-        return ((name == "*" or name in TASK_CLASSES) and isinstance(entry, dict) and entry.get("mode") in MODES
-                and good_explore(entry.get("explore", 0.0)))
-    def good_jev(b: dict) -> bool:
-        chars = b.get("body_chars", 1)
-        return isinstance(b.get("url"), str) and num(chars) and isinstance(chars, int) and chars > 0
-
-    def good_models(rt: dict) -> bool:  # decision-model blocks: jev backends, router.combine, router.options
-        comb, opts = rt.get("combine"), rt.get("options", {})
-        return (all(isinstance(n, str) for n in rt["backends"]) and all(good_jev(b) for b in rt.values() if is_jev(b))
-                and isinstance(comb, dict) and num(comb.get("margin"))
-                and 0 <= comb["margin"] <= 1 and isinstance(comb.get("weights", {}), dict)
-                and all(num(w) and w >= 0 for w in comb.get("weights", {}).values())
-                and isinstance(opts, dict) and set(opts) <= set(TIERS)
-                and all(isinstance(v, str) and v for v in opts.values()))
     rt = doc.get("router")
-    budget = rt.get("budget_s") if isinstance(rt, dict) else None
-    classes = rt.get("classes") if isinstance(rt, dict) else None
-    floors = rt.get("risk_floor") if isinstance(rt, dict) else None
     priors = rt.get("priors") if isinstance(rt, dict) else None
-    if (not isinstance(rt, dict) or not isinstance(rt.get("backends"), list) or not good_models(rt)
-            or not num(budget) or budget <= 0
-            or not isinstance(classes, dict) or "*" not in classes or not all(good_class(k, v) for k, v in classes.items())
-            or not isinstance(floors, dict) or set(floors) != RISKS or any(v not in TIERS for v in floors.values())
-            or not isinstance(priors, dict) or "*" not in priors or not set(priors) <= TASK_CLASSES | {"*"}
-            or any(v not in TIERS for v in priors.values())):
+    if (not isinstance(rt, dict) or not isinstance(priors, dict) or "*" not in priors
+            or not set(priors) <= TASK_CLASSES | {"*"} or any(v not in TIERS for v in priors.values())):
         raise Conflict("routes.json: bad router block")
     admitted = {m for h in HARNESSES for p in doc["harnesses"][h]["roles"].values() for m in p["models"]}
     mp = rt.get("model_priors", {})
@@ -318,10 +277,10 @@ def priors_line(routes: dict) -> str:
     source = (f"override ignored: {routes['_override_error']}" if routes.get("_override_error")
               else "installed routes.json" + (f" + {routes['_override']}" if routes.get("_override") else ""))
     return (f"Tier priors ({source}): " + ", ".join(f"{k}={v}" for k, v in rt["priors"].items())
-            + "; risk floors: " + ", ".join(f"{k}={v}" for k, v in rt["risk_floor"].items())
             + "; default models: " + (", ".join(f"{k}={v}" for k, v in rt.get("defaults", {}).items()) or "agent files")
             + "".join(f"; {m}: " + ", ".join(f"{k}={v}" for k, v in t.items())
-                      for m, t in rt.get("model_priors", {}).items()))
+                      for m, t in rt.get("model_priors", {}).items())
+            + (f"; ignored override keys: {', '.join(routes['_override_ignored'])}" if routes.get("_override_ignored") else ""))
 
 
 def now() -> str:
