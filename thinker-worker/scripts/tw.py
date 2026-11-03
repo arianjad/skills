@@ -1049,10 +1049,13 @@ def tally(home: Path, harness: str) -> list[dict]:
     model and effort, else the tier of its tw-* agent_type; a dispatch with neither is counted at its requested tier
     with model None. Historical exploration rewrites therefore count at the tier that actually ran."""
     rows = harness_rows(home, harness)
-    latest = lambda kind: {dispatch_key(r): r for r in rows if r.get("kind") == kind}
+
+    def latest(kind: str) -> dict:  # the last row of a kind per dispatch
+        return {dispatch_key(r): r for r in rows if r.get("kind") == kind}
     disp, cost, out, chk = latest("dispatch"), latest("cost"), latest("outcome"), latest("check")
-    groups: dict = {}
+    groups = {}
     for k, d in disp.items():
+        # ponytail: a regex, not header_fields(): receipts hold the header without its role line and cut at 256 chars
         m = re.search(r"^TW-Class: (.+)$", d.get("header") or "", re.M)
         label = {"pass": True, "fail": False}.get((chk.get(k) or {}).get("label"))
         if label is None:
