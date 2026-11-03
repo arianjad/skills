@@ -18,7 +18,7 @@ def check_transport():
     with tempfile.TemporaryDirectory() as tmp, pinned_routes():
         home = Path(tmp)
         session = "11111111-2222-3333-4444-555555555555"
-        tw.activate(home, "codex", session, False)
+        tw.activate(home, "codex", session)
         inp = {"hook_event_name": "PreToolUse", "tool_name": "collaborationspawn_agent",
                "session_id": session, "tool_input": {"model": "gpt-6-sol",
                "reasoning_effort": "xhigh", "fork_turns": "none", "agent_type": "default",

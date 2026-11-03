@@ -1,6 +1,6 @@
 """tw.py claude: Codex (or any shell) -> a guarded native Claude dispatch through a `claude -p` relay session.
 A fake `claude` on PATH plays Claude Code: it runs the real `tw.py hook` on the Agent call the relay prompt asks for,
-and on admit writes the child's meta.json + transcript. Routing is pinned to a shadow copy of the shipped routes.json.
+and on admit writes the child's meta.json + transcript. Routing is pinned to a copy of the shipped routes.json.
 Run: python test_tw_claude.py"""
 import json
 import os
@@ -63,7 +63,6 @@ if __name__ == "__main__":
             (bin_ / "claude").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake_claude.py" "$@"\n')
             (bin_ / "claude").chmod(0o755)
         shipped = json.loads((Path(TW).parent.parent / "routes.json").read_text(encoding="utf-8"))
-        shipped["router"]["classes"] = {"*": {"mode": "shadow", "explore": 0.0}}
         (home / "routes.json").write_text(json.dumps(shipped), encoding="utf-8")
         (home / "narrowed.json").write_text(json.dumps(narrowed(shipped)), encoding="utf-8")  # sonnet: high, xhigh
         env = {**os.environ, "PATH": str(bin_) + os.pathsep + os.environ["PATH"], "FAKE_HOME": tmp, "TW": TW,
@@ -114,18 +113,7 @@ if __name__ == "__main__":
         assert (out["effective_model"], out["effective_effort"]) == ("claude-sonnet-5-5", "high"), out
         print("PASS claude: per-call model forwarded; executed model reported")
 
-        # a denial inside the relay (router advice in advisory mode) exits 2 and names it; nothing ran
-        shipped["router"]["classes"] = {"*": {"mode": "advisory", "explore": 1.0}}
-        (home / "advisory.json").write_text(json.dumps(shipped), encoding="utf-8")
-        env["TW_ROUTES"] = str(home / "advisory.json")
-        r = claude(WORK, "high")
-        out = json.loads(r.stdout.strip().splitlines()[-1])
-        assert r.returncode == 2 and out["decision"] == "advise" and out["effective_model"] is None, r
-        assert "DENIED" in r.stderr and "exploration" in r.stderr, r.stderr
-        print("PASS claude: relay-side denial (router advice) exits 2 with the denial text")
-
         # spool: a sandboxed thread drops a job file; one pass outside the sandbox runs it and writes a result file
-        env["TW_ROUTES"] = str(home / "routes.json")
         inbox, done = home / ".thinker-worker" / "spool" / "inbox", home / ".thinker-worker" / "spool" / "done"
         inbox.mkdir(parents=True)
         brief.write_text(WORK, encoding="utf-8")

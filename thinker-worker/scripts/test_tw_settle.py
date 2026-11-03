@@ -1,17 +1,14 @@
-"""Settle: race check at dispatch (meta agentType vs router_agent, or context-mode's block) writes one race
-row per rewrite and flips the session to advisory on a loss; outcome writes one cost row summing the last
-usage row per message.id. meta.json's agentType is the sole criterion when present; the block text decides only
-without it. outcome runs the race check first. A torn sibling meta or transcript line is skipped; an unreadable
-transcript yields a race-error row and the dispatch is still decided; a torn receipts line is skipped by readers
-and does not swallow the next appended row.
+"""Settle: outcome writes one cost row summing the last usage row per message.id; the executed model comes from the
+transcript, never meta.json. A torn sibling meta or transcript line is skipped; a torn receipts line is skipped by
+readers and does not swallow the next appended row. Historical route rows (the removed router) still parse.
 Run: python test_tw_settle.py"""
 import json
 import tempfile
 from pathlib import Path
 
 import tw
-from test_tw_hook import W_MIN, pinned_routes, run_main
-from test_tw_receipt import SESSION, hook, receipts
+from test_tw_hook import pinned_routes, run_main
+from test_tw_receipt import SESSION, receipts
 
 
 def child(home, agent_type, block, meta_text=None, torn=False, sibling=None, advisor=False, ran=None, offered=()):
@@ -52,35 +49,9 @@ def child(home, agent_type, block, meta_text=None, torn=False, sibling=None, adv
     return str(Path(home) / ".claude" / "projects" / "p" / f"{SESSION}.jsonl")
 
 
-def race(agent_type, block, action="rewrite", **kw):
-    with tempfile.TemporaryDirectory() as home:
-        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
-                                                          "action": action, "router_agent": "tw-worker-low"})
-        tp = child(home, agent_type, block, **kw)
-        tw.race_check(Path(home), "claude", SESSION, tp)
-        tw.race_check(Path(home), "claude", SESSION, tp)          # idempotent: one race row per rewrite
-        rows = [r for r in receipts(home, "claude") if r["kind"] == "race"]
-        flag = tw.advisory_flag(Path(home), "claude", SESSION).exists()
-        return (len(rows), rows[0]["lost"] if rows else None, flag)
-
-
-def dispatch(home, tp):
-    return hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": W_MIN}, "toolu_new",
-                transcript_path=tp)
-
-
 if __name__ == "__main__":
     pin = pinned_routes()  # shipped routing mode pinned out for the whole run
     pin.__enter__()
-    assert race("tw-worker-low", False) == (1, False, False)
-    assert race("tw-worker-high", False) == (1, True, True)     # context-mode's full replacement won
-    assert race("tw-worker-low", True) == (1, False, False)     # agentType is the sole criterion when present
-    assert race(None, True) == (1, True, True)                  # meta without agentType: the block text decides
-    assert race(None, False) == (1, False, False)
-    assert race(None, True, torn=True) == (1, True, True)       # a torn transcript line is skipped, not an error
-    assert race("tw-worker-low", False, sibling="{not json") == (1, False, False)   # torn sibling meta skipped
-    assert race("tw-worker-high", False, action=None) == (0, None, False)
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
@@ -99,16 +70,6 @@ if __name__ == "__main__":
         assert (c["advisor_calls"], c["advisor_model"]) == (0, None), c           # the existing child has no advisor
         # no message.model: the executed model is unknown (meta.json's alias is only the request); a removal is no offer
         assert (c["model"], c["requested_model"], c["advisor_available"]) == (None, "opus", False), c
-    with tempfile.TemporaryDirectory() as home:          # Astra round-3 R2: producer -> promote, no transcript model
-        child(home, "tw-worker-high", False)             # meta.json model "opus", agent_type tw-worker-high, no ran
-        c = tw.cost_row(Path(home), "claude", SESSION, "toolu_x")
-        for row in ({"kind": "route", "tool_use_id": "toolu_x", "ticket": "t1", "class": "C-coding", "action": None,
-                     "source": "bayes", "eligible": True, "router_tier": "medium", "target_tier": "medium",
-                     "coordinator_tier": "high"},   # an eligible coordinator-arm row: the router wanted lower
-                    {"kind": "outcome", "tool_use_id": "toolu_x", "accepted": True}, c):
-            tw.append_receipt(Path(home), "claude", SESSION, row)
-        v = [(x["model"], x["n_coord"], x["n_excluded_identity"]) for x in tw.promote(Path(home), "claude", draws=100)]
-        assert v == [(None, 0, 1)], v                     # identity unknown: in neither arm, not under "opus"
     with tempfile.TemporaryDirectory() as home:          # the model that ran comes from the transcript, not meta.json
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
@@ -142,32 +103,6 @@ if __name__ == "__main__":
         assert (c["advisor_calls"], c["advisor_model"], c["advisor_input_tokens"], c["advisor_output_tokens"]) \
             == (1, "claude-fable-5-1", 900, 50), c
         assert c["output_tokens"] == 50, c                               # top-level counts unchanged: 40 + 7 + 3
-    with tempfile.TemporaryDirectory() as home:          # outcome verifies the last rewrite before labeling it
-        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
-                                                          "decision": "admit"})  # outcome needs a dispatch that ran
-        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
-                                                          "action": "rewrite", "router_agent": "tw-worker-low"})
-        child(home, "tw-worker-high", False)
-        code, _ = run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
-                            "--tool-use-id", "toolu_x", "--accepted", "yes"])
-        rows = receipts(home, "claude")
-        assert code == 0 and [r["lost"] for r in rows if r["kind"] == "race"] == [True], rows
-        assert tw.advisory_flag(Path(home), "claude", SESSION).exists()
-    with tempfile.TemporaryDirectory() as home:          # unreadable child transcript: race-error row, dispatch decided
-        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "toolu_x",
-                                                          "action": "rewrite", "router_agent": "tw-worker-low"})
-        tp = child(home, None, False)
-        transcript = Path(tp).with_suffix("") / "subagents" / "agent-a1.jsonl"
-        transcript.unlink()
-        transcript.mkdir()
-        code, out = dispatch(home, tp)
-        rows = receipts(home, "claude")
-        assert code == 0 and out == "", (code, out)
-        assert [r["kind"] for r in rows if r["kind"].startswith("race")] == ["race-error"], rows
-        assert [r["decision"] for r in rows if r["kind"] == "dispatch"] == ["admit"], rows
-        assert not tw.advisory_flag(Path(home), "claude", SESSION).exists()
     with tempfile.TemporaryDirectory() as home:          # torn last line (concurrent hook): readers skip it
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "toolu_x",
@@ -180,7 +115,4 @@ if __name__ == "__main__":
         assert code == 0
         rows = tw.read_rows(path)
         assert [r["kind"] for r in rows] == ["dispatch", "outcome"], rows    # the row after the torn line parses
-        assert tw.prior_route(Path(home), "claude", SESSION, "abc") is None
-    print("PASS settle: race row per rewrite (agentType, else block), advisory flag on loss, torn sibling meta and "
-          "transcript line skipped, race check at outcome, one cost row at outcome, unreadable transcript -> "
-          "race-error + admit, torn receipts line skipped")
+    print("PASS settle: one cost row at outcome, torn sibling meta and transcript line skipped, torn receipts line skipped")

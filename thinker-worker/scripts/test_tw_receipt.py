@@ -35,7 +35,7 @@ if __name__ == "__main__":
                                        "prompt": "TW-Role: worker\n" + HDR + BODY})
         hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",
                                        "prompt": "TW-Role: worker\n" + BODY})
-        admit, deny = [x for x in receipts(home, "claude") if x["kind"] == "dispatch"]  # T3 adds a route row
+        admit, deny = [x for x in receipts(home, "claude") if x["kind"] == "dispatch"]
         assert admit["decision"] == "admit" and admit["kind"] == "dispatch", admit
         assert admit["subagent_type"] == "tw-worker-medium" and admit["tier"] == "medium", admit
         assert admit["header"] == ("TW-Class: C-coding\nTW-Deliverable: patch\n"
@@ -56,17 +56,17 @@ if __name__ == "__main__":
         (rec,) = receipts(home, "codex")
         assert rec["decision"] == "admit" and rec["role"] is None and rec["header"] is None, rec
         assert rec["kind"] == "dispatch" and rec["subagent_type"] is None, rec
-    with tempfile.TemporaryDirectory() as home:          # route rows: the model each dispatch asked for
+    with tempfile.TemporaryDirectory() as home:          # dispatch rows: the model each dispatch asked for
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         idea = "TW-Role: ideation\n" + AUTH + HDR + BODY
         hook(home, "claude", "Agent", {"subagent_type": "tw-ideation-high", "model": "opus", "prompt": idea})
         hook(home, "claude", "Agent", {"subagent_type": "tw-ideation-high", "prompt": idea})
         rows = receipts(home, "claude")
         assert [r["decision"] for r in rows if r["kind"] == "dispatch"] == ["admit", "admit"], rows
-        assert [r["agent_model"] for r in rows if r["kind"] == "route"] == ["opus", "fable"], rows
+        assert [r["requested_model"] for r in rows] == ["opus", None], rows
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "codex", "--session", SESSION])
         hook(home, "codex", "spawn_agent", {"message": "TW-Role: worker\n" + HDR + BODY, "model": "gpt-6-sol",
                                             "reasoning_effort": "high", "fork_turns": "none"})
-        assert [r["agent_model"] for r in receipts(home, "codex") if r["kind"] == "route"] == ["gpt-6-sol"]
+        assert [r["requested_model"] for r in receipts(home, "codex")] == ["gpt-6-sol"]
     print("PASS receipts carry kind, subagent_type, header; no body; v2 header/role null")

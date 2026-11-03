@@ -94,6 +94,17 @@ def reap(pid):
             pass
 
 
+def reminder_cases():
+    routes = tw.load_routes()
+    d = tw.Decision(True, "admitted-request-only", "worker", None, "high",
+                    {"TW-Class": "T1-mechanical", "TW-Deliverable": "x", "TW-Accept": "x", "TW-Risk": "none"})
+    out = tw.reminder("claude", d, routes, "TW-Role: worker\nTW-Class: T1-mechanical")
+    assert "prior for T1-mechanical is low; you dispatched high" in out["hookSpecificOutput"]["additionalContext"]
+    assert tw.reminder("claude", d._replace(tier="low"), routes, "") is None            # at the prior
+    assert tw.reminder("codex", d, routes, "") is None                                  # Codex: none
+    assert tw.reminder("claude", d, routes, "TW-Role: worker\nTW-Pin: user high") is None  # pinned
+
+
 def boom(*_a, **_k):
     raise RuntimeError("simulated guard bug")
 
@@ -110,6 +121,12 @@ if __name__ == "__main__":
 
     code, out = run_main(hook_argv, env)  # sanity: a valid dispatch is admitted (no output)
     assert code == 0 and out == "", (code, out)
+
+    reminder_cases()
+    low = json.dumps(envelope(session, {"subagent_type": "tw-worker-low", "prompt": W_MIN}))
+    code, out = run_main(hook_argv, low)  # through the hook: below the prior, admitted with one reminder line
+    assert code == 0 and "you dispatched low" in json.loads(out)["hookSpecificOutput"]["additionalContext"], out
+    print("PASS prior reminder (off-prior tier only; not at the prior, not Codex, not pinned)")
 
     tw.decide = boom
     code, out = run_main(hook_argv, env)

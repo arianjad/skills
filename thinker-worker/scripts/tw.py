@@ -11,11 +11,9 @@ import argparse
 import functools
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import platform
-import random
 import re
 import shlex
 import shutil
@@ -349,14 +347,13 @@ def activation(home: Path, harness: str, session: str) -> dict | None:
     return obj
 
 
-def activate(home: Path, harness: str, session: str, store_bodies: bool = False) -> str:
+def activate(home: Path, harness: str, session: str) -> str:
     path = record_path(home, harness, session)
     old = path.read_bytes() if path.exists() else None
     if old is not None:
         activation(home, harness, session)
     priors = priors_line(load_routes())
-    obj = {"schema": 1, "harness": harness, "session_id": session,
-           "store_bodies": store_bodies, "activated_at": now()}
+    obj = {"schema": 1, "harness": harness, "session_id": session, "activated_at": now()}
     atomic_write(path, canonical_json(obj), old)
     return (f"Activation requested for {harness} session {session}; hook trust/loading, interception, and effective "
             f"child model remain unverified.\n{priors}")
@@ -374,7 +371,6 @@ def status(home: Path, harness: str, session: str) -> None:
         record = activation(home, harness, session)
         value = {"activation": "requested" if record else "inactive",
                  "harness": harness, "session_id": session,
-                 "store_bodies": record.get("store_bodies", False) if record else False,
                  "hook_loaded": "unknown", "native_interception": "unknown",
                  "effective_child_model_effort": "unknown"}
     except Conflict as exc:
@@ -512,6 +508,16 @@ def decide(harness: str, envelope: dict, routes: dict) -> Decision:
 def denial(reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                        "permissionDecision": "deny", "permissionDecisionReason": f"{OWNER}: {reason}"}}))
+
+
+def reminder(harness: str, d: Decision, routes: dict, brief: str) -> dict | None:
+    """Claude only: an additionalContext line when an admitted dispatch's tier differs from its class prior, unless the
+    user pinned the tier (TW-Pin). ponytail: Codex's handling of additionalContext without a decision is unverified."""
+    p = prior(routes, harness, d.role, d.fields["TW-Class"], d.model)
+    if harness != "claude" or d.tier == p or flagged(brief, "TW-Pin"):
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
+            f"thinker-worker: prior for {d.fields['TW-Class']} is {p}; you dispatched {d.tier} (fine if deliberate)"}}
 
 
 def receipt(home: Path, harness: str, session: str, envelope: dict, d: Decision) -> None:
@@ -699,16 +705,16 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
             cause: str | None = None, run: bool = True, timeout: float = 900) -> None:
     """Label a guarded dispatch; the last outcome for a tool_use_id wins. accepted is the coordinator's (weak) label;
     the dispatch's TW-Check, unless run is False, is executed and writes a `check` row. Claude: one cost row.
-    Only a dispatch that ran is labeled: its dispatch row says admit, its route row (if any) is not an advise (a
-    denial), and a `tw.py codex` dispatch has a cost row (codex ran). Otherwise Conflict, before anything is written."""
+    Only a dispatch that ran is labeled: its dispatch row says admit, a historical route row (if any) is not an advise
+    (the retired router's denial), and a `tw.py codex` dispatch has a cost row (codex ran). Otherwise Conflict, before anything is written."""
     rows = read_rows(receipts_path(home, harness, session))
     disp, state = dispatch_state(rows, tool_use_id)
     if state == "none":
         raise Conflict(f"no dispatch receipt for tool_use_id {tool_use_id} in {harness} session {session}")
     if state == "deny":
         raise Conflict(f"{tool_use_id} was denied at the gate ({disp.get('reason')}); it never ran")
-    if state == "advise":
-        raise Conflict(f"{tool_use_id} was advised (denied) by the router; it never ran")
+    if state == "advise":  # historical rows: the removed router denied it after the gate admitted it
+        raise Conflict(f"{tool_use_id} was advised (denied) by the retired router; it never ran")
     if disp.get("tool_name") == "codex" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id
                                                     for r in rows):
         raise Conflict(f"{tool_use_id}: no cost row, so codex never ran for it")
@@ -716,8 +722,6 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
     if accepted is None and not check:
         raise Conflict("nothing to record: pass --accepted yes|no, or dispatch with a TW-Check line (without "
                        "--no-check)")
-    if harness == "claude":
-        race_check(home, harness, session, None)  # verify the session's last rewrite before it is labeled; never raises
     if accepted is not None:
         append_receipt(home, harness, session, {"kind": "outcome", "at": now(), "harness": harness,
                                                 "session_id": session, "tool_use_id": tool_use_id,
@@ -824,12 +828,6 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     receipt(home, "claude", session, env, d)
     if not d.admitted:
         raise Conflict(d.reason)
-    hint, row = routed(home, "claude", session, env, d, routes, record, via="codex-exec")  # fails open: row None
-    if row and row["action"] == "advise":
-        raise Conflict(hint["hookSpecificOutput"]["permissionDecisionReason"])
-    if row and row["action"] == "rewrite":
-        tier = row["target_tier"]
-        print(hint["hookSpecificOutput"]["additionalContext"])
     exe = shutil.which("codex")
     if not exe:
         raise Conflict("codex CLI not found on PATH")
@@ -850,11 +848,6 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
                                              "tool_use_id": tool_use_id, "via": "codex-exec", "exit_code": code,
                                              "timed_out": timed_out, "kill_failed": kill_failed,
                                              "requested_effort": tier, "permissions": permissions, **ev})
-    if row and row["action"] == "rewrite":  # verified like race_check: did the child run the router's pick?
-        append_receipt(home, "claude", session, {"kind": "race", "at": now(), "harness": "claude",
-                                                 "session_id": session, "tool_use_id": tool_use_id,
-                                                 "lost": ev["effort"] != tier, "agent_type": None, "via": "codex-exec",
-                                                 "effective_effort": ev["effort"]})  # unknown effort counts as lost
     print(json.dumps({"tool_use_id": tool_use_id, "last_message": str(out), "exit_code": code, "timed_out": timed_out,
                       "effective_model": ev["model"], "effective_effort": ev["effort"], "thread_id": ev["thread_id"], "permissions": permissions}))
     if code != 0:
@@ -868,7 +861,8 @@ def env_timeout(name: str) -> float:
 
 def dispatch_state(rows: list[dict], tool_use_id: str | None = None) -> tuple[dict | None, str]:
     """The dispatch row for tool_use_id (default: the last one) and whether it ran: none, deny, advise or admit.
-    An advised dispatch was denied by the router after the gate admitted it, so it never ran either."""
+    An advised dispatch (historical rows only) was denied by the retired router after the gate admitted it, so it never
+    ran either."""
     disp = [r for r in rows if r.get("kind") == "dispatch" and tool_use_id in (None, r.get("tool_use_id"))]
     if not disp:
         return None, "none"
@@ -897,7 +891,7 @@ def claude_run(home: Path, role: str, tier: str, brief_file: Path, cd: Path, mod
                relay_model: str = "sonnet", permission_mode: str | None = None) -> tuple[int, dict]:
     """Any shell (Codex) -> a guarded native Claude dispatch. A fresh session is activated, then a `claude -p` relay
     makes exactly one native Agent call; the PreToolUse hook gates it and writes the receipts as for any dispatch.
-    Returns (exit code, result): 0 ran, 1 failed run, 2 denied or advised. The result carries executed evidence from
+    Returns (exit code, result): 0 ran, 1 failed run, 2 denied. The result carries executed evidence from
     the child's transcript, never the relay's or the child's self-report."""
     permissions = worker_permissions("claude", permission_mode=permission_mode)
     permission_mode = permissions["resolved"]["permission_mode"]
@@ -1007,58 +1001,6 @@ def child_files(dirs: list[Path], tool_use_id: str) -> tuple[dict, Path] | None:
     return None
 
 
-def race_check(home: Path, harness: str, session: str, transcript_path: str | None,
-               rows: list[dict] | None = None) -> None:
-    """For earlier rewrites not yet checked: the child's actual agent (meta.json, written at spawn) must be the
-    router's pick; only when meta.json lacks agentType, its prompt must not carry context-mode's block instead.
-    Otherwise the race was lost. Runs at each dispatch and at outcome.
-    Never raises: a failure becomes a race-error row, and the dispatch is decided normally. rows: the session's
-    receipt rows if the caller already read them."""
-    try:
-        if harness != "claude":
-            return
-        if rows is None:
-            path = receipts_path(home, harness, session)
-            rows = read_rows(path) if path.exists() else []
-        if not rows:
-            return
-        checked = {r.get("tool_use_id") for r in rows if r.get("kind") == "race"}
-        dirs = subagents_dirs(home, session, transcript_path)
-        for r in rows:
-            if r.get("kind") != "route" or r.get("action") != "rewrite" or r.get("tool_use_id") in checked:
-                continue
-            found = child_files(dirs, r["tool_use_id"])
-            if found is None or not found[1].exists():
-                continue  # not spawned yet; next dispatch checks again
-            meta, transcript = found
-            if meta.get("agentType"):  # sole criterion: briefs may legitimately quote context-mode's block
-                lost = meta["agentType"] != r.get("router_agent")
-            else:
-                lost = False
-                with transcript.open(encoding="utf-8", errors="replace") as stream:
-                    for line in stream:  # streamed to the first user row; torn lines skipped as in read_rows
-                        try:
-                            obj = json.loads(line)
-                        except ValueError:
-                            continue
-                        if isinstance(obj, dict) and obj.get("type") == "user":
-                            content = json.dumps((obj.get("message") or {}).get("content"), ensure_ascii=False)
-                            lost = "<context_window_protection>" in content
-                            break
-            append_receipt(home, harness, session, {"kind": "race", "at": now(), "harness": harness,
-                                                    "session_id": session, "tool_use_id": r["tool_use_id"],
-                                                    "lost": lost, "agent_type": meta.get("agentType")})
-            if lost:
-                advisory_flag(home, harness, session).write_text(now(), encoding="utf-8")
-    except Exception as exc:  # a tripwire failure is recorded, never silent, and never blocks a dispatch
-        try:
-            append_receipt(home, harness, session, {"kind": "race-error", "at": now(), "harness": harness,
-                                                    "session_id": session,
-                                                    "error": f"{type(exc).__name__}: {exc}"[:200]})
-        except Exception:
-            pass  # ponytail: unwritable receipts dir; the dispatch receipt fails right after anyway
-
-
 def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict | None:
     found = child_files(subagents_dirs(home, session), tool_use_id)
     if found is None or not found[1].exists():
@@ -1088,50 +1030,12 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
             "advisor_available": any(a.get("type") == "advisor_tool" and a.get("available") is True for a in att),
             "api_calls": len(usage),
             # effort: the transcript's own per-turn field (executed); absent when the transcript lacks it, so
-            # promote's ran_as falls back to the agent_type tier
+            # tally falls back to the agent_type tier
             **({"effort": eff} if eff else {}),
             **{k: sum(u.get(k, 0) for u in usage.values()) for k in COST_KEYS},
             "advisor_calls": len(advisor_ids), "advisor_model": next((it.get("model") for it in adv), None),
             "advisor_input_tokens": sum(it.get("input_tokens", 0) for it in adv),
             "advisor_output_tokens": sum(it.get("output_tokens", 0) for it in adv)}
-
-
-def promote(home: Path, harness: str, cls: str | None = None, model: str | None = None, margin: float = 0.15,
-            draws: int = 200_000, seed: int = 7) -> list[dict]:
-    """One verdict per (class, model) group of route rows, filtered by cls/model. The model is the executed one, the
-    dispatch's latest `cost` row `model` (never the requested `agent_model`, never a role default), else None.
-    An arm counts a dispatch only on executed evidence that agrees with it: a cost row with a model and positive
-    effort evidence (codex `effort`; else the tier of a Claude `tw-*` `agent_type`) equal to the arm's tier (the
-    floored target for a rewrite, the coordinator's tier otherwise). A dispatch failing this, missing or unknown
-    effort included, leaves both arms and is counted in n_excluded_identity.
-    Design §5: Beta posteriors for the router arm (verified lower-tier runs) and the coordinator arm
-    (backend wanted lower and the row is `eligible`, child ran at the coordinator tier); promote/demote/hold on
-    P(diff >= -margin). "Lower" and "complied" compare the floored `target_tier` (`router_tier` on rows written
-    before it existed). A dispatch whose cost row shows advisor calls measured tier + advisor, not the tier: it
-    leaves both arms and is counted in n_advisor_excluded. A dispatch's label is its latest `check` row (pass accepted,
-    fail rejected, unknown excluded), else the coordinator's `outcome`; n_check / n_coordinator count each source."""
-    rows = harness_rows(home, harness)
-    routes = [r for r in rows if r.get("kind") == "route"]
-    maps = {"cost": {dispatch_key(r): r for r in rows if r.get("kind") == "cost"},  # the latest in-session wins
-            "label": {dispatch_key(r): r["accepted"] for r in rows if r.get("kind") == "outcome"},
-            "checked": {dispatch_key(r): r.get("label") for r in rows if r.get("kind") == "check"},
-            "race": {dispatch_key(r): r.get("lost") for r in rows if r.get("kind") == "race"},
-            "advisor": {dispatch_key(r) for r in rows if r.get("kind") == "cost" and r.get("advisor_calls")},
-            "advised": {}}
-    advice = {}
-    for r in routes:  # receipt order within each session: later advice cannot relabel earlier work
-        key = (r["_session_file"], r["ticket"])
-        maps["advised"][dispatch_key(r)] = advice.get(key)
-        if r.get("action") == "advise" and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]):
-            advice[key] = tgt(r)
-    groups = {}
-    for r in routes:
-        if r.get("pinned"):
-            continue  # the user pinned model/effort: the router never acted, so neither arm
-        key = (r.get("class"), (maps["cost"].get(dispatch_key(r)) or {}).get("model"))
-        if (cls is None or key[0] == cls) and (model is None or key[1] == model):
-            groups.setdefault(key, []).append(r)
-    return [{"class": c, "model": m, **arms(maps, g, margin, draws, seed)} for (c, m), g in groups.items()]
 
 
 def harness_rows(home: Path, harness: str) -> list[dict]:
@@ -1145,477 +1049,9 @@ def dispatch_key(r: dict) -> tuple[str, str | None]:
     return r["_session_file"], r.get("tool_use_id")
 
 
-def tgt(r: dict) -> str:
-    """A route row's floored pick; rows before switch-on T3 lack target_tier."""
-    return r.get("target_tier") or r["router_tier"]
-
-
-def arms(maps: dict, group: list[dict], margin: float, draws: int, seed: int) -> dict:
-    """The promote verdict for one group of route rows (see promote); maps: the per-session/tool_use_id indexes promote
-    builds once over every row."""
-    cost, label, checked, race = maps["cost"], maps["label"], maps["checked"], maps["race"]
-    advised_by, advised = maps["advisor"], maps["advised"]
-
-    def ran_as(tid: tuple[str, str | None], tier: str) -> bool:  # executed identity agrees with the arm's tier
-        c = cost.get(tid) or {}
-        m = AGENT_NAME.fullmatch(c.get("agent_type") or "")
-        eff = c.get("effort") if "effort" in c else m.group(2) if m else None
-        return bool(c.get("model")) and eff == tier  # no effort evidence: unknown tier, in neither arm
-    router, coord, n_adv, n_id, src = [], [], 0, 0, {"check": 0, "coordinator": 0}
-    for r in group:
-        if dispatch_key(r) in advised_by:
-            n_adv += 1
-            continue
-        tid = dispatch_key(r)  # an executed TW-Check outranks the coordinator's accept (design D6)
-        by = "check" if tid in checked else "coordinator"
-        ok = {"pass": True, "fail": False}.get(checked[tid]) if by == "check" else label.get(tid)
-        if ok is None or race.get(tid) is True:
-            continue  # unlabeled, or lost race: ran at neither arm's tier
-        rewrite_lower = (r.get("action") == "rewrite" and race.get(tid) is False  # verified only
-                         and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]))
-        complied = (r.get("action") is None and (r.get("source") or "").startswith("cached:")
-                    and advised.get(tid) == r["coordinator_tier"])
-        to_coord = (not (rewrite_lower or complied) and r.get("action") is None
-                    and not (r.get("source") or "coordinator").endswith("coordinator")
-                    and r.get("eligible") and TIERS.index(tgt(r)) < TIERS.index(r["coordinator_tier"]))
-        if not (rewrite_lower or complied or to_coord):
-            continue
-        if not ran_as(tid, tgt(r) if rewrite_lower else r["coordinator_tier"]):
-            n_id += 1  # no executed evidence, or it contradicts the arm
-            continue
-        # router arm, or coordinator arm: the router wanted lower and would have acted; child ran at the coordinator tier
-        (router if rewrite_lower or complied else coord).append(ok)
-        src[by] += 1
-    k, n, kc, nc = sum(router), len(router), sum(coord), len(coord)
-    rng = random.Random(seed)
-    hit = sum(rng.betavariate(1 + k, 1 + n - k) - rng.betavariate(1 + kc, 1 + nc - kc) >= -margin
-              for _ in range(draws))
-    p = hit / draws
-    return {"k_router": k, "n_router": n, "k_coord": kc, "n_coord": nc, "p": round(p, 3),
-            "n_advisor_excluded": n_adv, "n_excluded_identity": n_id, "n_check": src["check"], "n_coordinator": src["coordinator"], "verdict": "promote" if p > 0.8 else "demote" if p < 0.2 else "hold"}
-
-
-def ticket(brief: str) -> tuple[str, str]:
-    """(12-hex ticket, full digest) of the brief without TW-Route/TW-Override lines. The brief only, not the model
-    (B2 reversed 2026-09-28): one decision per brief, so following model-step advice reuses it."""
-    norm = "\n".join(x.rstrip() for x in brief.split("\n")
-                     if not x.startswith(("TW-Route:", "TW-Override:"))).strip()
-    digest = sha(norm.encode("utf-8"))
-    return digest[:12], digest
-
-
-def coin(tick: str) -> float:
-    """A ticket's exploration draw in [0, 1): the dispatch is explored when it falls below eps."""
-    return int(tick, 16) / 16 ** 12
-
-
 def clamp(tier: str, tiers: list[str]) -> str:
     i = TIERS.index(tier)
     return min(tiers, key=lambda t: (abs(TIERS.index(t) - i), TIERS.index(t)))
-
-
-def backend_table(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
-    cal = json.loads(Path(os.path.expanduser(cfg["path"])).read_text(encoding="utf-8"))
-    tier = clamp(cal["classes"][fields["TW-Class"]]["recommended_tier"], pol["tiers"])
-    return {"tier": tier, "probs": {t: float(t == tier) for t in pol["tiers"]}, "confidence": 0.0,
-            "body_chars_sent": 0, "provenance": f"calibration {cal.get('model')} {cal.get('fitted_date')}"}
-
-
-# The option wording sent to decision models is routes.json router.options (tier -> behavioral effort description):
-# provisional, from Astra ideation 2026-09-28, until candidate cards (design D5) replace it.
-JEV_INSTRUCTIONS = ("Pick the lowest reasoning-effort tier at which a capable model completes this delegated task "
-                    "correctly.")  # provisional, like router.options
-JEV_MAX_BYTES = 64 * 1024  # a tier answer is well under 1 KiB; a larger body is refused before any JSON parse
-# Windows refuses a closed loopback port only after ~2 s (measured 2026-09-28), so a down server would cost every
-# dispatch the whole budget; the connect gets this bound, the reply keeps the budget left. Local servers only.
-# 0.5 s is ~20x the worst loopback connect measured to live Kev/Laya under 16 concurrent requests (27 ms, 2026-09-28).
-JEV_CONNECT_S = 0.5
-
-
-def backend_jev(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
-    """A decision model behind Jev/TypeSafe `POST /v1/systemone` (kev.serve, Laya). cfg is the router's block for
-    this backend plus `options` (router.options unless the block has its own) and `timeout` (the budget left), both
-    added by route(). state = TW-Role + routing header + the brief body (lines 2-12 starting `TW-` dropped) cut to
-    body_chars; probabilities renormalized over the role's tiers."""
-    import http.client
-    import socket
-    import urllib.request
-
-    class Conn(http.client.HTTPConnection):
-        def connect(self):  # short connect bound; the socket then waits up to the budget left for the reply
-            self.sock = socket.create_connection((self.host, self.port), min(JEV_CONNECT_S, self.timeout))
-            self.sock.settimeout(self.timeout)
-
-    class Handler(urllib.request.HTTPHandler):
-        def http_open(self, req):
-            return self.do_open(Conn, req)
-    lines = brief.split("\n")
-    body = "\n".join(x for i, x in enumerate(lines) if i and not (i < 12 and x.startswith("TW-")))
-    body = body[:cfg.get("body_chars", 1500)]
-    req = {"state": f"{lines[0]}\n{header_text(fields)}\n\n{body}",
-           "questions": {"tier": {"type": "choice", "instructions": JEV_INSTRUCTIONS,
-                                  "criteria": {t: cfg["options"][t] for t in pol["tiers"]}}}}
-    http = urllib.request.Request(cfg["url"], data=json.dumps(req).encode("utf-8"),
-                                  headers={"Content-Type": "application/json"})
-    # ProxyHandler({}): a local server, never through a system proxy
-    with urllib.request.build_opener(urllib.request.ProxyHandler({}), Handler).open(http, timeout=cfg["timeout"]) as resp:
-        data = resp.read(JEV_MAX_BYTES + 1)  # the join deadline cannot preempt a GIL-holding parse: bound it (R4)
-    if len(data) > JEV_MAX_BYTES:
-        raise ValueError(f"oversize: response over {JEV_MAX_BYTES} bytes")
-    got = json.loads(data.decode("utf-8"))["answers"]["tier"]["probabilities"]
-    if not isinstance(got, dict) or not all(prob(v) and v <= 1 for v in got.values()):
-        raise ValueError("probabilities must be finite numbers in [0, 1]")  # never coerce flags or scores
-    raw = {t: float(got.get(t, 0.0)) for t in pol["tiers"]}
-    total = sum(raw.values())
-    if any(v < 0 for v in raw.values()) or not total > 0:
-        raise ValueError("no probability mass on the role's tiers")
-    probs = {t: v / total for t, v in raw.items()}
-    tier = max(pol["tiers"], key=probs.get)
-    return {"tier": tier, "probs": probs, "confidence": probs[tier], "body_chars_sent": len(body),
-            "provenance": f"jev {cfg['url']}"}
-
-
-BACKENDS = {"table": backend_table}  # a router name not here resolves to backend_jev if its block has kind "jev"
-
-
-def backend_fn(cfg: dict, name: str):
-    return BACKENDS.get(name) or (backend_jev if is_jev(cfg.get(name)) else None)
-
-
-def prob(v: object) -> bool:
-    """A finite, non-negative real number (bool excluded)."""
-    return not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0
-
-
-def valid_route(out: object, tiers: list[str]) -> bool:
-    if not isinstance(out, dict) or out.get("tier") not in tiers or not isinstance(out.get("probs"), dict):
-        return False
-    probs = out["probs"]
-    return (set(probs) <= set(tiers) and all(prob(v) for v in probs.values())
-            and abs(sum(probs.values()) - 1) < 1e-6
-            and prob(out.get("confidence")) and out["confidence"] <= 1)
-
-
-def class_mode(routes: dict, cls: str | None) -> tuple[str, float | dict]:
-    """(mode, explore as configured: a number or a {c, power, floor} schedule) for a class, "*" if it has none."""
-    classes = routes["router"]["classes"]
-    c = classes.get(cls) or classes["*"]
-    return c["mode"], c.get("explore", 0.0)
-
-
-def epsilon(explore: float | dict, t: int) -> float:
-    """Exploration probability at the t-th routed dispatch of a class. A schedule decays as SLARouter's forced
-    exploration (arXiv 2606.19376, p_t = min(1, c / t^(1/4))) with a floor: max(floor, min(1, c / t**power))."""
-    if isinstance(explore, dict):
-        return max(explore["floor"], min(1.0, explore["c"] / t ** explore["power"]))
-    return float(explore)
-
-
-def class_count(home: Path, harness: str, cls: str, routes: dict) -> int:
-    """Non-pinned route rows of a class across every receipt file of the harness; 0 without a scan when the class's
-    explore is a plain number (epsilon ignores t then)."""
-    if not isinstance(class_mode(routes, cls)[1], dict):
-        return 0
-    # ponytail: rereads all receipts per dispatch; a per-class counter file if this ever gets slow
-    return sum(1 for r in harness_rows(home, harness)
-               if r.get("kind") == "route" and r.get("class") == cls and not r.get("pinned"))
-
-
-def model_derived_route(row: dict) -> bool:
-    """Whether a cached pick depends on a backend, including exploration around a gated model pick.
-    Old fresh rows retain gate/provenance; old cached exploration may have lost both. Treat that orphan
-    conservatively, while explicit new attribution preserves coordinator-only exploration across caches.
-    """
-    source = row.get("source") or "coordinator"
-    origin = source.split(":")[-1]  # tolerate repeated cached: prefixes in historical receipts
-    if origin == "bayes" or row.get("gate") == "pass" or row.get("provenance"):
-        return True
-    if isinstance(row.get("model_derived"), bool):
-        return row["model_derived"]
-    return origin == "explore" and source != origin
-
-
-def prior_route(home: Path, harness: str, session: str, tick: str, rows: list[dict] | None = None,
-                *, allow_models: bool = True) -> dict | None:
-    for row in read_rows(receipts_path(home, harness, session)) if rows is None else rows:
-        if (row.get("kind") == "route" and row.get("ticket") == tick
-                and (row.get("source") or "coordinator").split(":")[-1] != "coordinator"
-                and (allow_models or not model_derived_route(row))):
-            return row  # first eligible decision; skip model history without changing receipts
-    return None
-
-
-def ask_backends(cfg: dict, pol: dict, fields: dict, brief: str) -> dict:
-    """Every name in router.backends, one thread each, within budget_s: {name: answer + ms} for a valid answer,
-    {"error": ..., "body_chars_sent": None} otherwise ("timeout" for a thread still running at the deadline; a
-    failed call's send is unknown, not zero)."""
-    got: dict = {}
-    deadline = time.monotonic() + cfg["budget_s"]
-
-    def one(name: str) -> None:
-        t0 = time.monotonic()
-        try:
-            fn = backend_fn(cfg, name)
-            if fn is None:
-                raise LookupError
-            out = fn({"options": cfg.get("options", {}), **cfg.get(name, {}),
-                      "timeout": max(0.01, deadline - time.monotonic())}, pol, fields, brief)
-            rec = {**out} if valid_route(out, pol["tiers"]) else {"error": "invalid answer", "body_chars_sent": None}
-        except LookupError:
-            rec = {"error": "unknown backend", "body_chars_sent": None}
-        except Exception as exc:
-            rec = {"error": f"{type(exc).__name__}: {exc}"[:160], "body_chars_sent": None}
-        got[name] = {**rec, "ms": round((time.monotonic() - t0) * 1000)}
-
-    threads = [threading.Thread(target=one, args=(n,), daemon=True) for n in dict.fromkeys(cfg["backends"])]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join(max(0.0, deadline - time.monotonic()))
-    return {n: got.get(n, {"error": "timeout", "body_chars_sent": None})  # a snapshot
-            for n in dict.fromkeys(cfg["backends"])}
-
-
-def combine(answers: dict, tiers: list[str], weights: dict) -> dict:
-    """Weighted geometric mean over tiers (design D11): p(t) ∝ Π p_i(t)^w_i, w_i = weights[i] else 1/n, each
-    probability floored at 1e-6 before the log."""
-    w = {k: weights.get(k, 1 / len(answers)) for k in answers}
-    logp = {t: sum(w[k] * math.log(max(a["probs"].get(t, 0.0), 1e-6)) for k, a in answers.items()) for t in tiers}
-    top = max(logp.values())
-    un = {t: math.exp(v - top) for t, v in logp.items()}
-    return {t: v / sum(un.values()) for t, v in un.items()}
-
-
-def route(routes: dict, harness: str, role: str, fields: dict, brief: str, coord_tier: str,
-          prior: dict | None = None, t: int = 1, pinned: bool | None = None, model: str | None = None) -> dict:
-    """Fail-open router (design D11, D14): every backend is asked in parallel (ask_backends); the valid answers are
-    combined (combine) and the combined pick decides (source "bayes") if its top1 - top2 >= router.combine.margin
-    (gate "pass"), else the coordinator's tier stands (gate "margin"; None when no backend answered). A ticket whose
-    coin falls below eps goes one tier below that pick (source "explore"). eps is the class's explore at the class's
-    t-th routed dispatch (epsilon), 0 when cached or pinned. pinned: the brief's TW-Pin flag, computed here unless
-    the caller passes it. model: the dispatch's model; its `model_tiers` entry is the ladder (the role's by default)."""
-    cfg = routes["router"]
-    pol = routes["harnesses"][harness]["roles"][role]
-    pol = {**pol, "tiers": model_tiers(pol, model)}
-    tick, digest = ticket(brief)
-    mode, explore = class_mode(routes, fields["TW-Class"])
-    pinned = flagged(brief, "TW-Pin") if pinned is None else pinned
-    eps = 0.0 if pinned else epsilon(explore, t)  # a user pin is never explored
-    if prior is not None and not cfg["backends"] and model_derived_route(prior):
-        prior = None  # direct callers also obey disabled backends; ordinary exploration remains enabled
-    if prior is not None:  # one decision per ticket: re-dispatches of the same brief reuse it, never re-explore
-        # the ticket omits the model (D17): a decision cached on another model is clamped into this model's ladder;
-        # a clamped tier was never picked, so it carries no confidence and its probs name only itself
-        tier = clamp(prior["router_tier"], pol["tiers"])
-        moved = tier != prior["router_tier"]
-        return {"tier": tier, "probs": {tier: 1.0} if moved else prior["probs"],
-                "confidence": 0.0 if moved else prior["confidence"],
-                "provenance": prior.get("provenance"), "model_derived": model_derived_route(prior),
-                "source": "cached:" + prior["source"].split(":")[-1], "body_chars_sent": 0, "ms": 0,
-                "ticket": tick, "digest": digest, "mode": mode, "explore": explore, "eps": 0.0, "draw_propensity": 1.0,
-                "draws": [], "backends": {}, "combined": None, "combined_mean": None, "gate": None}
-    start = time.monotonic()
-    backends = ask_backends(cfg, pol, fields, brief)
-    ok = {n: b for n, b in backends.items() if "tier" in b}
-    backends = {n: ({k: b.get(k) for k in ("tier", "probs", "ms", "body_chars_sent")} if n in ok else b)
-                for n, b in backends.items()}
-    # what reached any backend, whatever the gate: the max sent; None if no backend's send is known, 0 with none
-    sent = max((b["body_chars_sent"] for b in backends.values() if b.get("body_chars_sent") is not None),
-               default=None if backends else 0)
-    found = {"tier": coord_tier, "probs": {coord_tier: 1.0}, "confidence": 0.0, "source": "coordinator"}
-    combined = mean = gate = None
-    if ok:
-        comb = cfg["combine"]
-        combined = combine(ok, pol["tiers"], comb.get("weights", {}))
-        # design D11: logged only, so other pooling rules can be scored offline against labels
-        mean = {t: sum(b["probs"].get(t, 0.0) for b in ok.values()) / len(ok) for t in pol["tiers"]}
-        pick = max(pol["tiers"], key=combined.get)  # a tie goes to the cheaper tier (and fails any margin > 0)
-        top = sorted(combined.values(), reverse=True) + [0.0]
-        gate = "pass" if top[0] - top[1] >= comb["margin"] else "margin"
-        if gate == "pass":
-            found = {"tier": pick, "probs": combined, "confidence": combined[pick], "source": "bayes",
-                     "provenance": "; ".join(f"{n}: {b['provenance']}" for n, b in ok.items()
-                                             if b.get("provenance")) or None}
-    # Exploration around the final pick, bayes or coordinator (design D14): eligible when eps > 0 and the role has a
-    # tier below the pick. The coin decides. draw_propensity is the probability of the drawn branch (eps if explored,
-    # 1 - eps if not, 1.0 with no draw); draws lists both branches (probability, the router fields act() reads) so
-    # routed() can give the probability of the executed action after the floor and the action mapping.
-    ladder = pol["tiers"]
-    drawn = eps > 0 and found["tier"] in ladder and ladder.index(found["tier"]) > 0
-    explored = drawn and coin(tick) < eps
-    draws = []
-    if drawn:
-        below = ladder[ladder.index(found["tier"]) - 1]  # one tier below the pick, on the role's own ladder
-        alt = {"tier": below, "probs": {below: 1.0}, "confidence": 0.0, "source": "explore"}
-        draws = [(eps, alt), (1 - eps, {k: found[k] for k in ("tier", "probs", "confidence", "source")})]
-        if explored:
-            found = {**found, **alt}
-    return {**found, "model_derived": gate == "pass", "body_chars_sent": sent, "ms": round((time.monotonic() - start) * 1000), "ticket": tick,
-            "digest": digest,
-            "mode": mode, "explore": explore, "eps": eps,
-            "draw_propensity": eps if explored else 1 - eps if drawn else 1.0, "draws": draws,
-            "backends": backends, "combined": combined, "combined_mean": mean, "gate": gate}
-
-
-def _win_claude_start() -> float | None:
-    import ctypes
-    from ctypes import wintypes
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-    class Entry(ctypes.Structure):  # PROCESSENTRY32W
-        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("pid", wintypes.DWORD),
-                    ("heap", ctypes.c_size_t), ("module", wintypes.DWORD), ("threads", wintypes.DWORD),
-                    ("ppid", wintypes.DWORD), ("prio", ctypes.c_long), ("flags", wintypes.DWORD),
-                    ("exe", ctypes.c_wchar * 260)]
-    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    k32.OpenProcess.restype = wintypes.HANDLE
-    snap = k32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
-    e = Entry()
-    e.dwSize = ctypes.sizeof(Entry)
-    procs = {}
-    ok = k32.Process32FirstW(snap, ctypes.byref(e))
-    while ok:
-        procs[e.pid] = (e.ppid, e.exe.lower())
-        ok = k32.Process32NextW(snap, ctypes.byref(e))
-    k32.CloseHandle(snap)
-    pid = os.getpid()
-    for _ in range(12):
-        ppid, exe = procs.get(pid, (0, ""))
-        if exe == "claude.exe":
-            handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-            times = [wintypes.FILETIME() for _ in range(4)]
-            k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times))
-            k32.CloseHandle(handle)
-            ft = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
-            return (ft - 116444736000000000) / 1e7 if ft else None  # FILETIME (1601, 100 ns) -> epoch s
-        if not ppid:
-            return None
-        pid = ppid
-    return None
-
-
-def _posix_claude_start() -> float | None:
-    # ponytail: Mac CLI shows as "claude" or "node"; unverified on the Mac until the T9 live check there.
-    import subprocess
-    pid = os.getpid()
-    for _ in range(12):
-        parts = subprocess.run(["ps", "-o", "ppid=,etime=,comm=", "-p", str(pid)],
-                               capture_output=True, text=True, timeout=2).stdout.split(None, 2)
-        if len(parts) < 3:
-            return None
-        ppid, etime, comm = parts
-        if os.path.basename(comm.strip()) in ("claude", "node"):
-            d, _, hms = etime.rpartition("-")
-            secs = sum(int(x) * m for x, m in zip(reversed(hms.split(":")), (1, 60, 3600)))
-            return time.time() - secs - int(d or 0) * 86400
-        pid = int(ppid)
-    return None
-
-
-def claude_process_start() -> float | None:
-    """Epoch seconds at which the nearest claude(.exe) ancestor started, or None."""
-    try:
-        return _win_claude_start() if os.name == "nt" else _posix_claude_start()
-    except Exception:
-        return None
-
-
-def competing_agent_writer(home: Path) -> str | None:
-    """A reason the router must not return updatedInput on Agent this session, or None (design §4.6)."""
-    try:
-        enabled = None  # fail safe: only an explicit false skips the guard (Fable review, finding 5)
-        for name in ("settings.json", "settings.local.json"):  # local overrides user
-            plugins_on = read_json(home / ".claude" / name, {}).get("enabledPlugins") or {}
-            if "context-mode@context-mode" in plugins_on:
-                enabled = plugins_on["context-mode@context-mode"]
-        if enabled is False:
-            return None
-        plugins = read_json(home / ".claude" / "plugins" / "installed_plugins.json", {}).get("plugins") or {}
-        entries = plugins.get("context-mode@context-mode") or []
-        if not entries:
-            return None
-        hooks_json = Path(entries[0]["installPath"]) / "hooks" / "hooks.json"
-        pre = (read_json(hooks_json, {}).get("hooks") or {}).get("PreToolUse") or []
-        for entry in pre:
-            matcher = entry.get("matcher") or ""
-            # Claude Code: ""/"*" match all; a plain [A-Za-z0-9_|] matcher is split on | and compared exactly
-            # after legacy-name mapping (Task -> Agent); anything else is JS RegExp.test (a search).
-            if matcher in ("", "*"):
-                hit = True
-            elif re.fullmatch(r"[A-Za-z0-9_|]+", matcher):
-                hit = "Agent" in {{"Task": "Agent"}.get(x, x) for x in matcher.split("|")}
-            else:
-                try:
-                    hit = re.search(matcher, "Agent") is not None
-                except re.error:
-                    hit = matcher == "Agent"
-            if hit:
-                return "context-mode PreToolUse Agent hook is registered"
-        start = claude_process_start()
-        if start is None:
-            return "Claude Code process start unknown"
-        if hooks_json.stat().st_mtime >= start - 1:
-            return "context-mode hooks.json changed after this session loaded its hooks"
-        return None
-    except Exception as exc:  # unreadable state: stay advisory, never race
-        return f"guard could not read context-mode state: {type(exc).__name__}"
-
-
-def advisory_flag(home: Path, harness: str, session: str) -> Path:
-    return state_root(home) / "state" / harness / f"{sha(session.encode('utf-8'))}.advisory"
-
-
-def act(home: Path, harness: str, session: str, envelope: dict, d: Decision, r: dict, routes: dict, pinned: bool,
-        via: str | None = None):
-    """(hook output | None, action None/"advise"/"rewrite", guard | None, eligible, target) for an admitted,
-    routed dispatch; pinned: the brief's TW-Pin flag; via (the `tw.py codex` path) skips the competing-writer/race
-    guard, names picks as --tier, and its rewrite output carries only additionalContext (no updatedInput).
-    target: the router's pick raised to the highest routes.json risk_floor among the brief's
-    TW-Risk flags (the coordinator's tier on a coordinator-source row). eligible: the router's pick differs from the
-    coordinator's tier (a gated `bayes` pick or an explored one, fresh or a cached bayes decision), whatever the
-    mode, and the floor did not lift a pick below the coordinator's tier to it or above; promote's coordinator arm
-    keeps only such rows so it matches the dispatches the router would have acted on."""
-    raw = r["tier"]
-    flags = [] if d.fields["TW-Risk"] == "none" else [x.strip() for x in d.fields["TW-Risk"].split(",")]
-    floor = 0 if r["source"] == "coordinator" else max(   # the floor lifts the router's pick only
-        (TIERS.index(routes["router"]["risk_floor"][f]) for f in flags), default=0)
-    target = TIERS[max(TIERS.index(raw), floor)]
-    floored = target != raw
-    lower = TIERS.index(target) < TIERS.index(d.tier)
-    # A combined pick already cleared the margin gate and an explored pick is the exploration itself (design D14).
-    # A re-dispatch of an explored brief is not re-advised.
-    disagree = target != d.tier and r["source"] in ("bayes", "cached:bayes", "explore")
-    eligible = r["source"] != "coordinator" and disagree and not (floored and not lower)
-    inp = envelope["tool_input"]
-    brief = inp.get("message" if harness == "codex" else "prompt")
-    # No action when ineligible (a coordinator row, agreement, or a floor lifted the pick), in shadow, or kept by
-    # the user: TW-Override is checked before the cached decision is used (the ticket ignores it, so an override
-    # re-dispatch of an advised brief reuses the decision that advised it); TW-Pin: the user asked for this tier.
-    if not eligible or r["mode"] == "shadow" or pinned or flagged(brief, "TW-Override"):
-        return None, None, None, eligible, target
-    guard = None
-    suffix = "-opus55" if harness == "claude" and str(inp.get("subagent_type", "")).endswith("-opus55") else ""
-    pick = ("--tier " + target if via else agent_name(d.role, target) + suffix if harness == "claude"
-            else "reasoning_effort=" + target)
-    if r["mode"] == "active" and harness == "claude":
-        if not via:  # the codex path owns its subprocess: no competing writer, no race to lose
-            guard = competing_agent_writer(home)
-            if guard is None and advisory_flag(home, harness, session).exists():
-                guard = "lost race recorded earlier this session"
-        if guard is None:
-            note = (f"thinker-worker: dispatched as {pick} instead of {'--tier ' + d.tier if via else inp['subagent_type']} "
-                    f"(router p={r['confidence']:.2f}); judge the result at that tier")
-            out = {"hookEventName": "PreToolUse", "permissionDecision": "allow"}
-            if not via:  # the whole tool_input, one key changed
-                out["updatedInput"] = {**inp, "subagent_type": agent_name(d.role, target) + suffix}
-            out["additionalContext"] = note
-            return {"hookSpecificOutput": out}, "rewrite", None, eligible, target
-    why = "exploration" if r["source"] == "explore" else f"p={r['confidence']:.2f}"
-    reason = (f"router picks {target} ({why}); dispatch {pick} or add `TW-Override: <reason>` to keep {d.tier}"
-              + (f" [active held: {guard}]" if guard else ""))
-    return ({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                    "permissionDecisionReason": f"{OWNER}: {reason}"}}, "advise", guard, eligible,
-            target)
 
 
 def hook(home: Path, harness: str, owner: str) -> None:
@@ -1660,11 +1096,6 @@ def hook(home: Path, harness: str, owner: str) -> None:
         receipt(home, harness, session, envelope, Decision(False, "resume-key-on-fresh-dispatch"))
         denial("resume fields are outside fresh dispatch; coordinator must verify child identity before native continuation")
         return
-    try:  # read once for race_check and prior_route; on failure each reads (and fails open) as before
-        rows = read_rows(receipts_path(home, harness, session))
-    except Exception:
-        rows = None
-    race_check(home, harness, session, envelope.get("transcript_path"), rows)  # never raises; see its docstring
     routes = load_routes()
     d = decide(harness, envelope, routes)
     receipt(home, harness, session, envelope, d)
@@ -1677,117 +1108,9 @@ def hook(home: Path, harness: str, owner: str) -> None:
         return
     if d.role is None or tool == "collaborationspawn_agent":
         return  # ponytail: Codex v2 ciphertext; the task_name join is phase 2
-    out, row = routed(home, harness, session, envelope, d, routes, record, rows=rows)
-    if out:  # printed only after the route row is recorded; any earlier failure leaves the admit standing
+    out = reminder(harness, d, routes, envelope["tool_input"].get("prompt"))
+    if out:
         print(json.dumps(out))
-    elif (row and harness == "claude" and d.tier != row["prior_tier"] and not row["pinned"]  # no router action:
-          and not (row["source"].startswith("cached:") and d.tier == row["target_tier"])):  # prior reminder, unless
-        # the user pinned the tier, or it obeys an earlier advise/exploration of this same brief (live check
-        # 2026-09-27: the reminder contradicted it)
-        # ponytail: Claude only; Codex's handling of additionalContext without a decision is unverified.
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
-                          f"thinker-worker: prior for {row['class']} is {row['prior_tier']}; "
-                          f"you dispatched {d.tier} (fine if deliberate)"}}))
-
-
-def quota(home: Path) -> dict:
-    """Both plan meters as last seen locally (design D19), raw: Claude from the status line's log
-    (~/.claude/usage-meter.jsonl, last line), Codex from the newest rollout line whose rate_limits has limit_id
-    "codex". A meter that is missing or unreadable is None; this never raises."""
-    out = {"claude": None, "codex": None}
-    try:
-        r = json.loads((home / ".claude" / "usage-meter.jsonl").read_text(encoding="utf-8").splitlines()[-1])
-        out["claude"] = {"at": r["at"], "five_hour": r.get("five_hour"), "seven_day": r.get("seven_day")}
-    except (OSError, ValueError, IndexError, KeyError, TypeError):
-        pass
-    try:
-        # ponytail: newest 3 day folders, newest 5 files each, last 256 KiB of each; widen if Codex idles longer
-        days = sorted((home / ".codex" / "sessions").glob("*/*/*"), reverse=True)[:3]
-        for f in (f for d in days for f in sorted(d.glob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime,
-                                                   reverse=True)[:5]):
-            with open(f, "rb") as fh:
-                fh.seek(max(0, f.stat().st_size - 256 * 1024))
-                tail = fh.read().decode("utf-8", "replace").splitlines()
-            for line in reversed(tail):
-                if '"limit_id": "codex"' not in line and '"limit_id":"codex"' not in line:
-                    continue
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                rl = (r.get("payload") or {}).get("rate_limits") or {}
-                if rl.get("limit_id") == "codex":
-                    out["codex"] = {"at": r.get("timestamp"), "primary": rl.get("primary"), "secondary": rl.get("secondary")}
-                    return out
-    except (OSError, ValueError, TypeError):
-        pass
-    return out
-
-
-def routed(home: Path, harness: str, session: str, envelope: dict, d: Decision, routes: dict, record: dict,
-           via: str | None = None, rows: list[dict] | None = None) -> tuple[dict | None, dict | None]:
-    """Post-admission routing shared by the hook and `tw.py codex` (via="codex-exec"): route(), act(), and the route
-    row. Returns (hook output | None, row). Fails open: the dispatch receipt already says admit, so any failure
-    writes an `error` row (where "route") and returns (None, None)."""
-    try:
-        inp = envelope["tool_input"]
-        brief = inp.get("message" if harness == "codex" else "prompt")
-        model = d.model or routes["harnesses"][harness]["roles"][d.role]["models"][0]  # requested
-        pinned = flagged(brief, "TW-Pin")
-        cached = prior_route(home, harness, session, ticket(brief)[0], rows,
-                             allow_models=bool(routes["router"]["backends"]))
-        r = route(routes, harness, d.role, d.fields, brief, d.tier, cached,
-                  1 + class_count(home, harness, d.fields["TW-Class"], routes), pinned, model)
-        row = {"kind": "route", "at": now(), "harness": harness, "session_id": session,
-               "tool_use_id": envelope.get("tool_use_id"), "class": d.fields["TW-Class"],
-               "coordinator_tier": d.tier, "router_tier": r["tier"],
-               "prior_tier": prior(routes, harness, d.role, d.fields["TW-Class"], model),
-               "agent_model": model, "quota": quota(home),
-               "probs": r["probs"],
-               "confidence": r["confidence"], "source": r["source"], "mode": r["mode"], "explore": r["explore"], "eps": r["eps"],
-               "propensity": None, "draw_propensity": r["draw_propensity"], "ms": r["ms"],
-               "body_chars_sent": r["body_chars_sent"], "ticket": r["ticket"], "digest": r["digest"],
-               "model_derived": r["model_derived"],
-               "provenance": r.get("provenance"),  # which table/checkpoint produced the pick; None = coordinator
-               "action": None, "guard": None, "eligible": None,  # eligible stays None if act() fails
-               "pinned": pinned,
-               # every configured backend's answer ({tier, probs, ms}) or {error}, logged whether or not the gate
-               # passed; {} on a cached row
-               "backends": r["backends"], "combined": r["combined"], "combined_mean": r["combined_mean"],
-               "gate": r["gate"]}
-        if via:
-            row["via"] = via
-        try:  # an act() bug still records the router's decision (propensity stays None: executed action unknown)
-            out, row["action"], row["guard"], row["eligible"], target = act(home, harness, session, envelope, d, r,
-                                                                            routes, pinned, via)
-        except Exception as exc:
-            out, row["action"], row["guard"] = None, None, f"act error: {type(exc).__name__}"
-            target = r["tier"]
-        else:
-            def executed(alt: dict) -> tuple:  # act()'s action on a draw branch, and the tier it runs or names
-                _, action, _, _, tier = act(home, harness, session, envelope, d, {**r, **alt}, routes, pinned, via)
-                return action, tier if action else d.tier
-            mine = (row["action"], target if row["action"] else d.tier)
-            try:  # the probability of the executed action: the draw branches mapping to it (floor, override, mode)
-                row["propensity"] = sum(p for p, alt in r["draws"] if executed(alt) == mine) if r["draws"] else 1.0
-            except Exception:
-                pass  # stays None
-        row["target_tier"] = target  # floored pick; router_tier stays the raw backend/explore pick
-        row["router_agent"] = agent_name(d.role, target) if harness == "claude" else None  # race_check compares it
-        if record.get("store_bodies"):
-            body = state_root(home) / "bodies" / sha(session.encode("utf-8")) / f"{r['ticket']}.md"
-            body.parent.mkdir(parents=True, exist_ok=True)
-            body.write_text(brief, encoding="utf-8")
-        append_receipt(home, harness, session, row)
-        return out, row
-    except Exception as exc:
-        try:
-            append_receipt(home, harness, session, {"kind": "error", "at": now(), "harness": harness,
-                                                    "session_id": session, "tool_use_id": envelope.get("tool_use_id"),
-                                                    "where": "route", "error": type(exc).__name__})
-        except Exception:
-            pass  # ponytail: best effort; an unwritable receipts dir already failed above
-        return None, None
 
 
 def source_root() -> Path:
@@ -2324,7 +1647,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "upgrade", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "route", "promote", "codex", "claude", "spool", "models", "model"):
+                 "codex", "claude", "spool", "models", "model"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
         if name == "codex":  # Claude harness only; Codex dispatches its models natively
@@ -2354,12 +1677,8 @@ def main() -> int:
             mode = p.add_mutually_exclusive_group(required=True)
             mode.add_argument("--once", action="store_true", help="process the inbox once and exit")
             mode.add_argument("--watch", action="store_true", help="process the inbox every 2 s until killed")
-        if name in {"activate", "deactivate", "status", "hook", "outcome", "route", "promote", "models"}:
+        if name in {"activate", "deactivate", "status", "hook", "outcome", "models"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
-        if name == "route":  # ponytail: writes no receipt; the Codex v2 join by task_name is phase 2
-            p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
-            p.add_argument("--brief-file", type=Path, required=True)
-            p.add_argument("--model", help="the planned model (default: the role's first); sets its model_tiers ladder")
         if name == "model":  # edits the skill's source routes.json (validated before it writes); then `upgrade`
             p.add_argument("action", choices=("set", "archive"))
             p.add_argument("--harness")
@@ -2370,9 +1689,6 @@ def main() -> int:
             p.add_argument("--prior", action="append", default=[], help="CLASS=TIER (or *=TIER); repeatable")
             p.add_argument("--default", action="store_true", help="router.defaults[role] = this model")
             p.add_argument("--routes", type=Path, help="default: the skill's own source routes.json")
-        if name == "promote":  # read-only over receipts
-            p.add_argument("--class", dest="cls")
-            p.add_argument("--model")
         if name in {"activate", "deactivate", "status", "outcome"}:
             p.add_argument("--session", required=True)
         if name == "outcome":
@@ -2383,8 +1699,6 @@ def main() -> int:
             p.add_argument("--check-timeout", type=float, default=900, help="seconds (default 900)")
             # No argparse `choices`: its SystemExit(2) escapes run_main, so main checks the closed vocabulary.
             p.add_argument("--cause", help="why a rejection happened: tier, brief or other (only with --accepted no)")
-        if name == "activate":
-            p.add_argument("--store-bodies", action="store_true")
         if name == "machines":
             p.add_argument("--ledger-dir", type=Path, help="default: the one recorded at install, "
                            "else <home>/.claude/thinker-worker-installs")
@@ -2414,7 +1728,7 @@ def main() -> int:
         elif args.command == "check":
             return 1 if check(home)["problems"] else 0
         elif args.command == "activate":
-            print(activate(home, args.harness, session_value(args.session), args.store_bodies))
+            print(activate(home, args.harness, session_value(args.session)))
         elif args.command == "deactivate":
             deactivate(home, args.harness, session_value(args.session))
         elif args.command == "status":
@@ -2427,9 +1741,6 @@ def main() -> int:
             outcome(home, args.harness, session_value(args.session), args.tool_use_id,
                     None if args.accepted is None else args.accepted == "yes", args.cause, not args.no_check,
                     args.check_timeout)
-        elif args.command == "promote":
-            for v in promote(home, args.harness, args.cls, args.model):  # one JSON line per (class, model)
-                print(json.dumps(v))
         elif args.command == "codex":
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
                              args.cd.expanduser().resolve(), args.sandbox, args.approval_policy)
@@ -2458,19 +1769,6 @@ def main() -> int:
         elif args.command == "models":
             for line in models(args.harness):
                 print(json.dumps(line))
-        elif args.command == "route":
-            routes = load_routes()
-            brief = args.brief_file.read_text(encoding="utf-8")
-            fields, problem = header_fields(brief)
-            if problem:
-                raise Conflict(problem)
-            if args.model is not None and args.model not in routes["harnesses"][args.harness]["roles"][args.role]["models"]:
-                raise Conflict(f"model {args.model} is not allowed for {args.role}")
-            r = route(routes, args.harness, args.role, fields, brief,
-                      prior(routes, args.harness, args.role, fields["TW-Class"], args.model),
-                      t=1 + class_count(home, args.harness, fields["TW-Class"], routes), model=args.model)
-            print(json.dumps({k: r[k] for k in ("tier", "probs", "confidence", "source", "ticket", "mode",
-                                                "backends", "combined", "gate", "eps")}))
         else:
             try:
                 hook(home, args.harness, args.owner)

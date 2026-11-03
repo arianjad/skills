@@ -1,8 +1,6 @@
 """`tw.py outcome` labels a guarded dispatch accepted/rejected, keyed by the tool_use_id the coordinator sees
 (background notifications carry <tool-use-id>; subagent meta.json maps agentId -> toolUseId).
 Run: python test_tw_outcome.py"""
-import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -48,10 +46,10 @@ if __name__ == "__main__":
     print("PASS outcome appends kind=outcome for a known dispatch; unknown ids refused")
 
     # R2 (Astra review finding 2): only a dispatch that ran is labeled or has its TW-Check run. A gate-denied
-    # dispatch, a router-advised one (denied at the hook), and a codex-exec dispatch without a cost row (codex never
+    # dispatch, a historically router-advised one (denied at the hook), and a codex-exec dispatch without a cost row (codex never
     # ran) exit 2, run nothing and write nothing.
     import tw
-    from test_tw_check import brief, dispatch
+    from test_tw_check import brief
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
         work = Path(home) / "work"
@@ -60,18 +58,10 @@ if __name__ == "__main__":
         hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "model": "not-a-model",
                                        "prompt": brief("echo review-marker > marker.txt")}, "t_deny", cwd=str(work))
         assert [r["decision"] for r in receipts(home, "claude") if r["kind"] == "dispatch"] == ["deny"]
-        # advised: advisory mode, explore 1.0, no backends -> a high dispatch is advised to medium (denied)
-        doc = json.loads(Path(os.environ["TW_ROUTES"]).read_text(encoding="utf-8"))
-        doc["router"] = {**doc["router"], "backends": [], "classes": {"*": {"mode": "advisory", "explore": 1.0}}}
-        adv = Path(home) / "advisory.json"
-        adv.write_text(json.dumps(doc), encoding="utf-8")
-        old, os.environ["TW_ROUTES"] = os.environ["TW_ROUTES"], str(adv)
-        try:
-            out = dispatch(home, brief("echo review-marker > marker.txt"), str(work), "t_adv")[1]
-        finally:
-            os.environ["TW_ROUTES"] = old
-        assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny", out
-        assert [r["action"] for r in receipts(home, "claude") if r["kind"] == "route"] == ["advise"]
+        # advised (historical rows from the removed router): admitted at the gate, then denied by the router
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "t_adv", "decision": "admit",
+                                                          "check": "echo review-marker > marker.txt", "cwd": str(work)})
+        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "t_adv", "action": "advise"})
         # codex-exec dispatch row, admitted, but no cost row: codex never ran
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "codex-0", "decision":
                                                           "admit", "tool_name": "codex", "check":

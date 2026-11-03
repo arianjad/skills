@@ -1,5 +1,5 @@
 """tw.py codex: gate reuse, Codex-model admission per Claude role, codex exec flags, receipts with effective
-model/effort (fake codex on PATH). Routing is pinned to a shadow copy of the shipped routes.json.
+model/effort (fake codex on PATH). Routing is pinned to a copy of the shipped routes.json.
 Run: python test_tw_codex.py"""
 import json
 import os
@@ -64,7 +64,6 @@ if __name__ == "__main__":
             (bin_ / "codex").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake_codex.py" "$@"\n')
             (bin_ / "codex").chmod(0o755)
         shipped = json.loads((Path(TW).parent.parent / "routes.json").read_text(encoding="utf-8"))
-        shipped["router"]["classes"] = {"*": {"mode": "shadow", "explore": 0.0}}
         (home / "routes.json").write_text(json.dumps(shipped), encoding="utf-8")
         env = {**os.environ, "PATH": str(bin_) + os.pathsep + os.environ["PATH"], "FAKE_HOME": tmp,
                "TW_ROUTES": str(home / "routes.json")}
@@ -155,92 +154,13 @@ if __name__ == "__main__":
         assert not (home / "call.json").exists(), "codex ran on a denied dispatch"
         assert [x["decision"] for x in receipts(home, "claude") if x["kind"] == "dispatch"][-2:] == ["deny", "deny"]
 
-        # the router on the Codex path: no backend, explore 1.0, so a high dispatch is explored to medium
-        def mode(m):
-            doc = {**shipped, "router": {**shipped["router"], "backends": [], "classes": {"*": {"mode": m, "explore": 1.0}}}}
-            (home / "routes.json").write_text(json.dumps(doc), encoding="utf-8")
-
-        def last_route():
-            return [x for x in receipts(home, "claude") if x["kind"] == "route"][-1]
-        mode("shadow")
-        r = codex(WORK + " shadow", "high", "gpt-6-sol", "worker")
-        assert r.returncode == 0, r.stderr
-        call = json.loads((home / "call.json").read_text(encoding="utf-8"))
-        row = last_route()
-        assert "model_reasoning_effort=high" in call["args"], call["args"]                # shadow: coordinator tier
-        assert (row["source"], row["mode"], row["action"], row["tool_use_id"]) == \
-            ("explore", "shadow", None, json.loads(r.stdout.splitlines()[-1])["tool_use_id"]), row
-        mode("advisory")
-        (home / "call.json").unlink()
-        r = codex(WORK + " advisory", "high", "gpt-6-sol", "worker")
-        assert r.returncode == 2 and "--tier medium" in r.stderr, r.stderr                # advised: codex not run
-        assert not (home / "call.json").exists() and last_route()["action"] == "advise", last_route()
-        r = codex(WORK.replace(HDR, HDR + "TW-Override: keep high\n") + " override", "high", "gpt-6-sol", "worker")
-        call = json.loads((home / "call.json").read_text(encoding="utf-8"))
-        assert r.returncode == 0 and "model_reasoning_effort=high" in call["args"], (r.stderr, call["args"])
-        assert last_route()["action"] is None and last_route()["eligible"] is True, last_route()
-        r = codex(WORK.replace(HDR, HDR + "TW-Pin: user asked for Sol high\n"), "high", "gpt-6-sol", "worker")
-        call = json.loads((home / "call.json").read_text(encoding="utf-8"))
-        assert r.returncode == 0 and "model_reasoning_effort=high" in call["args"], (r.stderr, call["args"])
-        assert last_route()["pinned"] is True and last_route()["source"] == "coordinator", last_route()
-        mode("active")
-        r = codex(WORK + " active", "high", "gpt-6-sol", "worker")
+        # no router on the Codex path: the requested tier runs as dispatched, no route row, no reminder line
+        r = codex(WORK + " as dispatched", "medium", "gpt-6-sol", "worker")
         call = json.loads((home / "call.json").read_text(encoding="utf-8"))
         assert r.returncode == 0 and "model_reasoning_effort=medium" in call["args"], (r.stderr, call["args"])
-        assert len(r.stdout.splitlines()) == 2 and "medium" in r.stdout.splitlines()[0], r.stdout   # one line says so
-        assert last_route()["action"] == "rewrite" and last_route()["target_tier"] == "medium", last_route()
-        # a codex-path rewrite is labeled by the rollout's effective effort: only a verified one joins promote's
-        # router arm (the fake rollout echoes the requested effort unless FAKE_EFFORT says otherwise)
-        ok_id = json.loads(r.stdout.splitlines()[-1])["tool_use_id"]
-        env["FAKE_EFFORT"] = "high"
-        r = codex(WORK + " active, runtime ignored the tier", "high", "gpt-6-sol", "worker")
-        env.pop("FAKE_EFFORT")
-        bad_id = json.loads(r.stdout.splitlines()[-1])["tool_use_id"]
-        assert {x["tool_use_id"]: x["lost"] for x in receipts(home, "claude") if x["kind"] == "race"} == \
-            {ok_id: False, bad_id: True}, receipts(home, "claude")
-        for tid in (ok_id, bad_id):
-            assert run(home, env, "outcome", "--harness", "claude", "--session", "s1", "--tool-use-id", tid,
-                       "--accepted", "yes").returncode == 0
-        p = run(home, env, "promote", "--harness", "claude", "--model", "gpt-6-sol")
-        assert p.returncode == 0 and [json.loads(x)["n_router"] for x in p.stdout.splitlines()] == [1], p
-
-        # review 2 F7 (design D14): the documented enable override (SKILL.md, verbatim; claude.md carries the same)
-        # over the shipped routes.json lists the backend AND runs classes active (explore kept), so a gated pick
-        # rewrites on the Codex path. The kev url is pointed at a local stub, never the real server.
-        import re
-        import tw
-        from test_tw_backends import Stub, answer
-        root = Path(TW).parent.parent
-        enable = re.search(r"enable one with the user override, e\.g\. `([^`]+)`",
-                           (root / "SKILL.md").read_text(encoding="utf-8")).group(1)
-        assert f"`{enable}`" in (root / "references" / "claude.md").read_text(encoding="utf-8"), enable
-        installed = tw.load_routes(root / "routes.json")
-        ov = json.loads(enable)
-        (home / "enable.json").write_text(enable, encoding="utf-8")
-        merged = tw.merge_override(installed, home / "enable.json")
-        assert merged["router"]["backends"] and tw.class_mode(merged, "C-coding") == \
-            ("active", installed["router"]["classes"]["*"]["explore"]), (enable, merged["router"]["classes"])
-        s = Stub(answer({"low": 0.05, "medium": 0.9, "high": 0.05, "xhigh": 0.0}, "medium"))
-        try:
-            for name in ov["router"]["backends"]:
-                ov["router"][name] = {"url": s.url}
-            (home / "enable.json").write_text(json.dumps(ov), encoding="utf-8")
-            env2 = {k: v for k, v in env.items() if k != "TW_ROUTES"}
-            env2["TW_ROUTES_OVERRIDE"] = str(home / "enable.json")
-            coin = lambda b: tw.coin(tw.ticket(b)[0])
-            text = next(b for b in (WORK + f" enabled {i}" for i in range(200)) if coin(b) >= 0.5)   # not explored
-            brief.write_text(text, encoding="utf-8")
-            (home / "call.json").unlink(missing_ok=True)
-            r = run(home, env2, "codex", "--session", "s1", "--role", "worker", "--tier", "high", "--model",
-                    "gpt-6-sol", "--brief-file", str(brief), "--cd", tmp)
-            call = json.loads((home / "call.json").read_text(encoding="utf-8"))
-            assert r.returncode == 0 and "model_reasoning_effort=medium" in call["args"], (r.stderr, call["args"])
-            row = last_route()
-            assert (row["source"], row["mode"], row["action"], row["target_tier"]) == \
-                ("bayes", "active", "rewrite", "medium"), row
-        finally:
-            s.close()
-        print("PASS F7 documented enable override: backend listed, classes active (explore kept), codex-path rewrite")
+        assert len(r.stdout.splitlines()) == 1, r.stdout                                  # the result line only
+        assert not [x for x in receipts(home, "claude") if x["kind"] in ("route", "race")], receipts(home, "claude")
+        print("PASS codex path: requested tier runs, no route/race rows")
 
         # --cd at the user's home: Codex's Windows workspace-write sandbox ACL-walks every top-level home entry
         # (spun 90+ min, 2026-09-28). Refused before codex runs.
