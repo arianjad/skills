@@ -46,7 +46,7 @@ if __name__ == "__main__":
     print("PASS outcome appends kind=outcome for a known dispatch; unknown ids refused")
 
     # R2 (Astra review finding 2): only a dispatch that ran is labeled or has its TW-Check run. A gate-denied
-    # dispatch, a historically router-advised one (denied at the hook), and a codex-exec dispatch without a cost row (codex never
+    # dispatch and a codex-exec dispatch without a cost row (codex never
     # ran) exit 2, run nothing and write nothing.
     import tw
     from test_tw_check import brief
@@ -58,16 +58,12 @@ if __name__ == "__main__":
         hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "model": "not-a-model",
                                        "prompt": brief("echo review-marker > marker.txt")}, "t_deny", cwd=str(work))
         assert [r["decision"] for r in receipts(home, "claude") if r["kind"] == "dispatch"] == ["deny"]
-        # advised (historical rows from the removed router): admitted at the gate, then denied by the router
-        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "t_adv", "decision": "admit",
-                                                          "check": "echo review-marker > marker.txt", "cwd": str(work)})
-        tw.append_receipt(Path(home), "claude", SESSION, {"kind": "route", "tool_use_id": "t_adv", "action": "advise"})
         # codex-exec dispatch row, admitted, but no cost row: codex never ran
         tw.append_receipt(Path(home), "claude", SESSION, {"kind": "dispatch", "tool_use_id": "codex-0", "decision":
                                                           "admit", "tool_name": "codex", "check":
                                                           "echo review-marker > marker.txt", "cwd": str(work)})
         n = len(receipts(home, "claude"))
-        for tid in ("t_deny", "t_adv", "codex-0"):
+        for tid in ("t_deny", "codex-0"):
             for extra in ([], ["--accepted", "yes"]):
                 code, _ = run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
                                     "--tool-use-id", tid, *extra])
@@ -80,4 +76,4 @@ if __name__ == "__main__":
         code, out = run_main(["outcome", "--home", home, "--harness", "claude", "--session", SESSION,
                               "--tool-use-id", "codex-0"])
         assert code == 0 and "pass" in out and marker.exists(), (code, out)
-    print("PASS R2 outcome refuses denied, advised, and never-run codex dispatches (exit 2, no check, no rows)")
+    print("PASS R2 outcome refuses denied and never-run codex dispatches (exit 2, no check, no rows)")

@@ -2,7 +2,7 @@
 
 Date: 2026-10-25 UTC
 Status: audit plus authorized call-disable trial and cache fix. The resolution below supersedes the historical cache caveat; other improvement proposals remain unimplemented.
-Superseded 2026-11-02: the router was removed (docs/plans/2026-11-02-thinker-worker-router-removal.md); kept as the record of why.
+Superseded 2026-11-02: the router was removed (~/obsidian-vault/03-decisions/2026-11-02-thinker-worker-router-removed.md); kept as the record of why.
 Owner: Thinker–Worker, in skills_public/thinker-worker.
 Scope: file-only audit during RAM reliability testing. No inference, benchmark, download, process change or configuration change was performed. This document is the only authorized write.
 

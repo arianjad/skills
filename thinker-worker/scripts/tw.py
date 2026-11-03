@@ -37,7 +37,7 @@ AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medi
 OPUS_REVIEW_MODEL = "claude-opus-5-5"
 VALUE_MAX = 1000  # per header value at the gate; receipts truncate at 256
 ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")
-# Routing header: labeled input for the routing classifier. Classes are effortmining's vocabulary.
+# Routing header: the brief's class picks its tier prior; receipts keep it for tally. Classes are effortmining's vocabulary.
 HEADER_KEYS = ("TW-Class", "TW-Deliverable", "TW-Accept", "TW-Risk")
 CHECK_KEY = "TW-Check"  # optional: a shell command `tw.py outcome` runs in the dispatch cwd for a pass/fail label
 OUTPUT_KEY = "TW-Output"  # optional: the one file path the child must write (the guard checks its basename)
@@ -97,7 +97,8 @@ def merge_override(doc: dict, ov_path: Path) -> dict:
     rt = ov.get("router") if isinstance(ov, dict) else None
     if (not isinstance(ov, dict) or set(ov) != {"router"} or not isinstance(rt, dict)
             or not all(isinstance(rt[k], dict) for k in OVERRIDABLE & set(rt))):
-        raise Conflict("may set only router." + ", router.".join(sorted(OVERRIDABLE)) + " (each an object)")
+        raise Conflict("must be {\"router\": {...}} with router." + ", router.".join(sorted(OVERRIDABLE))
+                       + " each an object if set")
     merged = json.loads(json.dumps(doc))
     mr = merged["router"]
     for k in sorted(OVERRIDABLE & set(rt)):
@@ -340,9 +341,8 @@ def activation(home: Path, harness: str, session: str) -> dict | None:
         return None
     obj = read_json(path, {})
     if (not isinstance(obj, dict) or obj.get("schema") != 1 or
-            obj.get("harness") != harness or obj.get("session_id") != session or
-            type(obj.get("store_bodies", False)) is not bool):
-        # Pre-routes.json records carry review/luna/sonnet/ideation flags; they are ignored.
+            obj.get("harness") != harness or obj.get("session_id") != session):
+        # Older records carry review/luna/sonnet/ideation flags or store_bodies; they are ignored.
         raise Conflict(f"Invalid activation record at {path}; deactivate and reactivate this session")
     return obj
 
@@ -521,8 +521,7 @@ def reminder(harness: str, d: Decision, routes: dict, brief: str) -> dict | None
 
 
 def receipt(home: Path, harness: str, session: str, envelope: dict, d: Decision) -> None:
-    # Never store the brief body or any unknown input field; the validated routing header is the
-    # labeled input for the routing classifier (Arian 2026-09-26).
+    # Never store the brief body or any unknown input field; the validated routing header is kept for tally.
     def small(value: object) -> str | None:
         if not isinstance(value, str):
             return None
@@ -705,16 +704,14 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
             cause: str | None = None, run: bool = True, timeout: float = 900) -> None:
     """Label a guarded dispatch; the last outcome for a tool_use_id wins. accepted is the coordinator's (weak) label;
     the dispatch's TW-Check, unless run is False, is executed and writes a `check` row. Claude: one cost row.
-    Only a dispatch that ran is labeled: its dispatch row says admit, a historical route row (if any) is not an advise
-    (the retired router's denial), and a `tw.py codex` dispatch has a cost row (codex ran). Otherwise Conflict, before anything is written."""
+    Only a dispatch that ran is labeled: its dispatch row says admit, and a `tw.py codex` dispatch has a cost row
+    (codex ran). Otherwise Conflict, before anything is written."""
     rows = read_rows(receipts_path(home, harness, session))
     disp, state = dispatch_state(rows, tool_use_id)
     if state == "none":
         raise Conflict(f"no dispatch receipt for tool_use_id {tool_use_id} in {harness} session {session}")
     if state == "deny":
         raise Conflict(f"{tool_use_id} was denied at the gate ({disp.get('reason')}); it never ran")
-    if state == "advise":  # historical rows: the removed router denied it after the gate admitted it
-        raise Conflict(f"{tool_use_id} was advised (denied) by the retired router; it never ran")
     if disp.get("tool_name") == "codex" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id
                                                     for r in rows):
         raise Conflict(f"{tool_use_id}: no cost row, so codex never ran for it")
@@ -860,17 +857,14 @@ def env_timeout(name: str) -> float:
 
 
 def dispatch_state(rows: list[dict], tool_use_id: str | None = None) -> tuple[dict | None, str]:
-    """The dispatch row for tool_use_id (default: the last one) and whether it ran: none, deny, advise or admit.
-    An advised dispatch (historical rows only) was denied by the retired router after the gate admitted it, so it never
-    ran either."""
+    """The dispatch row for tool_use_id (default: the last one) and its gate decision: none, deny or admit."""
     disp = [r for r in rows if r.get("kind") == "dispatch" and tool_use_id in (None, r.get("tool_use_id"))]
     if not disp:
         return None, "none"
     row = disp[-1]
     if row.get("decision") != "admit":
         return row, "deny"
-    route_rows = [r for r in rows if r.get("kind") == "route" and r.get("tool_use_id") == row.get("tool_use_id")]
-    return row, "advise" if route_rows and route_rows[-1].get("action") == "advise" else "admit"
+    return row, "admit"
 
 
 def record_cost(home: Path, harness: str, session: str, tool_use_id: str, rows: list[dict]) -> dict | None:
@@ -945,7 +939,7 @@ def claude_run(home: Path, role: str, tier: str, brief_file: Path, cd: Path, mod
               "reason": disp.get("reason") if disp else None, "agent_type": cost.get("agent_type"),
               "effective_model": cost.get("model"), "effective_effort": cost.get("effort"), "exit_code": ran["code"],
               "timed_out": ran["timed_out"], "kill_failed": ran["kill_failed"], "last_message": str(out), "permissions": permissions}
-    if state in ("deny", "advise"):
+    if state == "deny":
         return 2, result
     if pinned_opus and (result["effective_model"] != OPUS_REVIEW_MODEL or result["effective_effort"] != tier):
         result["identity_error"] = "pinned Opus review model/effort not verified; result is not accepted"
@@ -1024,7 +1018,7 @@ def cost_row(home: Path, harness: str, session: str, tool_use_id: str) -> dict |
     att = [o.get("attachment") or {} for o in rows if o.get("type") == "attachment"]
     eff = next((o["effort"] for o in reversed(rows) if o.get("type") == "assistant" and o.get("effort")), None)
     return {"kind": "cost", "at": now(), "harness": harness, "session_id": session, "tool_use_id": tool_use_id,
-            # model: executed evidence only; meta.json's model is the request (an alias), never promoted to it
+            # model: executed evidence only; meta.json's model is the request (an alias), never recorded as the model that ran
             "agent_type": meta.get("agentType"), "model": ran[-1] if ran else None, "requested_model": meta.get("model"),
             # offered at any point in the run; a later available:false removal does not clear it
             "advisor_available": any(a.get("type") == "advisor_tool" and a.get("available") is True for a in att),
