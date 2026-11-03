@@ -1049,6 +1049,32 @@ def dispatch_key(r: dict) -> tuple[str, str | None]:
     return r["_session_file"], r.get("tool_use_id")
 
 
+def tally(home: Path, harness: str) -> list[dict]:
+    """Accept counts per (class, executed model, executed tier) over labeled, admitted dispatches. Label: the latest
+    check row (pass/fail; unknown ignored), else the coordinator's latest outcome. Executed model/tier: the cost row's
+    model and effort, else the tier of its tw-* agent_type; a dispatch with neither is counted at its requested tier
+    with model None. Historical exploration rewrites therefore count at the tier that actually ran."""
+    rows = harness_rows(home, harness)
+    latest = lambda kind: {dispatch_key(r): r for r in rows if r.get("kind") == kind}
+    disp, cost, out, chk = latest("dispatch"), latest("cost"), latest("outcome"), latest("check")
+    groups: dict = {}
+    for k, d in disp.items():
+        m = re.search(r"^TW-Class: (.+)$", d.get("header") or "", re.M)
+        label = {"pass": True, "fail": False}.get((chk.get(k) or {}).get("label"))
+        if label is None:
+            label = (out.get(k) or {}).get("accepted")
+        if d.get("decision") != "admit" or not m or label is None:
+            continue
+        c = cost.get(k) or {}
+        agent = AGENT_NAME.fullmatch(c.get("agent_type") or "")
+        tier = c.get("effort") or (agent.group(2) if agent else d.get("tier"))
+        g = groups.setdefault((m.group(1), c.get("model"), tier), [0, 0])
+        g[0] += 1
+        g[1] += bool(label)
+    return [{"class": cls, "model": mod, "tier": t, "n": n, "accepted": a, "rate": round(a / n, 3)}
+            for (cls, mod, t), (n, a) in sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0]))]
+
+
 def clamp(tier: str, tiers: list[str]) -> str:
     i = TIERS.index(tier)
     return min(tiers, key=lambda t: (abs(TIERS.index(t) - i), TIERS.index(t)))
@@ -1647,7 +1673,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "upgrade", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "codex", "claude", "spool", "models", "model"):
+                 "tally", "codex", "claude", "spool", "models", "model"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
         if name == "codex":  # Claude harness only; Codex dispatches its models natively
@@ -1677,7 +1703,7 @@ def main() -> int:
             mode = p.add_mutually_exclusive_group(required=True)
             mode.add_argument("--once", action="store_true", help="process the inbox once and exit")
             mode.add_argument("--watch", action="store_true", help="process the inbox every 2 s until killed")
-        if name in {"activate", "deactivate", "status", "hook", "outcome", "models"}:
+        if name in {"activate", "deactivate", "status", "hook", "outcome", "tally", "models"}:
             p.add_argument("--harness", choices=("codex", "claude"), required=True)
         if name == "model":  # edits the skill's source routes.json (validated before it writes); then `upgrade`
             p.add_argument("action", choices=("set", "archive"))
@@ -1741,6 +1767,9 @@ def main() -> int:
             outcome(home, args.harness, session_value(args.session), args.tool_use_id,
                     None if args.accepted is None else args.accepted == "yes", args.cause, not args.no_check,
                     args.check_timeout)
+        elif args.command == "tally":  # read-only over receipts; one JSON line per (class, model, tier)
+            for v in tally(home, args.harness):
+                print(json.dumps(v))
         elif args.command == "codex":
             return codex_run(home, session_value(args.session), args.role, args.tier, args.model, args.brief_file,
                              args.cd.expanduser().resolve(), args.sandbox, args.approval_policy)
