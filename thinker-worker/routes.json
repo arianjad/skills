@@ -18,12 +18,12 @@
           "tools": null
         },
         "independent-review": {
-          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "claude-opus-5-5", "gpt-6.1-terra", "haiku", "claude-haiku-5-5"],
+          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "claude-opus-5-5", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "claude-fable-5-2"],
           "tiers": ["low", "medium", "high", "xhigh", "max"],
           "tools": null
         },
         "ideation": {
-          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-astra"],
+          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-2"],
           "tiers": ["medium", "high", "xhigh"],
           "tools": null
         }
