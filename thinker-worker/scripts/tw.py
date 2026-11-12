@@ -709,7 +709,16 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
     rows = read_rows(receipts_path(home, harness, session))
     disp, state = dispatch_state(rows, tool_use_id)
     if state == "none":
-        raise Conflict(f"no dispatch receipt for tool_use_id {tool_use_id} in {harness} session {session}")
+        # The usual cause: the id came from a notification that followed a SendMessage to the child, which carries
+        # that message's id. Name the dispatches still waiting for a label so the right id is one copy away.
+        labeled = {r.get("tool_use_id") for r in rows if r.get("kind") == "outcome"}
+        waiting = [f"{r.get('tool_use_id')} ({r.get('subagent_type') or r.get('tool_name')}, {str(r.get('at'))[:16]})"
+                   for r in rows if r.get("kind") == "dispatch" and r.get("decision") == "admit"
+                   and r.get("tool_use_id") not in labeled]
+        hint = ("; admitted dispatches without a label: " + ", ".join(waiting) + ". Pass the id of the Agent call that "
+                "launched the child (its meta.json toolUseId), not the id on a notification after a SendMessage"
+                ) if waiting else ""
+        raise Conflict(f"no dispatch receipt for tool_use_id {tool_use_id} in {harness} session {session}{hint}")
     if state == "deny":
         raise Conflict(f"{tool_use_id} was denied at the gate ({disp.get('reason')}); it never ran")
     if disp.get("tool_name") == "codex" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id

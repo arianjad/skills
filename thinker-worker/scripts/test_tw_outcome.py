@@ -45,6 +45,25 @@ if __name__ == "__main__":
         assert len(receipts(home, "claude")) == n
     print("PASS outcome appends kind=outcome for a known dispatch; unknown ids refused")
 
+    # A wrong id (2026-11-11: the id on a notification after SendMessage is that message's id) is refused with the
+    # admitted dispatches still waiting for a label; a labeled dispatch drops out of that list.
+    import tw as _tw
+    with tempfile.TemporaryDirectory() as home:
+        run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
+        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",
+                                       "prompt": "TW-Role: worker\n" + HDR + "x"})
+
+        def refusal():
+            try:
+                _tw.outcome(Path(home), "claude", SESSION, "toolu_sendmessage", True, run=False)
+            except _tw.Conflict as exc:
+                return str(exc)
+            raise AssertionError("an id without a dispatch receipt must be refused")
+        assert "toolu_x (tw-worker-high" in refusal(), refusal()
+        assert outcome(home, "toolu_x", "yes") == 0
+        assert "toolu_x" not in refusal(), refusal()
+    print("PASS a refused id names the admitted dispatches still unlabeled")
+
     # R2 (Astra review finding 2): only a dispatch that ran is labeled or has its TW-Check run. A gate-denied
     # dispatch and a codex-exec dispatch without a cost row (codex never
     # ran) exit 2, run nothing and write nothing.
