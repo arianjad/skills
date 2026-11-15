@@ -1,5 +1,7 @@
 # Adding, updating, or archiving a model
 
+For an OMP worker, change or select the model through OMP's configuration or per-run override; see [OMP execution](omp.md). The registry procedure below is for fixed native Codex/Claude admissions, not the model-independent OMP backend.
+
 `routes.json` in the skill's source repository (`~/Code/skills_public/thinker-worker`) is the one place a model is admitted.
 Edit it only with `tw.py model`, which validates the result before writing and keeps the file in canonical form (a
 test fails on a hand edit that is not canonical). Scope: the Claude/Codex dispatch guard and tier priors in `tw.py`.

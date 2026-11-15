@@ -1,6 +1,6 @@
 ---
 name: thinker-worker
-description: Coordinate a substantial task by delegation from a front-end session (Opus, Astra or Fable): explicit Sol, Opus, or Sonnet execution, Fable or Astra as the thinker for tough problems, Astra/Fable review, Astra/Fable/Opus ideation, and Sol 6.1 review from either harness. Use at a session's first delegation (a standing instruction in the user's global rules, or an explicit request for thinker/worker mode), and when asked to add, update, or archive a model in its routing (a new model release). Work a few tool calls settle stays inline.
+description: Coordinate substantial work with native Codex/Claude agents or a configured OMP worker from any calling harness. Choose workers and effort, reuse bounded assignments, and verify results independently. Use at a session's first delegation (standing instructions count), for local OMP delegation, and when changing native model routing. Work a few tool calls settle stays inline.
 ---
 
 # Thinker/worker
@@ -18,6 +18,8 @@ The coordinator may read sources, run deterministic checks, and handle small boo
 **Worker model selection.** Choose Opus, `gpt-6.1-sol`, `gpt-6.1-terra`, Sonnet or Haiku per task, weighing difficulty and ambiguity, verification needs, observed performance, compatible tools and worker context, quota, latency and cost. Choose effort separately and honor user pins; workers have no fixed preference. Fable is admitted as a worker for thinker dispatches; routine execution goes to the models above. Worker, leaf and independent-review admit every model at every tier `low,medium,high,xhigh,max` (Arian 2026-11-01); a cheap model at `xhigh`/`max` (Haiku, Terra) is a deliberate option, not an error. Older Sol/Terra 5.6/6.0 admissions are compatibility routes. In Claude, pass native aliases explicitly or use `tw.py codex --model gpt-6.1-sol` (or `gpt-6.1-terra`) for Codex models. Native Codex supports its own model list; from Codex, dispatch Opus/Sonnet with `tw.py claude` (see [Codex routing](references/codex.md)).
 
 **Leaves.** Sonnet, Haiku, Luna and Terra leaves use `low` through `max`. Start low/medium and go higher for more reasoning within a short, objectively checkable task. Physics judgment, architecture, adversarial review and acceptance belong outside the leaf role.
+
+**OMP workers, any caller.** `tw.py omp` runs the existing OMP agent with its configured model, or an explicit per-run model/thinking override. It uses persistent sessions and returns execution evidence; it does not require native caller activation or a model entry in `routes.json`. For local execution, read [OMP dispatch and resume](references/omp.md). Preserve the caller's authorization and verify delivered artifacts independently. OMP owns its model configuration; native routes retain their own admission rules.
 
 Keep briefs compact: task, owned files, input sources, constraints, check and stopping condition, checkpoint requirement, and whether the worker can edit. A worker returns exact artifacts, checks, and uncertainty. The coordinator spot-checks load-bearing claims and accepts or redirects. Escalate a changed objective, scientific assumption, or consequential finding; ordinary fixes stay with the worker. Independent review is optional unless requested or justified by risk, and requires a bounded authorization cited in its brief.
 

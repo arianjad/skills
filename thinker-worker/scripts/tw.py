@@ -31,7 +31,7 @@ import uuid
 OWNER = "thinker-worker-v1"
 HARNESSES = ("codex", "claude")
 SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "references/add-model.md",
-               "scripts/tw.py")
+               "references/omp.md", "scripts/tw.py")
 TIERS = ("low", "medium", "high", "xhigh", "max")
 AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh|max)(?:-opus55)?")
 OPUS_REVIEW_MODEL = "claude-opus-5-5"
@@ -721,9 +721,9 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
         raise Conflict(f"no dispatch receipt for tool_use_id {tool_use_id} in {harness} session {session}{hint}")
     if state == "deny":
         raise Conflict(f"{tool_use_id} was denied at the gate ({disp.get('reason')}); it never ran")
-    if disp.get("tool_name") == "codex" and not any(r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id
-                                                    for r in rows):
-        raise Conflict(f"{tool_use_id}: no cost row, so codex never ran for it")
+    if disp.get("tool_name") in {"codex", "omp"} and not any(
+            r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id for r in rows):
+        raise Conflict(f"{tool_use_id}: no cost row, so {disp['tool_name']} never ran for it")
     check = disp.get("check") if run else None
     if accepted is None and not check:
         raise Conflict("nothing to record: pass --accepted yes|no, or dispatch with a TW-Check line (without "
@@ -863,6 +863,107 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
 
 def env_timeout(name: str) -> float:
     return float(os.environ.get(name, "3600"))
+
+
+def omp_evidence(events: str, session_file: Path | None) -> dict:
+    """OMP event metadata identifies the worker; prose is never model/setting evidence."""
+    rows = []
+    for line in events.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    sessions = [r for r in rows if r.get("type") == "session"]
+    messages = [r["message"] for r in rows if r.get("type") == "message_end"
+                and isinstance(r.get("message"), dict) and r["message"].get("role") == "assistant"]
+    last = messages[-1] if messages else {}
+    text = "\n".join(c["text"] for c in (last.get("content") or [])
+                     if isinstance(c, dict) and c.get("type") == "text" and isinstance(c.get("text"), str))
+    ends = [r for r in rows if r.get("type") == "agent_end"]
+    terminal = bool(ends and ends[-1].get("isTerminal", True) is True and ends[-1].get("yielded", True) is True)
+    saved = read_rows(session_file) if session_file else []
+    thinking = [r.get("thinkingLevel") for r in saved if r.get("type") == "thinking_level_change"]
+    usage = [m["usage"] for m in messages if isinstance(m.get("usage"), dict)]
+    return {"worker_session_id": sessions[-1].get("id") if sessions else None,
+            "model": last.get("model"), "provider": last.get("provider"),
+            "effort": thinking[-1] if thinking else None,
+            "usage": {k: sum(u.get(k, 0) or 0 for u in usage)
+                      for k in ("input", "output", "cacheRead", "cacheWrite")} if usage else None,
+            "terminal": terminal, "stop_reason": last.get("stopReason"), "text": text}
+
+
+def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None = None,
+            thinking: str | None = None, resume: Path | None = None, timeout: float | None = None,
+            approval_mode: str | None = None) -> tuple[int, dict]:
+    """Any caller -> configured OMP worker; caller identity and fixed-model admissions are not inputs."""
+    brief = brief_file.expanduser().resolve().read_text(encoding="utf-8-sig")
+    found_role, problem = first_role(brief)
+    fields, header_problem = header_fields(brief)
+    if problem or header_problem or found_role != role:
+        raise Conflict(problem or header_problem or "OMP role does not match the brief")
+    if role in {"independent-review", "ideation"} and not review_details(brief):
+        raise Conflict("review/ideation needs TW-Authorization and TW-Scope")
+    cd = cd.expanduser().resolve()
+    if not cd.is_dir():
+        raise Conflict(f"working directory does not exist: {cd}")
+    resume = resume.expanduser().resolve() if resume else None
+    if resume and not resume.is_file():
+        raise Conflict(f"OMP resume file does not exist: {resume}")
+    try:
+        timeout = env_timeout("TW_OMP_TIMEOUT") if timeout is None else timeout
+    except ValueError as exc:
+        raise Conflict("TW_OMP_TIMEOUT must be positive finite seconds") from exc
+    if not 0 < timeout < float("inf"):
+        raise Conflict("OMP timeout must be positive finite seconds")
+    exe = shutil.which("omp")
+    if not exe:
+        raise Conflict("OMP executable not found on PATH")
+    run_id = "omp-" + uuid.uuid4().hex
+    folder = state_root(home) / "omp" / run_id
+    folder.mkdir(parents=True)
+    prompt = folder / "brief.md"
+    prompt.write_text(AGENT_TEXT[role][1] + "\n\n" + brief, encoding="utf-8")
+    sessions = folder / "sessions"
+    argv = [exe, "--print", "--mode", "json", "--wait-async", "--no-title", "--cwd", str(cd)]
+    for flag, value in (("--model", model), ("--thinking", thinking), ("--approval-mode", approval_mode)):
+        if value is not None:
+            argv.extend([flag, value])
+    argv.extend(["--resume", str(resume)] if resume else ["--session-dir", str(sessions)])
+    argv.append("@" + str(prompt))
+    if os.name == "nt" and Path(exe).suffix.lower() in {".cmd", ".bat"} and any(
+            re.search(r'[\r\n"&|<>^%!]', arg) for arg in argv[1:]):
+        raise Conflict("OMP batch launcher cannot safely carry shell metacharacters; use the native OMP executable")
+    envelope = {"tool_name": "omp", "tool_use_id": run_id, "cwd": str(cd), "tool_input": {}}
+    receipt(home, "omp", run_id, envelope, Decision(True, "explicit-omp-subprocess", role, model, thinking, fields))
+    ran = run_bounded(argv, cd, None, timeout)
+    events, errors, last_file = folder / "events.jsonl", folder / "stderr.log", folder / "last.md"
+    events.write_bytes(ran["out"].encode("utf-8"))
+    errors.write_bytes(ran["err"].encode("utf-8"))
+    ev = omp_evidence(ran["out"], None)
+    session_file = resume
+    if not resume and isinstance(ev["worker_session_id"], str):
+        session_file = next((p for p in sessions.glob("*.jsonl")
+                             if p.stem.endswith("_" + ev["worker_session_id"])), None)
+    ev = omp_evidence(ran["out"], session_file)
+    last_file.write_text(ev.pop("text"), encoding="utf-8")
+    complete = bool(ran["code"] == 0 and not ran["timed_out"] and ev["terminal"]
+                    and ev["stop_reason"] == "stop" and last_file.read_text(encoding="utf-8").strip())
+    append_receipt(home, "omp", run_id, {"kind": "cost", "at": now(), "harness": "omp",
+                   "session_id": run_id, "tool_use_id": run_id, "via": "omp", "exit_code": ran["code"],
+                   "timed_out": ran["timed_out"], "kill_failed": ran["kill_failed"],
+                   "completed": complete, **ev})
+    result = {"session_id": run_id, "tool_use_id": run_id, "worker_session_id": ev["worker_session_id"],
+              "session_file": str(session_file) if session_file else None,
+              "requested_model": model, "requested_thinking": thinking,
+              "effective_model": ev["model"], "provider": ev["provider"],
+              "observed_thinking": ev["effort"], "usage": ev["usage"],
+              "exit_code": ran["code"], "completed": complete, "timed_out": ran["timed_out"],
+              "kill_failed": ran["kill_failed"], "pid": ran["pid"], "exited": ran["exited"],
+              "events": str(events), "stderr": str(errors), "last_message": str(last_file)}
+    (folder / "result.json").write_bytes(canonical_json(result))
+    return (0 if complete else ran["code"] or 1), result
 
 
 def dispatch_state(rows: list[dict], tool_use_id: str | None = None) -> tuple[dict | None, str]:
@@ -1679,7 +1780,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "upgrade", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "tally", "codex", "claude", "spool", "models", "model"):
+                 "tally", "codex", "claude", "omp", "spool", "models", "model"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
         if name == "codex":  # Claude harness only; Codex dispatches its models natively
@@ -1709,8 +1810,20 @@ def main() -> int:
             mode = p.add_mutually_exclusive_group(required=True)
             mode.add_argument("--once", action="store_true", help="process the inbox once and exit")
             mode.add_argument("--watch", action="store_true", help="process the inbox every 2 s until killed")
+        if name == "omp":
+            p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
+            p.add_argument("--brief-file", type=Path, required=True)
+            p.add_argument("--cd", type=Path, default=Path.cwd(), help="worker working directory")
+            p.add_argument("--model", help="optional OMP model selector; omitted inherits OMP configuration/session")
+            p.add_argument("--thinking", choices=("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"),
+                           help="optional OMP thinking override; omitted inherits configuration/session")
+            p.add_argument("--resume", type=Path, help="saved OMP worker session file")
+            p.add_argument("--timeout", type=float, help="seconds; default TW_OMP_TIMEOUT, else 3600")
+            p.add_argument("--approval-mode", choices=("always-ask", "always-ask-cached", "write", "yolo"),
+                           help="optional per-run OMP approval override; omitted inherits configuration")
         if name in {"activate", "deactivate", "status", "hook", "outcome", "tally", "models"}:
-            p.add_argument("--harness", choices=("codex", "claude"), required=True)
+            p.add_argument("--harness", choices=(*HARNESSES, "omp") if name in {"outcome", "tally"} else HARNESSES,
+                           required=True)
         if name == "model":  # edits the skill's source routes.json (validated before it writes); then `upgrade`
             p.add_argument("action", choices=("set", "archive"))
             p.add_argument("--harness")
@@ -1785,6 +1898,11 @@ def main() -> int:
             print(json.dumps(result))
             if code == 2:  # the relay printed the denial verbatim
                 print(Path(result["last_message"]).read_text(encoding="utf-8")[-2000:], file=sys.stderr)
+            return code
+        elif args.command == "omp":
+            code, result = omp_run(home, args.role, args.brief_file, args.cd, args.model, args.thinking,
+                                   args.resume, args.timeout, args.approval_mode)
+            print(json.dumps(result))
             return code
         elif args.command == "spool":
             while True:
