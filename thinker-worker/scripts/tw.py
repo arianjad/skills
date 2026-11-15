@@ -924,20 +924,20 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     folder = state_root(home) / "omp" / run_id
     folder.mkdir(parents=True)
     prompt = folder / "brief.md"
-    prompt.write_text(AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + brief, encoding="utf-8")
+    prompt_text = AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + brief
+    prompt.write_text(prompt_text, encoding="utf-8")
     sessions = folder / "sessions"
     argv = [exe, "--print", "--mode", "json", "--wait-async", "--no-title", "--cwd", str(cd)]
     for flag, value in (("--model", model), ("--thinking", thinking), ("--approval-mode", approval_mode)):
         if value is not None:
             argv.extend([flag, value])
     argv.extend(["--resume", str(resume)] if resume else ["--session-dir", str(sessions)])
-    argv.append("@" + str(prompt))
     if os.name == "nt" and Path(exe).suffix.lower() in {".cmd", ".bat"} and any(
             re.search(r'[\r\n"&|<>^%!]', arg) for arg in argv[1:]):
         raise Conflict("OMP batch launcher cannot safely carry shell metacharacters; use the native OMP executable")
     envelope = {"tool_name": "omp", "tool_use_id": run_id, "cwd": str(cd), "tool_input": {}}
     receipt(home, "omp", run_id, envelope, Decision(True, "explicit-omp-subprocess", role, model, thinking, fields))
-    ran = run_bounded(argv, cd, None, timeout)
+    ran = run_bounded(argv, cd, prompt_text.encode("utf-8"), timeout)
     events, errors, last_file = folder / "events.jsonl", folder / "stderr.log", folder / "last.md"
     events.write_bytes(ran["out"].encode("utf-8"))
     errors.write_bytes(ran["err"].encode("utf-8"))

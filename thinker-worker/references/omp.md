@@ -14,6 +14,8 @@ python <thinker-worker>/scripts/tw.py omp --role worker --brief-file <brief.md> 
 
 Here `--role` selects the assignment type, `--brief-file` names the written assignment, and `--cd` selects the worker's working directory. Omit model and thinking to inherit OMP defaults. Optional `--model` requests an OMP provider/model selector; `--thinking` requests a thinking setting supported by that OMP model. These are per-run overrides, not new defaults. Unsupported selections are errors, not permission to substitute another route.
 
+The brief is saved for inspection and sent as plain prompt text on standard input. Its storage path is not exposed as a file attachment, and the brief does not consume command-line argument space.
+
 The backend preserves OMP's configured tools, extensions, skills and approval policy. An explicit `--approval-mode` changes approval handling for that run; omitting it leaves the configuration authoritative. Approval settings do not prove OS-level isolation. Use isolated configuration for tests that would otherwise capture production memory.
 
 ## Results and continuation

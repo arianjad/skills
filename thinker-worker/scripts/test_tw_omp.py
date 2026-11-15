@@ -15,7 +15,7 @@ import json, os, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 home = Path(os.environ['FAKE_OMP_HOME'])
-prompt = Path(args[-1][1:]).read_text(encoding='utf-8')
+prompt = sys.stdin.buffer.read().decode('utf-8')
 (home/'call.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd()}),encoding='utf-8')
 time.sleep(float(os.environ.get('FAKE_SLEEP','0')))
 def value(flag, default=None):
@@ -91,10 +91,18 @@ if __name__ == '__main__':
         assert '--approval-mode' not in call['args'] and '--auto-approve' not in call['args'],call
         assert '--no-extensions' not in call['args'] and '--no-skills' not in call['args'],call
         assert '--wait-async' in call['args'] and call['prompt'].endswith(BRIEF),call
+        assert not any(arg.startswith('@') for arg in call['args']),call
         assert f'Working directory: {home}' in call['prompt'],call
         assert 'PRIVATE' not in Path(first['last_message']).read_text(encoding='utf-8')
         assert first['usage']['input']==12 and first['usage']['output']==4,first
         assert not (home/'.thinker-worker/state').exists(),'OMP unexpectedly requires native activation'
+
+        large_brief = BRIEF + '\n' + 'λ " & | < > ^ % !\n' * 5000
+        result, large = dispatch(text=large_brief)
+        assert result.returncode==0,result.stderr
+        call = json.loads((home/'call.json').read_text(encoding='utf-8'))
+        assert call['prompt'].endswith(large_brief),len(call['prompt'])
+        assert max(map(len,call['args']))<1000,call['args']
 
         # Changing the configured model requires no caller/native-registry change.
         result, changed = dispatch(variables={'FAKE_MODEL':'different-backend/beta','FAKE_THINKING':'off'})
