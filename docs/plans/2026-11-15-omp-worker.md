@@ -26,3 +26,15 @@ Constraints: preserve existing source changes/commits; all commits local; no pus
 ## Delegation brief and stop condition
 
 Nemotron implementation scope: thinker-worker/scripts/tw.py and thinker-worker/scripts/test_tw_omp.py only, including SKILL_FILES's new omp.md entry. Parent writes reference/docs. You are not alone; preserve others' edits and do not commit, push, change services/model configuration, write production memory or dispatch children. Kill only processes you launched. First milestone checkpoint in the chat's work directory; finish with exact diff, command and test result, or leave a precise partial result. Parent retains framing/acceptance; independent reviewer did not author the code. Do not recreate caller-specific guards or fixed-model admissions around OMP.
+
+## Delivered 2026-11-15
+
+Source implementation b6c22cd plus final documentation/context correction. Local implementation attempt stopped after drifting; parent implemented using existing bounded-process/receipt helpers. Installed to existing Codex and Claude package locations with normal upgrade; no hook/default-model/service changes. Both installed copies match source bytes.
+
+All 21 standalone test scripts checked. Nineteen passed initially; the two portability scripts selected WindowsApps bash. Both passed with Git for Windows bash first in PATH. New OMP test reran after adding explicit working-directory context to the prompt. No repeat full suite for that one-line prompt change.
+
+Real isolated configured-local OMP start and same-session continuations ran with no model/thinking override and no Codex/Claude caller IDs. Initial artifact rejected for wrong directory. Repair used exact path but omitted the requested newline; preserve that limitation, not a strict-pass claim. Later continuation wrote the correct remembered marker to the exact file; payload/path checks and deliberately wrong-marker controls passed. Evidence: chat work/omp-real-smoke/verified.json and original separate turn logs.
+
+Independent Opus 5.5/high review of b6c22cd completed from the same resumed review agent after stopping its overlong exploration: no blocking defect. Documented caller-timeout/evidence-loss limitations, trusted launch directory/PATH, and main-assistant-only usage accounting. Restored explicit new-model trigger wording. Raw child exit codes and refusal directories remain ordinary diagnostic details; no new runtime framework or hardening layer was added. Reviewer resume-relocation uncertainty is bounded by the actual same-file/same-session smoke; nested-agent usage/identity is not claimed validated.
+
+All commits are local. No push. Backend transport completion does not accept a worker's artifact; independent checks remain required. Worker-drift diagnosis is separate follow-up, not a prerequisite for this delivered backend.

@@ -91,6 +91,7 @@ if __name__ == '__main__':
         assert '--approval-mode' not in call['args'] and '--auto-approve' not in call['args'],call
         assert '--no-extensions' not in call['args'] and '--no-skills' not in call['args'],call
         assert '--wait-async' in call['args'] and call['prompt'].endswith(BRIEF),call
+        assert f'Working directory: {home}' in call['prompt'],call
         assert 'PRIVATE' not in Path(first['last_message']).read_text(encoding='utf-8')
         assert first['usage']['input']==12 and first['usage']['output']==4,first
         assert not (home/'.thinker-worker/state').exists(),'OMP unexpectedly requires native activation'

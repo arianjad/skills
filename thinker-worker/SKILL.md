@@ -1,6 +1,6 @@
 ---
 name: thinker-worker
-description: Coordinate substantial work with native Codex/Claude agents or a configured OMP worker from any calling harness. Choose workers and effort, reuse bounded assignments, and verify results independently. Use at a session's first delegation (standing instructions count), for local OMP delegation, and when changing native model routing. Work a few tool calls settle stays inline.
+description: Coordinate substantial work with native Codex/Claude agents or a configured OMP worker from any calling harness. Choose workers and effort, reuse bounded assignments, and verify results independently. Use at a session's first delegation (standing instructions count), for local OMP delegation, and when adding, updating or archiving a model in native routing, including a new model release. Work a few tool calls settle stays inline.
 ---
 
 # Thinker/worker

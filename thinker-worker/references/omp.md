@@ -28,11 +28,20 @@ python <thinker-worker>/scripts/tw.py omp --role worker --brief-file <follow-up.
 
 Optional `--timeout` sets the process allowance in seconds. Choose it for the task; a short limit is not a model-quality verdict. Timeout cleanup applies only to the launched process tree. Reconcile uncertain cleanup before assigning another writer to those files. This is a subprocess runner, not a background service or scheduler; callers use their existing foreground/background tools.
 
+Set the caller's own process timeout longer than this allowance plus cleanup time, or run it with the caller's background mechanism. Event/result files are finalized after OMP exits; forcibly killing the wrapper can lose those logs and leave the worker running. As with the existing backends, launch from a trusted directory with a trusted `PATH`; Windows executable lookup can prefer a program in the launch directory.
+
 ## Verification
 
 Run a check that can fail on a materially wrong delivered artifact, with a known-positive control. Worker-written tests alone do not establish acceptance. Record acceptance through the existing outcome command with the returned receipt session/run identifiers and OMP namespace; an optional `TW-Check` runs in the recorded working directory. Outcome labels do not turn partial execution into completed work.
 
+```
+python <thinker-worker>/scripts/tw.py outcome --harness omp --session <session_id> --tool-use-id <tool_use_id> --accepted yes
+python <thinker-worker>/scripts/tw.py tally --harness omp
+```
+
 Use the OMP namespace with the existing tally command to inspect outcomes. Model evidence is per execution, so an OMP configuration change can produce a different model without rewriting native admissions or priors. Do not infer general model quality from one trial or token-cost figures from missing usage.
+
+The returned `usage` sums the main assistant's streamed messages, not a total bill for auxiliary services or nested agents.
 
 ## Boundaries
 

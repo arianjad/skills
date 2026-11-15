@@ -924,7 +924,7 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     folder = state_root(home) / "omp" / run_id
     folder.mkdir(parents=True)
     prompt = folder / "brief.md"
-    prompt.write_text(AGENT_TEXT[role][1] + "\n\n" + brief, encoding="utf-8")
+    prompt.write_text(AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + brief, encoding="utf-8")
     sessions = folder / "sessions"
     argv = [exe, "--print", "--mode", "json", "--wait-async", "--no-title", "--cwd", str(cd)]
     for flag, value in (("--model", model), ("--thinking", thinking), ("--approval-mode", approval_mode)):
