@@ -121,6 +121,7 @@ if __name__ == '__main__':
         assert resumed['session_id']!=first['session_id'] and resumed['session_file']==first['session_file'],resumed
         call = json.loads((home/'call.json').read_text(encoding='utf-8'))
         assert '--session-dir' not in call['args'] and '--resume' in call['args'],call
+        assert call['prompt'].endswith(BRIEF),call
 
         # Fail before launch on structurally invalid assignments.
         (home/'call.json').unlink()
