@@ -67,7 +67,7 @@ if __name__ == '__main__':
         result, first = dispatch()
         assert result.returncode == 0, result.stderr
         assert first['completed'] and first['conversation_id']=='conv-fresh-1',first
-        assert first['requested_model'] is None and first['effective_model']=='gemini-default-low',first
+        assert first['requested_model'] is None and first['reported_model']=='gemini-default-low' and 'effective_model' not in first,first
         assert first['usage']['input_tokens']==12 and first['usage']['output_tokens']==4,first
         assert first['exit_code']==0 and not first['timed_out'],first
         assert Path(first['last_message']).read_text(encoding='utf-8')=='Fake agy says OK.'
@@ -97,7 +97,7 @@ if __name__ == '__main__':
         assert '--dangerously-skip-permissions' not in c['args'],c
         assert json.loads(c['stdin'])['message']['content'].endswith(tricky),c
         assert second['requested_model']=='gemini-x-high' and second['requested_effort']=='high',second
-        assert second['effective_model']=='gemini-x-high' and second['conversation_id']=='conv-old-9',second
+        assert second['reported_model']=='gemini-x-high' and second['conversation_id']=='conv-old-9',second
         assert second['permissions']['resolved']=={'permission':'mode','mode':'plan'},second
         assert second['permissions']['requested']=={'mode':'plan'},second
 
@@ -139,16 +139,17 @@ if __name__ == '__main__':
         result, ok = dispatch(variables={'TW_AGY_TIMEOUT':'0.1','FAKE_SLEEP':'10'})
         assert ok['timed_out'],ok
 
-        # Outcome runs TW-Check in --cd and tally reports the executed model.
+        # Outcome runs TW-Check in --cd; tally claims no executed model or tier.
         text = BRIEF.replace('TW-Risk: none','TW-Risk: none\nTW-Check: test -f call.json')
-        result, checked = dispatch(text=text,variables={'FAKE_DEFAULT_MODEL':'tally-model-low'})
+        result, checked = dispatch('--model','tally-model-low','--effort','high',text=text)
         assert result.returncode==0,result.stderr
         result = run(home,env,'outcome','--harness','agy','--session',checked['session_id'],
                      '--tool-use-id',checked['tool_use_id'])
         assert result.returncode==0 and 'pass' in result.stdout,result
         result = run(home,env,'tally','--harness','agy')
         counts=[json.loads(s) for s in result.stdout.splitlines()]
-        assert any(r['model']=='tally-model-low' and r['accepted']==1 and r['n']==1 for r in counts),counts
+        # agy's init echo and the requested effort are not execution evidence: tally counts the run at no model/tier.
+        assert [(r['model'],r['tier'],r['accepted'],r['n']) for r in counts]==[(None,None,1,1)],counts
         (home/'call.json').unlink()
         result = run(home,env,'outcome','--harness','agy','--session',checked['session_id'],
                      '--tool-use-id',checked['tool_use_id'])

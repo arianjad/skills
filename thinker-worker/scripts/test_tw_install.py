@@ -32,6 +32,9 @@ def round_trip(prior_settings, *extra):
         hooks = tw.read_json(settings, {})["hooks"]["PreToolUse"]
         assert any("thinker-worker" in json.dumps(h) for h in hooks), "guard hook installed"
         assert agent.exists()
+        installed = home / ".claude" / "skills" / "thinker-worker" / "references"
+        for ref in (Path(__file__).parent.parent / "references").glob("*.md"):  # every reference SKILL.md can link
+            assert (installed / ref.name).is_file(), f"{ref.name} not installed"
 
         r = run_tw("uninstall", "--home", str(home))
         assert r.returncode == 0, r.stderr

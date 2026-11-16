@@ -31,7 +31,7 @@ import uuid
 OWNER = "thinker-worker-v1"
 HARNESSES = ("codex", "claude")
 SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/claude.md", "references/add-model.md",
-               "references/omp.md", "scripts/tw.py")
+               "references/omp.md", "references/agy.md", "scripts/tw.py")
 TIERS = ("low", "medium", "high", "xhigh", "max")
 AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh|max)(?:-opus55)?")
 OPUS_REVIEW_MODEL = "claude-opus-5-5"
@@ -989,7 +989,8 @@ def agy_evidence(events: str) -> dict:
     final = results[-1] if results else {}
     meta = init.get("init") if isinstance(init.get("init"), dict) else {}
     text = final.get("response") if isinstance(final.get("response"), str) else ""
-    return {"conversation_id": init.get("conversation_id"), "model": meta.get("model"),
+    # init.model echoes the requested selector (absent for agy's default): a report, not executed-model evidence
+    return {"conversation_id": init.get("conversation_id"), "reported_model": meta.get("model"),
             "usage": final.get("usage"), "status": final.get("status"),
             "finished_reason": final.get("finished_reason"), "text": text}
 
@@ -1034,7 +1035,7 @@ def agy_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     (folder / "brief.md").write_text(prompt_text, encoding="utf-8")
     stdin = json.dumps({"event": "user", "message": {"content": prompt_text}}) + "\n"
     envelope = {"tool_name": "agy", "tool_use_id": run_id, "cwd": str(cd), "tool_input": {}}
-    receipt(home, "agy", run_id, envelope, Decision(True, "explicit-agy-subprocess", role, model, effort, fields))
+    receipt(home, "agy", run_id, envelope, Decision(True, "explicit-agy-subprocess", role, model, None, fields))
     ran = run_bounded(argv, cd, stdin.encode("utf-8"), timeout)
     events, errors, last_file = folder / "events.jsonl", folder / "stderr.log", folder / "last.md"
     events.write_bytes(ran["out"].encode("utf-8"))
@@ -1048,7 +1049,7 @@ def agy_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
                    "timed_out": ran["timed_out"], "kill_failed": ran["kill_failed"], "completed": complete,
                    "requested_effort": effort, "permissions": permissions, **ev})  # agy reports no executed effort
     result = {"session_id": run_id, "tool_use_id": run_id, "conversation_id": ev["conversation_id"],
-              "requested_model": model, "requested_effort": effort, "effective_model": ev["model"],
+              "requested_model": model, "requested_effort": effort, "reported_model": ev["reported_model"],
               "usage": ev["usage"], "status": ev["status"], "finished_reason": ev["finished_reason"],
               "exit_code": ran["code"], "completed": complete, "timed_out": ran["timed_out"],
               "kill_failed": ran["kill_failed"], "pid": ran["pid"], "exited": ran["exited"],
