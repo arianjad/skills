@@ -1,6 +1,6 @@
 ---
 name: thinker-worker
-description: Coordinate substantial work with native Codex/Claude agents or a configured OMP worker from any calling harness. Choose workers and effort, reuse bounded assignments, and verify results independently. Use at a session's first delegation (standing instructions count), for local OMP delegation, and when adding, updating or archiving a model in native routing, including a new model release. Work a few tool calls settle stays inline.
+description: Coordinate substantial work with native Codex/Claude agents or a configured OMP or Antigravity (agy) worker from any calling harness. Choose workers and effort, reuse bounded assignments, and verify results independently. Use at a session's first delegation (standing instructions count), for local OMP or agy delegation, and when adding, updating or archiving a model in native routing, including a new model release. Work a few tool calls settle stays inline.
 ---
 
 # Thinker/worker
@@ -20,6 +20,8 @@ The coordinator may read sources, run deterministic checks, and handle small boo
 **Leaves.** Sonnet, Haiku, Luna and Terra leaves use `low` through `max`. Start low/medium and go higher for more reasoning within a short, objectively checkable task. Physics judgment, architecture, adversarial review and acceptance belong outside the leaf role.
 
 **OMP workers, any caller.** `tw.py omp` runs the existing OMP agent with its configured model, or an explicit per-run model/thinking override. It uses persistent sessions and returns execution evidence; it does not require native caller activation or a model entry in `routes.json`. For local execution, read [OMP dispatch and resume](references/omp.md). Preserve the caller's authorization and verify delivered artifacts independently. OMP owns its model configuration; native routes retain their own admission rules.
+
+**Antigravity (agy) workers, any caller.** `tw.py agy` runs the `agy` CLI headless with an agy model id (`agy models`), same any-caller contract as OMP, default `--dangerously-skip-permissions` unless `--mode` is given. Read [agy dispatch](references/agy.md).
 
 Keep briefs compact: task, owned files, input sources, constraints, check and stopping condition, checkpoint requirement, and whether the worker can edit. A worker returns exact artifacts, checks, and uncertainty. The coordinator spot-checks load-bearing claims and accepts or redirects. Escalate a changed objective, scientific assumption, or consequential finding; ordinary fixes stay with the worker. Independent review is optional unless requested or justified by risk, and requires a bounded authorization cited in its brief.
 

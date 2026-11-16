@@ -721,7 +721,7 @@ def outcome(home: Path, harness: str, session: str, tool_use_id: str, accepted: 
         raise Conflict(f"no dispatch receipt for tool_use_id {tool_use_id} in {harness} session {session}{hint}")
     if state == "deny":
         raise Conflict(f"{tool_use_id} was denied at the gate ({disp.get('reason')}); it never ran")
-    if disp.get("tool_name") in {"codex", "omp"} and not any(
+    if disp.get("tool_name") in {"codex", "omp", "agy"} and not any(
             r.get("kind") == "cost" and r.get("tool_use_id") == tool_use_id for r in rows):
         raise Conflict(f"{tool_use_id}: no cost row, so {disp['tool_name']} never ran for it")
     check = disp.get("check") if run else None
@@ -767,6 +767,14 @@ def worker_permissions(backend: str, sandbox: str | None = None,
             raise Conflict("unsupported Claude permission mode")
         requested = {"permission_mode": permission_mode}
         resolved = {"permission_mode": "bypassPermissions" if permission_mode is None else permission_mode}
+    elif backend == "agy":
+        if sandbox is not None or approval_policy is not None:
+            raise Conflict("Codex permission controls cannot be mapped implicitly to agy")
+        if permission_mode is not None and permission_mode not in ("accept-edits", "auto", "plan"):
+            raise Conflict("unsupported agy mode")
+        requested = {"mode": permission_mode}
+        resolved = ({"permission": "dangerously-skip-permissions"} if permission_mode is None
+                    else {"permission": "mode", "mode": permission_mode})
     else:
         raise Conflict("unknown worker permission backend")
     return {"backend": backend, "requested": requested, "resolved": resolved,
@@ -962,6 +970,90 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
               "exit_code": ran["code"], "completed": complete, "timed_out": ran["timed_out"],
               "kill_failed": ran["kill_failed"], "pid": ran["pid"], "exited": ran["exited"],
               "events": str(events), "stderr": str(errors), "last_message": str(last_file)}
+    (folder / "result.json").write_bytes(canonical_json(result))
+    return (0 if complete else ran["code"] or 1), result
+
+
+def agy_evidence(events: str) -> dict:
+    """agy stream-json events carry the conversation, the model it reports, and the final result; prose is not evidence."""
+    rows = []
+    for line in events.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    init = next((r for r in rows if r.get("event") == "init"), {})
+    results = [r["result"] for r in rows if r.get("event") == "result" and isinstance(r.get("result"), dict)]
+    final = results[-1] if results else {}
+    meta = init.get("init") if isinstance(init.get("init"), dict) else {}
+    text = final.get("response") if isinstance(final.get("response"), str) else ""
+    return {"conversation_id": init.get("conversation_id"), "model": meta.get("model"),
+            "usage": final.get("usage"), "status": final.get("status"),
+            "finished_reason": final.get("finished_reason"), "text": text}
+
+
+def agy_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None = None,
+            effort: str | None = None, mode: str | None = None, resume: str | None = None,
+            timeout: float | None = None) -> tuple[int, dict]:
+    """Any caller -> Antigravity `agy` headless worker; agy owns the model catalogue, no native admission is involved."""
+    brief = brief_file.expanduser().resolve().read_text(encoding="utf-8-sig")
+    found_role, problem = first_role(brief)
+    fields, header_problem = header_fields(brief)
+    if problem or header_problem or found_role != role:
+        raise Conflict(problem or header_problem or "agy role does not match the brief")
+    if role in {"independent-review", "ideation"} and not review_details(brief):
+        raise Conflict("review/ideation needs TW-Authorization and TW-Scope")
+    cd = cd.expanduser().resolve()
+    if not cd.is_dir():
+        raise Conflict(f"working directory does not exist: {cd}")
+    try:
+        timeout = env_timeout("TW_AGY_TIMEOUT") if timeout is None else timeout
+    except ValueError as exc:
+        raise Conflict("TW_AGY_TIMEOUT must be positive finite seconds") from exc
+    if not 0 < timeout < float("inf"):
+        raise Conflict("agy timeout must be positive finite seconds")
+    permissions = worker_permissions("agy", permission_mode=mode)
+    exe = shutil.which("agy")
+    if not exe:
+        raise Conflict("agy executable not found on PATH")
+    argv = [exe, "--print", "", "--input-format", "stream-json", "--output-format", "stream-json"]
+    for flag, value in (("--model", model), ("--effort", effort), ("--mode", mode), ("--conversation", resume)):
+        if value is not None:
+            argv.extend([flag, value])
+    if mode is None:
+        argv.append("--dangerously-skip-permissions")
+    if os.name == "nt" and Path(exe).suffix.lower() in {".cmd", ".bat"} and any(
+            re.search(r'[\r\n"&|<>^%!]', arg) for arg in argv[1:] if arg):
+        raise Conflict("agy batch launcher cannot safely carry shell metacharacters; use the native agy executable")
+    run_id = "agy-" + uuid.uuid4().hex
+    folder = state_root(home) / "agy" / run_id
+    folder.mkdir(parents=True)
+    prompt_text = AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + brief
+    (folder / "brief.md").write_text(prompt_text, encoding="utf-8")
+    stdin = json.dumps({"event": "user", "message": {"content": prompt_text}}) + "\n"
+    envelope = {"tool_name": "agy", "tool_use_id": run_id, "cwd": str(cd), "tool_input": {}}
+    receipt(home, "agy", run_id, envelope, Decision(True, "explicit-agy-subprocess", role, model, effort, fields))
+    ran = run_bounded(argv, cd, stdin.encode("utf-8"), timeout)
+    events, errors, last_file = folder / "events.jsonl", folder / "stderr.log", folder / "last.md"
+    events.write_bytes(ran["out"].encode("utf-8"))
+    errors.write_bytes(ran["err"].encode("utf-8"))
+    ev = agy_evidence(ran["out"])
+    last_file.write_text(ev.pop("text"), encoding="utf-8")
+    complete = bool(ran["code"] == 0 and not ran["timed_out"] and ev["status"] == "SUCCESS"
+                    and last_file.read_text(encoding="utf-8").strip())
+    append_receipt(home, "agy", run_id, {"kind": "cost", "at": now(), "harness": "agy",
+                   "session_id": run_id, "tool_use_id": run_id, "via": "agy", "exit_code": ran["code"],
+                   "timed_out": ran["timed_out"], "kill_failed": ran["kill_failed"], "completed": complete,
+                   "requested_effort": effort, "permissions": permissions, **ev})  # agy reports no executed effort
+    result = {"session_id": run_id, "tool_use_id": run_id, "conversation_id": ev["conversation_id"],
+              "requested_model": model, "requested_effort": effort, "effective_model": ev["model"],
+              "usage": ev["usage"], "status": ev["status"], "finished_reason": ev["finished_reason"],
+              "exit_code": ran["code"], "completed": complete, "timed_out": ran["timed_out"],
+              "kill_failed": ran["kill_failed"], "pid": ran["pid"], "exited": ran["exited"],
+              "events": str(events), "stderr": str(errors), "last_message": str(last_file),
+              "permissions": permissions}
     (folder / "result.json").write_bytes(canonical_json(result))
     return (0 if complete else ran["code"] or 1), result
 
@@ -1780,7 +1872,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("install", "upgrade", "uninstall", "check", "activate", "deactivate", "status", "hook", "machines", "outcome",
-                 "tally", "codex", "claude", "omp", "spool", "models", "model"):
+                 "tally", "codex", "claude", "omp", "agy", "spool", "models", "model"):
         p = commands.add_parser(name)
         p.add_argument("--home", type=Path, default=Path.home())
         if name == "codex":  # Claude harness only; Codex dispatches its models natively
@@ -1821,8 +1913,19 @@ def main() -> int:
             p.add_argument("--timeout", type=float, help="seconds; default TW_OMP_TIMEOUT, else 3600")
             p.add_argument("--approval-mode", choices=("always-ask", "always-ask-cached", "write", "yolo"),
                            help="optional per-run OMP approval override; omitted inherits configuration")
+        if name == "agy":
+            p.add_argument("--role", choices=("worker", "leaf", "independent-review", "ideation"), required=True)
+            p.add_argument("--brief-file", type=Path, required=True)
+            p.add_argument("--cd", type=Path, default=Path.cwd(), help="worker working directory")
+            p.add_argument("--model", help="optional agy model id (see `agy models`); omitted uses agy's default")
+            p.add_argument("--effort", choices=("low", "medium", "high", "xhigh", "max"),
+                           help="optional agy effort override")
+            p.add_argument("--mode", choices=("accept-edits", "auto", "plan"),
+                           help="agy permission mode; replaces the default --dangerously-skip-permissions")
+            p.add_argument("--resume", help="agy conversation_id from an earlier run")
+            p.add_argument("--timeout", type=float, help="seconds; default TW_AGY_TIMEOUT, else 3600")
         if name in {"activate", "deactivate", "status", "hook", "outcome", "tally", "models"}:
-            p.add_argument("--harness", choices=(*HARNESSES, "omp") if name in {"outcome", "tally"} else HARNESSES,
+            p.add_argument("--harness", choices=(*HARNESSES, "omp", "agy") if name in {"outcome", "tally"} else HARNESSES,
                            required=True)
         if name == "model":  # edits the skill's source routes.json (validated before it writes); then `upgrade`
             p.add_argument("action", choices=("set", "archive"))
@@ -1902,6 +2005,11 @@ def main() -> int:
         elif args.command == "omp":
             code, result = omp_run(home, args.role, args.brief_file, args.cd, args.model, args.thinking,
                                    args.resume, args.timeout, args.approval_mode)
+            print(json.dumps(result))
+            return code
+        elif args.command == "agy":
+            code, result = agy_run(home, args.role, args.brief_file, args.cd, args.model, args.effort,
+                                   args.mode, args.resume, args.timeout)
             print(json.dumps(result))
             return code
         elif args.command == "spool":
