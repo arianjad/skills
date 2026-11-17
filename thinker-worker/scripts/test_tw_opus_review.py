@@ -14,7 +14,6 @@ assert not claude(W,'tw-independent-review-high','claude-opus-5-5').admitted
 assert claude(W,'tw-worker-high','claude-opus-5-5').admitted
 assert not claude(REV,'tw-independent-review-high','opus').admitted
 assert not codex(REV,'claude-opus-5-5','high').admitted
-assert R['router']['defaults']['independent-review']=='gpt-6-astra'
 assert R['harnesses']['claude']['roles']['independent-review']['models'][0]=='fable'
 assert (tw.source_root()/'routes.json').read_text()==tw.dump_routes(json.loads((tw.source_root()/'routes.json').read_text()))
 print('PASS Opus review low..max; narrowed low, absent authorization, role mismatch, alias/native Codex denied')

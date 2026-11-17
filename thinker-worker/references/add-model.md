@@ -29,7 +29,7 @@ Run from the source repo root: `python thinker-worker/scripts/tw.py <command>`.
    `--role-tiers low,medium,high`, for example when enabling high-effort leaves. Existing `model_tiers`
    restrictions remain in force; use `--tiers` to change a selected model's narrower list. Invalid role
    tiers or incompatible model restrictions are refused before writing.
-   For workers, follow `SKILL.md`'s selection policy and inherit class priors unless evidence or the user changes them. Use `--default` only for an explicitly requested fixed preference; it sets `router.defaults[role]`. Repeated commands are idempotent. A new model
+   Inherit class priors unless evidence or the user changes them. Use `--default` only for an explicitly requested fixed preference; it sets `router.defaults[role]`. Repeated commands are idempotent. A new model
    is appended; a role's first model (the Claude agent file's pin) is never changed here. A superseded model stays
    admitted (drop its default with `--default` on the successor). A model no longer offered:
    `tw.py model archive --model <id>` (removes it everywhere, keeps a dated record under `archived`; `model set`

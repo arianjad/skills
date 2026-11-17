@@ -87,8 +87,15 @@ with override(OV):
     assert {k: v for k, v in lines[("worker", "sonnet")].items() if k != "priors"} == {  # shipped priors may change
         "harness": "claude", "role": "worker", "model": "sonnet", "tiers": list(tw.TIERS),
         "default": False, "via": "native"}
-    assert lines[("worker", "opus")]["default"] is True                      # the agent file's pin
-    assert lines[("independent-review", "gpt-6-astra")]["default"] is True   # router.defaults
+    assert lines[("worker", "opus")]["default"] is False
+    for role, model in (("worker", "gpt-6.2-sol"), ("independent-review", "gpt-6.2-astra"),
+                        ("ideation", "gpt-6.2-astra")):
+        assert lines[(role, model)]["default"] and lines[(role, model)]["via"] == "tw.py codex"
+    code, out = run_main(["models", "--harness", "codex"])
+    assert code == 0, out
+    assert {(x["role"], x["model"]) for x in map(json.loads, out.splitlines()) if x["default"]} == {
+        ("worker", "gpt-6.2-sol"), ("independent-review", "gpt-6.2-astra"),
+        ("ideation", "gpt-6.2-astra"), ("leaf", "gpt-6-luna")}
     assert lines[("leaf", "sonnet")]["tiers"] == list(tw.TIERS)
     assert lines[("worker", "haiku")]["tiers"] == list(tw.TIERS) and ("leaf", "gpt-6.1-terra") in lines
 from test_tw_routes import narrowed

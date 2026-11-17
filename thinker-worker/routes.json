@@ -8,7 +8,7 @@
     "claude": {
       "roles": {
         "worker": {
-          "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5", "gpt-6.1-sol", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "fable", "claude-fable-5-2"],
+          "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5", "gpt-6.1-sol", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "fable", "claude-fable-5-2", "gpt-6.2-sol"],
           "tiers": ["low", "medium", "high", "xhigh", "max"],
           "tools": null
         },
@@ -18,12 +18,12 @@
           "tools": null
         },
         "independent-review": {
-          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "claude-opus-5-5", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "claude-fable-5-2"],
+          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "claude-opus-5-5", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "claude-fable-5-2", "gpt-6.2-sol", "gpt-6.2-astra"],
           "tiers": ["low", "medium", "high", "xhigh", "max"],
           "tools": null
         },
         "ideation": {
-          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-2"],
+          "models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-2", "gpt-6.2-astra"],
           "tiers": ["medium", "high", "xhigh"],
           "tools": null
         }
@@ -32,7 +32,7 @@
     "codex": {
       "roles": {
         "worker": {
-          "models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-sol", "gpt-6.1-terra"],
+          "models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.2-sol"],
           "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "leaf": {
@@ -40,11 +40,11 @@
           "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "independent-review": {
-          "models": ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra"],
+          "models": ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"],
           "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "ideation": {
-          "models": ["gpt-6-astra"],
+          "models": ["gpt-6-astra", "gpt-6.2-astra"],
           "tiers": ["medium", "high", "xhigh"]
         }
       }
@@ -52,8 +52,9 @@
   },
   "router": {
     "defaults": {
-      "independent-review": "gpt-6-astra",
-      "ideation": "fable"
+      "independent-review": "gpt-6.2-astra",
+      "ideation": "gpt-6.2-astra",
+      "worker": "gpt-6.2-sol"
     },
     "priors": {
       "*": "medium",
