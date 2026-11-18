@@ -8,7 +8,7 @@
     "claude": {
       "roles": {
         "worker": {
-          "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5", "gpt-6.1-sol", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "fable", "claude-fable-5-2", "gpt-6.2-sol"],
+          "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5", "gpt-6.1-sol", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "fable", "claude-fable-5-2", "gpt-6.2-sol", "gpt-6.2-astra"],
           "tiers": ["low", "medium", "high", "xhigh", "max"],
           "tools": null
         },
@@ -32,7 +32,7 @@
     "codex": {
       "roles": {
         "worker": {
-          "models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.2-sol"],
+          "models": ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"],
           "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "leaf": {

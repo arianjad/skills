@@ -81,7 +81,11 @@ CASES = [
     ("sol 6.1 review pipeline", tw.decide("claude", {"tool_name": "codex", "tool_input": {
         "subagent_type": "tw-independent-review-high", "prompt": REV, "model": "gpt-6.1-sol"}}, R).admitted, True),
     ("native ideation on astra refused", claude(IDEA, "tw-ideation-medium", "gpt-6-astra").admitted, False),
-    ("worker on astra refused", claude(W, "tw-worker-high", "gpt-6-astra").admitted, False),
+    ("worker on legacy astra refused", claude(W, "tw-worker-high", "gpt-6-astra").admitted, False),
+    ("native Claude worker on astra 6.2 refused", claude(W, "tw-worker-high", "gpt-6.2-astra").admitted, False),
+    ("Claude to Codex astra 6.2 worker", tw.decide("claude", {"tool_name": "codex", "tool_input": {
+        "subagent_type": "tw-worker-high", "prompt": W, "model": "gpt-6.2-astra"}}, R).admitted, True),
+    ("codex astra 6.2 worker", codex(W, "gpt-6.2-astra", "high").admitted, True),
     ("codex sol 6.2 worker", codex(W, "gpt-6.2-sol", "high").admitted, True),
     ("codex astra 6.2 reviewer", codex(REV, "gpt-6.2-astra", "high").admitted, True),
     ("codex astra 6.2 ideation", codex(IDEA, "gpt-6.2-astra", "medium").admitted, True),
@@ -114,7 +118,9 @@ CASES = [
     ("codex leaf terra 6.1 max", codex(LEAF, "gpt-6.1-terra", "max").admitted, True),
     ("narrowed: codex leaf luna xhigh refused", codex(LEAF, "gpt-6-luna", "xhigh", routes=N).admitted, False),
     ("v2 astra needs effort", codex("<cipher>", "gpt-6-astra", v2=True).admitted, False),
-    ("v2 astra high, role null", codex("<cipher>", "gpt-6-astra", "high", v2=True)[:3:2], (True, None)),
+    ("v2 legacy astra high, role null", codex("<cipher>", "gpt-6-astra", "high", v2=True)[:3:2], (True, None)),
+    ("v2 astra 6.2 high, inferred worker", codex("<cipher>", "gpt-6.2-astra", "high", v2=True)[:3:2],
+     (True, "worker")),
     ("v2 sol 6.1 shared-model role inferred as worker", codex("<cipher>", "gpt-6.1-sol", "medium", v2=True).role, "worker"),
     ("v2 unknown model", codex("<cipher>", "gpt-9", "high", v2=True).admitted, False),
 ]
