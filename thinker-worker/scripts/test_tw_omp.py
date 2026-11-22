@@ -16,8 +16,10 @@ from pathlib import Path
 args = sys.argv[1:]
 home = Path(os.environ['FAKE_OMP_HOME'])
 prompt = sys.stdin.buffer.read().decode('utf-8')
-(home/'call.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd()}),encoding='utf-8')
-time.sleep(float(os.environ.get('FAKE_SLEEP','0')))
+count_path = home/'call-count.txt'
+count = int(count_path.read_text() or '0') + 1 if count_path.exists() else 1
+count_path.write_text(str(count),encoding='utf-8')
+(home/'call.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd(),'count':count}),encoding='utf-8')
 def value(flag, default=None):
     return args[args.index(flag)+1] if flag in args else default
 if '--resume' in args:
@@ -35,9 +37,24 @@ selected = value('--model',models[-1] if models else os.environ.get('FAKE_MODEL'
 provider, model = selected.split('/',1)
 thinking = value('--thinking',levels[-1] if levels else os.environ.get('FAKE_THINKING','medium'))
 records += [{'type':'model_change','model':selected},{'type':'thinking_level_change','thinkingLevel':thinking}]
-session.write_text('\n'.join(json.dumps(r) for r in records)+'\n',encoding='utf-8')
-print(json.dumps({'type':'session','id':sid}))
+if not os.environ.get('FAKE_NO_SESSION'):
+    session.write_text('\n'.join(json.dumps(r) for r in records)+'\n',encoding='utf-8')
+    print(json.dumps({'type':'session','id':sid}),flush=True)
+if os.environ.get('FAKE_PARTIAL_BEFORE_SLEEP') and '--resume' not in args:
+    print(json.dumps({'type':'message_end','message':{'role':'assistant','provider':provider,'model':model,
+     'stopReason':'stop','content':[{'type':'text','text':'partial answer from the timed-out attempt'}]}}),flush=True)
+    print(json.dumps({'type':'agent_end','isTerminal':True,'yielded':True}),flush=True)
+sleep = float(os.environ.get('FAKE_SLEEP','0'))
+if os.environ.get('FAKE_SLEEP_ONCE'):
+    marker = home/'sleep-once.marker'
+    if not marker.exists():
+        marker.write_text('slept',encoding='utf-8')
+        time.sleep(sleep)
+else:
+    time.sleep(sleep)
 print('not-json diagnostic')
+if os.environ.get('FAKE_NO_RESULT_ON_RESUME') and '--resume' in args:
+    sys.exit(0)
 if os.environ.get('FAKE_NO_RESULT'):
     sys.exit(0)
 print(json.dumps({'type':'message_end','message':{'role':'assistant','provider':provider,'model':model,
@@ -84,6 +101,7 @@ if __name__ == '__main__':
         result, first = dispatch()
         assert result.returncode == 0, result.stderr
         assert first['completed'] and first['effective_model']=='alpha' and first['provider']=='configured-a',first
+        assert first['timeout_seconds']==7200 and first['retry_enabled'] and not first['retry_used'],first
         assert first['requested_model'] is None and first['requested_thinking'] is None,first
         assert first['observed_thinking']=='medium' and Path(first['session_file']).is_file(),first
         call = json.loads((home/'call.json').read_text(encoding='utf-8'))
@@ -91,6 +109,8 @@ if __name__ == '__main__':
         assert '--approval-mode' not in call['args'] and '--auto-approve' not in call['args'],call
         assert '--no-extensions' not in call['args'] and '--no-skills' not in call['args'],call
         assert '--wait-async' in call['args'] and call['prompt'].endswith(BRIEF),call
+        assert 'Assignment contract:' in call['prompt'] and 'Deliverable: result' in call['prompt'],call
+        assert 'Use only the ownership and boundaries stated in the assignment body.' in call['prompt'],call
         assert not any(arg.startswith('@') for arg in call['args']),call
         assert f'Working directory: {home}' in call['prompt'],call
         assert 'PRIVATE' not in Path(first['last_message']).read_text(encoding='utf-8')
@@ -108,6 +128,9 @@ if __name__ == '__main__':
         result, changed = dispatch(variables={'FAKE_MODEL':'different-backend/beta','FAKE_THINKING':'off'})
         assert result.returncode==0 and changed['provider']=='different-backend' and changed['effective_model']=='beta',changed
         assert changed['observed_thinking']=='off' and changed['requested_model'] is None,changed
+        result, env_bounded = dispatch(variables={'TW_OMP_TIMEOUT':'12'})
+        assert result.returncode==0 and env_bounded['timeout_seconds']==12,env_bounded
+        assert not env_bounded['retry_enabled'],'An existing environment cap must retain single-attempt behavior'
         result, override = dispatch('--model','third/gamma','--thinking','high','--approval-mode','write')
         assert result.returncode==0 and override['effective_model']=='gamma',override
         assert override['requested_model']=='third/gamma' and override['observed_thinking']=='high',override
@@ -151,6 +174,62 @@ if __name__ == '__main__':
 
         result, timeout = dispatch('--timeout','0.1',variables={'FAKE_SLEEP':'10'})
         assert result.returncode!=0 and timeout['timed_out'] and timeout['exited'] and not timeout['completed'],timeout
+        assert not timeout['retry_enabled'] and not timeout['retry_used'],timeout
+        assert timeout['retry_skipped_reason']=='explicit timeout keeps legacy single-attempt behavior',timeout
+
+        # Normal retry is the same saved OMP session, with explicit continuity constraints. It runs at most once.
+        structured = BRIEF.replace('TW-Risk: none',
+            'TW-Risk: none\nTW-Scope: only result.txt\nTW-Checkpoint: preserve result.txt before timeout\nTW-Stop: stop after the check passes')
+        (home/'sleep-once.marker').unlink(missing_ok=True)
+        result, retried = dispatch('--timeout','5','--retry-on-timeout',text=structured,
+                                   variables={'FAKE_SLEEP':'10','FAKE_SLEEP_ONCE':'1'})
+        assert retried['initial_timed_out'],(result,retried)
+        if retried['retry_used']:
+            assert result.returncode==0 and retried['completed'],(result,retried)
+            assert len(retried['attempts'])==2 and not retried['timed_out'],retried
+            assert retried['attempts'][0]['timed_out'] and not retried['attempts'][1]['timed_out'],retried
+            assert all(Path(a['events']).is_file() and Path(a['stderr']).is_file() for a in retried['attempts']),retried
+            call = json.loads((home/'call.json').read_text(encoding='utf-8'))
+            assert '--resume' in call['args'] and call['count']>=2,call
+            assert 'previous attempt reached its time allowance' in call['prompt'],call
+            assert 'Scope: only result.txt' in call['prompt'] and 'Stop: stop after the check passes' in call['prompt'],call
+        else:
+            # Windows taskkill can deny/not-find the disposable .cmd tree. A retry must then be skipped, not forced.
+            assert retried['kill_failed'] and retried['retry_skipped_reason']=='first process tree did not verifiably exit',retried
+
+        # A resumed attempt without its own final answer cannot borrow the first attempt's answer or terminal event.
+        (home/'sleep-once.marker').unlink(missing_ok=True)
+        result, no_final = dispatch('--timeout','5','--retry-on-timeout',text=structured,
+                                    variables={'FAKE_SLEEP':'10','FAKE_SLEEP_ONCE':'1',
+                                               'FAKE_NO_RESULT_ON_RESUME':'1',
+                                               'FAKE_PARTIAL_BEFORE_SLEEP':'1'})
+        assert result.returncode!=0 and not no_final['completed'],no_final
+        if no_final['retry_used']:
+            assert Path(no_final['last_message']).read_text(encoding='utf-8')=='',no_final
+        else:
+            assert no_final['kill_failed'] and no_final['retry_skipped_reason']=='first process tree did not verifiably exit',no_final
+
+        # A hard total budget caps even the first attempt and cannot be silently doubled by retry.
+        (home/'sleep-once.marker').unlink(missing_ok=True)
+        result, bounded = dispatch('--timeout','5','--total-timeout','0.5',text=structured,
+                                   variables={'FAKE_SLEEP':'10','FAKE_SLEEP_ONCE':'1'})
+        assert result.returncode!=0 and bounded['total_timeout_seconds']==0.5,bounded
+        assert bounded['attempts'][0]['timeout_seconds']==0.5 and bounded['initial_timed_out'],bounded
+        assert not bounded['retry_used'] and bounded['retry_skipped_reason'] in {
+            'hard total timeout was exhausted',
+            'first process tree did not verifiably exit'},bounded
+
+        # No session, uncertain process cleanup, and external/destructive risk never replay work.
+        result, no_session = dispatch('--timeout','0.5','--retry-on-timeout',text=structured,
+                                      variables={'FAKE_SLEEP':'10','FAKE_NO_SESSION':'1'})
+        assert result.returncode!=0 and not no_session['retry_used'],no_session
+        assert no_session['retry_skipped_reason'] in {
+            'no saved OMP session was available for continuity',
+            'first process tree did not verifiably exit'},no_session
+        (home/'call.json').unlink()
+        external = structured.replace('TW-Risk: none','TW-Risk: external')
+        result, invalid = dispatch('--retry-on-timeout',text=external)
+        assert result.returncode==2 and invalid is None and not (home/'call.json').exists(),result
 
         # Outcome reuses the actual dispatch's cwd and keeps model evidence in tally.
         text = BRIEF.replace('TW-Risk: none','TW-Risk: none\nTW-Check: test -f call.json')

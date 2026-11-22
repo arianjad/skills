@@ -6,11 +6,19 @@ OMP owns model selection. With no model/thinking override, a fresh worker uses O
 
 ## Dispatch
 
-Write a bounded brief with the normal `TW-Role`, routing header, owned files, context pointers, meaningful acceptance check and stop condition. The command's role must match the brief. Independent-review and ideation briefs retain explicit authorization and scope. Assign independent verification to a different author/session.
+Write a bounded brief with the normal `TW-Role`, routing header, owned files, context pointers, meaningful acceptance check and stop condition. The command's role must match the brief. Independent-review and ideation briefs retain explicit authorization and scope. Assign independent verification to a different author/session. The wrapper emits a compact assignment contract before the body. Add these optional header lines when the assignment has file ownership or a useful partial checkpoint. Existing briefs without them remain valid.
+
+```
+TW-Scope: exact owned files and allowed operations
+TW-Checkpoint: useful partial artifact to preserve before the allowance ends
+TW-Stop: condition that ends this assignment
+```
 
 ```
 python <thinker-worker>/scripts/tw.py omp --role worker --brief-file <brief.md> --cd <checkout>
 ```
+
+This canonical command is the normal route for local work. It gives each attempt up to 7,200 seconds and, after a clean timeout, resumes the same saved OMP session once. Do not add a routine short timeout merely to poll the worker. Use the returned logs and checkpoint while it runs through the caller's normal foreground or background mechanism.
 
 Here `--role` selects the assignment type, `--brief-file` names the written assignment, and `--cd` selects the worker's working directory. Omit model and thinking to inherit OMP defaults. Optional `--model` requests an OMP provider/model selector; `--thinking` requests a thinking setting supported by that OMP model. These are per-run overrides, not new defaults. Unsupported selections are errors, not permission to substitute another route.
 
@@ -28,7 +36,11 @@ python <thinker-worker>/scripts/tw.py omp --role worker --brief-file <follow-up.
 
 `--resume` continues the saved conversation; the follow-up is another bounded brief. Preserve assignment and authorship: a resumed author does not become an independent reviewer of its own work. Each invocation has separate execution records while the worker session can continue. Keep independent writers in separate checkouts or disjoint scopes.
 
-Optional `--timeout` sets the process allowance in seconds. Choose it for the task; a short limit is not a model-quality verdict. Timeout cleanup applies only to the launched process tree. Reconcile uncertain cleanup before assigning another writer to those files. This is a subprocess runner, not a background service or scheduler; callers use their existing foreground/background tools.
+The normal command performs one automatic continuation after a timeout only when the first process tree verifiably exited, a saved session exists, and the validated `TW-Risk` header excludes `external` and `destructive`. The continuation reads the current artifacts and saved conversation. It is told to preserve completed work and stop on an operation whose outcome is uncertain. Both attempts keep separate event and error logs. Completion and the returned final answer come from the last attempt, so an earlier partial answer cannot make a failed continuation successful.
+
+Optional `--timeout` sets seconds per attempt. Passing it, or setting `TW_OMP_TIMEOUT`, preserves the former single-attempt behavior unless `--retry-on-timeout` is also explicit. This prevents a historical short cap from silently becoming twice as long. `--no-retry-on-timeout` disables continuation. `--total-timeout` is a hard wall-clock budget across both attempts; a continuation receives only the time remaining. It does not discard a useful checkpoint when the budget ends. Choose these limits for the task. A short limit is not a model-quality verdict.
+
+Timeout cleanup applies only to the launched process tree. Reconcile uncertain cleanup before assigning another writer to those files. This is a subprocess runner, not a background service or scheduler; callers use their existing foreground/background tools.
 
 Set the caller's own process timeout longer than this allowance plus cleanup time, or run it with the caller's background mechanism. Event/result files are finalized after OMP exits; forcibly killing the wrapper can lose those logs and leave the worker running. As with the existing backends, launch from a trusted directory with a trusted `PATH`; Windows executable lookup can prefer a program in the launch directory.
 

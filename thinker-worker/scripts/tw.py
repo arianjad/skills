@@ -41,6 +41,8 @@ ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")
 HEADER_KEYS = ("TW-Class", "TW-Deliverable", "TW-Accept", "TW-Risk")
 CHECK_KEY = "TW-Check"  # optional: a shell command `tw.py outcome` runs in the dispatch cwd for a pass/fail label
 OUTPUT_KEY = "TW-Output"  # optional: the one file path the child must write (the guard checks its basename)
+OMP_HEADER_KEYS = ("TW-Scope", "TW-Checkpoint", "TW-Stop")  # optional continuity detail for OMP prompts/retries
+OMP_DEFAULT_TIMEOUT = 7200.0
 # Claude Code refuses a native subagent's Write to these basenames ("Subagents should return findings as text");
 # probed 2026-09-28 on 15 real names, matches anthropics/claude-code#44657. Undocumented: the agent text's
 # verbatim-return fallback covers a pattern change. Codex children are unaffected.
@@ -393,12 +395,12 @@ def review_details(brief: str) -> bool:
 
 
 def header_fields(brief: str) -> tuple[dict | None, str]:
-    """Return ({key: value}, "") or (None, problem). Keys may sit anywhere in lines 2-12; TW-Check and TW-Output are
-    optional."""
+    """Return ({key: value}, "") or (None, problem). Keys may sit anywhere in lines 2-12; TW-Check, TW-Output and
+    the OMP continuity keys are optional."""
     found: dict[str, str] = {}
     for line in brief.split("\n")[1:12]:
         key, sep, value = line.partition(": ")
-        if sep and key in HEADER_KEYS + (CHECK_KEY, OUTPUT_KEY):
+        if sep and key in HEADER_KEYS + (CHECK_KEY, OUTPUT_KEY) + OMP_HEADER_KEYS:
             if key in found:
                 return None, f"routing header repeats {key}"
             found[key] = value.strip()
@@ -869,8 +871,8 @@ def codex_run(home: Path, session: str, role: str, tier: str, model: str, brief_
     return 1 if timed_out else code
 
 
-def env_timeout(name: str) -> float:
-    return float(os.environ.get(name, "3600"))
+def env_timeout(name: str, default: float = 3600.0) -> float:
+    return float(os.environ.get(name, str(default)))
 
 
 def omp_evidence(events: str, session_file: Path | None) -> dict:
@@ -902,9 +904,31 @@ def omp_evidence(events: str, session_file: Path | None) -> dict:
             "terminal": terminal, "stop_reason": last.get("stopReason"), "text": text}
 
 
+def omp_contract(fields: dict) -> str:
+    """A compact assignment frame for OMP. Legacy briefs get truthful fallbacks; optional details make it precise."""
+    scope = fields.get("TW-Scope") or "Use only the ownership and boundaries stated in the assignment body."
+    checkpoint = fields.get("TW-Checkpoint") or "Preserve useful partial artifacts before the time allowance ends."
+    stop = fields.get("TW-Stop") or f"Stop when the deliverable satisfies TW-Accept: {fields['TW-Accept']}"
+    return "\n".join(("Assignment contract:",
+                      f"Deliverable: {fields['TW-Deliverable']}",
+                      f"Acceptance: {fields['TW-Accept']}",
+                      f"Scope: {scope}",
+                      f"Checkpoint: {checkpoint}",
+                      f"Stop: {stop}"))
+
+
+def omp_retry_prompt(role: str, fields: dict, cd: Path) -> str:
+    return (AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + omp_contract(fields)
+            + "\n\nThe previous attempt reached its time allowance and its process tree exited. Continue the same "
+              "bounded assignment in this saved session. Inspect the current files and saved progress before acting. "
+              "Do not repeat completed edits, checks, external effects, or any operation whose outcome is uncertain. "
+              "If an uncertain effect prevents safe continuation, stop and report it with the useful work already present.")
+
+
 def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None = None,
             thinking: str | None = None, resume: Path | None = None, timeout: float | None = None,
-            approval_mode: str | None = None) -> tuple[int, dict]:
+            approval_mode: str | None = None, *, total_timeout: float | None = None,
+            retry_on_timeout: bool | None = None) -> tuple[int, dict]:
     """Any caller -> configured OMP worker; caller identity and fixed-model admissions are not inputs."""
     brief = brief_file.expanduser().resolve().read_text(encoding="utf-8-sig")
     found_role, problem = first_role(brief)
@@ -919,12 +943,21 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     resume = resume.expanduser().resolve() if resume else None
     if resume and not resume.is_file():
         raise Conflict(f"OMP resume file does not exist: {resume}")
+    explicit_timeout = timeout is not None or "TW_OMP_TIMEOUT" in os.environ
     try:
-        timeout = env_timeout("TW_OMP_TIMEOUT") if timeout is None else timeout
+        timeout = env_timeout("TW_OMP_TIMEOUT", OMP_DEFAULT_TIMEOUT) if timeout is None else timeout
     except ValueError as exc:
         raise Conflict("TW_OMP_TIMEOUT must be positive finite seconds") from exc
     if not 0 < timeout < float("inf"):
         raise Conflict("OMP timeout must be positive finite seconds")
+    if total_timeout is not None and not 0 < total_timeout < float("inf"):
+        raise Conflict("OMP total timeout must be positive finite seconds")
+    risks = {risk.strip() for risk in fields["TW-Risk"].split(",")}
+    unsafe_retry = risks & {"external", "destructive"}
+    if retry_on_timeout is True and unsafe_retry:
+        raise Conflict("OMP timeout retry is unavailable for destructive or external work")
+    retry_enabled = (retry_on_timeout if retry_on_timeout is not None
+                     else (not explicit_timeout or total_timeout is not None)) and not unsafe_retry
     exe = shutil.which("omp")
     if not exe:
         raise Conflict("OMP executable not found on PATH")
@@ -932,36 +965,83 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     folder = state_root(home) / "omp" / run_id
     folder.mkdir(parents=True)
     prompt = folder / "brief.md"
-    prompt_text = AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + brief
+    prompt_text = (AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + omp_contract(fields)
+                   + "\n\nAssignment:\n" + brief)
     prompt.write_text(prompt_text, encoding="utf-8")
     sessions = folder / "sessions"
-    argv = [exe, "--print", "--mode", "json", "--wait-async", "--no-title", "--cwd", str(cd)]
+    base_argv = [exe, "--print", "--mode", "json", "--wait-async", "--no-title", "--cwd", str(cd)]
     for flag, value in (("--model", model), ("--thinking", thinking), ("--approval-mode", approval_mode)):
         if value is not None:
-            argv.extend([flag, value])
-    argv.extend(["--resume", str(resume)] if resume else ["--session-dir", str(sessions)])
+            base_argv.extend([flag, value])
+    first_argv = base_argv + (["--resume", str(resume)] if resume else ["--session-dir", str(sessions)])
     if os.name == "nt" and Path(exe).suffix.lower() in {".cmd", ".bat"} and any(
-            re.search(r'[\r\n"&|<>^%!]', arg) for arg in argv[1:]):
+            re.search(r'[\r\n"&|<>^%!]', arg) for arg in first_argv[1:]):
         raise Conflict("OMP batch launcher cannot safely carry shell metacharacters; use the native OMP executable")
     envelope = {"tool_name": "omp", "tool_use_id": run_id, "cwd": str(cd), "tool_input": {}}
     receipt(home, "omp", run_id, envelope, Decision(True, "explicit-omp-subprocess", role, model, thinking, fields))
-    ran = run_bounded(argv, cd, prompt_text.encode("utf-8"), timeout)
-    events, errors, last_file = folder / "events.jsonl", folder / "stderr.log", folder / "last.md"
-    events.write_bytes(ran["out"].encode("utf-8"))
-    errors.write_bytes(ran["err"].encode("utf-8"))
-    ev = omp_evidence(ran["out"], None)
+    started = time.monotonic()
+    first_timeout = min(timeout, total_timeout) if total_timeout is not None else timeout
+    first = run_bounded(first_argv, cd, prompt_text.encode("utf-8"), first_timeout)
+    initial = omp_evidence(first["out"], None)
     session_file = resume
-    if not resume and isinstance(ev["worker_session_id"], str):
+    if not resume and isinstance(initial["worker_session_id"], str):
         session_file = next((p for p in sessions.glob("*.jsonl")
-                             if p.stem.endswith("_" + ev["worker_session_id"])), None)
+                             if p.stem.endswith("_" + initial["worker_session_id"])), None)
+
+    attempts = [{"attempt": 1, "timeout_seconds": first_timeout, "exit_code": first["code"],
+                 "timed_out": first["timed_out"], "kill_failed": first["kill_failed"],
+                 "pid": first["pid"], "exited": first["exited"]}]
+    retry_used, retry_skipped_reason = False, None
+    ran, combined_out, combined_err = first, first["out"], first["err"]
+    if first["timed_out"]:
+        if not retry_enabled:
+            retry_skipped_reason = ("risk excludes automatic retry" if unsafe_retry else
+                                    "retry was explicitly disabled" if retry_on_timeout is False else
+                                    "explicit timeout keeps legacy single-attempt behavior")
+        elif first["kill_failed"] or not first["exited"]:
+            retry_skipped_reason = "first process tree did not verifiably exit"
+        elif not session_file:
+            retry_skipped_reason = "no saved OMP session was available for continuity"
+        else:
+            remaining = None if total_timeout is None else total_timeout - (time.monotonic() - started)
+            if remaining is not None and remaining <= 0:
+                retry_skipped_reason = "hard total timeout was exhausted"
+            else:
+                retry_timeout = timeout if remaining is None else min(timeout, remaining)
+                retry_text = omp_retry_prompt(role, fields, cd)
+                retry_argv = base_argv + ["--resume", str(session_file)]
+                retry_used = True
+                second = run_bounded(retry_argv, cd, retry_text.encode("utf-8"), retry_timeout)
+                attempts.append({"attempt": 2, "timeout_seconds": retry_timeout, "exit_code": second["code"],
+                                 "timed_out": second["timed_out"], "kill_failed": second["kill_failed"],
+                                 "pid": second["pid"], "exited": second["exited"]})
+                ran = second
+                combined_out = first["out"] + ("\n" if first["out"] else "") + second["out"]
+                combined_err = first["err"] + ("\n" if first["err"] else "") + second["err"]
+    events, errors, last_file = folder / "events.jsonl", folder / "stderr.log", folder / "last.md"
+    events.write_bytes(combined_out.encode("utf-8"))
+    errors.write_bytes(combined_err.encode("utf-8"))
+    if retry_used:
+        for number, attempt in enumerate((first, ran), 1):
+            attempt_events = folder / f"events-attempt-{number}.jsonl"
+            attempt_errors = folder / f"stderr-attempt-{number}.log"
+            attempt_events.write_bytes(attempt["out"].encode("utf-8"))
+            attempt_errors.write_bytes(attempt["err"].encode("utf-8"))
+            attempts[number - 1].update(events=str(attempt_events), stderr=str(attempt_errors))
+    # Completion and the returned final answer come only from the last attempt. Combined logs remain available as evidence.
     ev = omp_evidence(ran["out"], session_file)
+    if ev["worker_session_id"] is None:
+        ev["worker_session_id"] = initial["worker_session_id"]
     last_file.write_text(ev.pop("text"), encoding="utf-8")
     complete = bool(ran["code"] == 0 and not ran["timed_out"] and ev["terminal"]
                     and ev["stop_reason"] == "stop" and last_file.read_text(encoding="utf-8").strip())
     append_receipt(home, "omp", run_id, {"kind": "cost", "at": now(), "harness": "omp",
                    "session_id": run_id, "tool_use_id": run_id, "via": "omp", "exit_code": ran["code"],
                    "timed_out": ran["timed_out"], "kill_failed": ran["kill_failed"],
-                   "completed": complete, **ev})
+                   "completed": complete, "timeout_seconds": timeout, "total_timeout_seconds": total_timeout,
+                   "initial_timed_out": first["timed_out"], "retry_enabled": retry_enabled,
+                   "retry_used": retry_used, "retry_skipped_reason": retry_skipped_reason,
+                   "attempts": attempts, **ev})
     result = {"session_id": run_id, "tool_use_id": run_id, "worker_session_id": ev["worker_session_id"],
               "session_file": str(session_file) if session_file else None,
               "requested_model": model, "requested_thinking": thinking,
@@ -969,6 +1049,9 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
               "observed_thinking": ev["effort"], "usage": ev["usage"],
               "exit_code": ran["code"], "completed": complete, "timed_out": ran["timed_out"],
               "kill_failed": ran["kill_failed"], "pid": ran["pid"], "exited": ran["exited"],
+              "timeout_seconds": timeout, "total_timeout_seconds": total_timeout,
+              "initial_timed_out": first["timed_out"], "retry_enabled": retry_enabled,
+              "retry_used": retry_used, "retry_skipped_reason": retry_skipped_reason, "attempts": attempts,
               "events": str(events), "stderr": str(errors), "last_message": str(last_file)}
     (folder / "result.json").write_bytes(canonical_json(result))
     return (0 if complete else ran["code"] or 1), result
@@ -1911,7 +1994,17 @@ def main() -> int:
             p.add_argument("--thinking", choices=("off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"),
                            help="optional OMP thinking override; omitted inherits configuration/session")
             p.add_argument("--resume", type=Path, help="saved OMP worker session file")
-            p.add_argument("--timeout", type=float, help="seconds; default TW_OMP_TIMEOUT, else 3600")
+            p.add_argument("--timeout", type=float,
+                           help="seconds per attempt; default TW_OMP_TIMEOUT, else 7200. An explicit value keeps "
+                                "legacy single-attempt behavior unless --retry-on-timeout is passed")
+            p.add_argument("--total-timeout", type=float,
+                           help="hard wall-clock seconds across both attempts; a retry receives only time remaining")
+            retry = p.add_mutually_exclusive_group()
+            retry.add_argument("--retry-on-timeout", dest="retry_on_timeout", action="store_true",
+                               help="resume the same saved session once after a clean timeout")
+            retry.add_argument("--no-retry-on-timeout", dest="retry_on_timeout", action="store_false",
+                               help="disable the normal one-shot continuation retry")
+            p.set_defaults(retry_on_timeout=None)
             p.add_argument("--approval-mode", choices=("always-ask", "always-ask-cached", "write", "yolo"),
                            help="optional per-run OMP approval override; omitted inherits configuration")
         if name == "agy":
@@ -2005,7 +2098,8 @@ def main() -> int:
             return code
         elif args.command == "omp":
             code, result = omp_run(home, args.role, args.brief_file, args.cd, args.model, args.thinking,
-                                   args.resume, args.timeout, args.approval_mode)
+                                   args.resume, args.timeout, args.approval_mode,
+                                   total_timeout=args.total_timeout, retry_on_timeout=args.retry_on_timeout)
             print(json.dumps(result))
             return code
         elif args.command == "agy":
