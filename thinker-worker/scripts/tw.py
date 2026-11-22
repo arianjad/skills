@@ -875,6 +875,28 @@ def env_timeout(name: str, default: float = 3600.0) -> float:
     return float(os.environ.get(name, str(default)))
 
 
+def omp_model_name(model: str | None, path: Path | None = None) -> str | None:
+    """The `name:` OMP shows for served id `model` in its models.yml. A local server keeps one served id and
+    provider key across model switches, so only this name (rewritten on each switch) says which model ran.
+    Read when the run ends; a switch during the run is not seen."""
+    if not model:
+        return None
+    try:
+        lines = (path or Path.home() / ".omp" / "agent" / "models.yml").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    # ponytail: first entry with this id wins; look up per provider if two providers serve one id under two names
+    for i, line in enumerate(lines):
+        if line.strip().removeprefix("- ").strip().replace('"', "").replace("'", "") == f"id: {model}":
+            for nxt in lines[i + 1:]:
+                s = nxt.strip()
+                if s.startswith("- ") or (s and not nxt.startswith(" ")):
+                    break
+                if s.startswith("name:"):
+                    return s[5:].strip().strip("'\"") or None
+    return None
+
+
 def omp_evidence(events: str, session_file: Path | None) -> dict:
     """OMP event metadata identifies the worker; prose is never model/setting evidence."""
     rows = []
@@ -897,8 +919,8 @@ def omp_evidence(events: str, session_file: Path | None) -> dict:
     thinking = [r.get("thinkingLevel") for r in saved if r.get("type") == "thinking_level_change"]
     usage = [m["usage"] for m in messages if isinstance(m.get("usage"), dict)]
     return {"worker_session_id": sessions[-1].get("id") if sessions else None,
-            "model": last.get("model"), "provider": last.get("provider"),
-            "effort": thinking[-1] if thinking else None,
+            "model": last.get("model"), "model_name": omp_model_name(last.get("model")),
+            "provider": last.get("provider"), "effort": thinking[-1] if thinking else None,
             "usage": {k: sum(u.get(k, 0) or 0 for u in usage)
                       for k in ("input", "output", "cacheRead", "cacheWrite")} if usage else None,
             "terminal": terminal, "stop_reason": last.get("stopReason"), "text": text}
@@ -1045,7 +1067,7 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     result = {"session_id": run_id, "tool_use_id": run_id, "worker_session_id": ev["worker_session_id"],
               "session_file": str(session_file) if session_file else None,
               "requested_model": model, "requested_thinking": thinking,
-              "effective_model": ev["model"], "provider": ev["provider"],
+              "effective_model": ev["model"], "model_name": ev["model_name"], "provider": ev["provider"],
               "observed_thinking": ev["effort"], "usage": ev["usage"],
               "exit_code": ran["code"], "completed": complete, "timed_out": ran["timed_out"],
               "kill_failed": ran["kill_failed"], "pid": ran["pid"], "exited": ran["exited"],
