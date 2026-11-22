@@ -1,6 +1,6 @@
 ---
 name: systematic-debugging
-description: Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes
+description: Trace a software failure through a call stack, component boundary, or asynchronous wait. Use for software root-cause investigations that need these techniques or when explicitly requested.
 ---
 
 # Systematic Debugging
@@ -21,13 +21,10 @@ If you haven't completed Phase 1, you cannot propose fixes.
 
 ## When to Use
 
-Use for ANY technical issue:
-- Test failures
-- Bugs in production
-- Unexpected behavior
-- Performance problems
-- Build failures
-- Integration issues
+Use when a software failure needs a focused trace, such as finding where a
+value first changes, where configuration stops propagating, or which
+readiness condition a flaky test missed. The supporting techniques below
+can be used individually.
 
 **Use this ESPECIALLY when:**
 - Under time pressure (emergencies make guessing tempting)
