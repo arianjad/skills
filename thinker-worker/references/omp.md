@@ -1,62 +1,62 @@
 # OMP execution from any caller
 
-Use `tw.py omp` to delegate through the existing OMP agent. It is an execution backend, not a fixed model or a native Codex/Claude child. Any agent or shell that can run Python can use the same command; no caller-harness activation or caller session ID is required. Existing host permissions and the caller's authorization still apply.
-
-OMP owns model selection. With no model/thinking override, a fresh worker uses OMP's configured model and thinking settings; a resumed worker uses its saved session. Changing the configured local model does not require a thinker-worker model-registry edit. The backend does not choose a server, switch a service's model, or assert that an arbitrary configured provider is local. Select the intended OMP profile/configuration normally and inspect the returned provider/model evidence. Native model admissions in `routes.json` continue to govern native routes only.
+`tw.py omp` hands a bounded assignment to the local OMP agent from any harness or shell that can run Python. It is an execution backend, not a fixed model: OMP's configuration picks the model, so a local model switch needs no thinker-worker edit. Native admissions in `routes.json` govern native routes only. The caller's authorization and host permissions still apply.
 
 ## Dispatch
 
-Write a bounded brief with the normal `TW-Role`, routing header, owned files, context pointers, meaningful acceptance check and stop condition. The command's role must match the brief. Independent-review and ideation briefs retain explicit authorization and scope. Assign independent verification to a different author/session. The wrapper emits a compact assignment contract before the body. Add these optional header lines when the assignment has file ownership or a useful partial checkpoint. Existing briefs without them remain valid.
+Write a brief with the normal `TW-Role`, routing header, owned files, context pointers, an acceptance check that can fail, and a stop condition. The command's `--role` must match the brief. Review and ideation briefs keep `TW-Authorization` and `TW-Scope`. Give independent verification to a different author or session. When the assignment owns files or has a useful partial result, add these header lines; the wrapper turns them into an assignment contract the worker sees first:
 
 ```
 TW-Scope: exact owned files and allowed operations
-TW-Checkpoint: useful partial artifact to preserve before the allowance ends
+TW-Checkpoint: useful partial artifact to save as work progresses
 TW-Stop: condition that ends this assignment
 ```
+
+Run the canonical command through the caller's background mechanism (Claude Code: `run_in_background: true`; Codex: a long-running exec) and wait for its completion notice:
 
 ```
 python <thinker-worker>/scripts/tw.py omp --role worker --brief-file <brief.md> --cd <checkout>
 ```
 
-This canonical command is the normal route for local work. It gives each attempt up to 7,200 seconds and, after a clean timeout, resumes the same saved OMP session once. Do not add a routine short timeout merely to poll the worker. Use the returned logs and checkpoint while it runs through the caller's normal foreground or background mechanism.
+- `--role` names the assignment type, `--brief-file` the written assignment (sent to OMP as plain prompt text on standard input, and saved for inspection), `--cd` the worker's working directory.
+- Leave `--model` and `--thinking` unset so the worker runs OMP's configured model. For a deliberate per-run override, pass the full `provider/id` selector; a bare id such as `local-model` can resolve to an old alias provider. An unsupported selection is an error, never permission to switch routes.
+- `--approval-mode` overrides OMP's approval policy for one run. Approval settings are not OS-level isolation. Use an isolated OMP configuration for tests that would otherwise write production memory.
 
-Here `--role` selects the assignment type, `--brief-file` names the written assignment, and `--cd` selects the worker's working directory. Omit model and thinking to inherit OMP defaults. Optional `--model` requests an OMP provider/model selector; `--thinking` requests a thinking setting supported by that OMP model. These are per-run overrides, not new defaults. Unsupported selections are errors, not permission to substitute another route.
+OMP's configured tools, extensions, skills and approval policy carry through unchanged.
 
-The brief is saved for inspection and sent as plain prompt text on standard input. Its storage path is not exposed as a file attachment, and the brief does not consume command-line argument space.
+## Time limits and resuming
 
-The backend preserves OMP's configured tools, extensions, skills and approval policy. An explicit `--approval-mode` changes approval handling for that run; omitting it leaves the configuration authoritative. Approval settings do not prove OS-level isolation. Use isolated configuration for tests that would otherwise capture production memory.
+Each attempt gets 7,200 s (2 h) by default. Leave `--timeout` unset: real local assignments run for tens of minutes, and a short cap cuts the worker off mid-task. The wrapper must outlive its allowance, so run it in the background or give the caller's own command limit more than the allowance plus cleanup time; killing the wrapper can lose its logs and leave the worker running.
 
-## Results and continuation
+A timeout keeps the work: the worker's files and its saved OMP conversation stay on disk, and the wrapper continues from them.
 
-The command saves process events, stderr, final assistant text and a persistent worker session, then prints compact JSON. Distinguish the execution's receipt key from the actual OMP worker session. Provider/model fields come from OMP metadata; requested settings, observed settings and unavailable evidence remain distinct. A process exit, terminal model response and acceptance of the delivered artifact are separate facts. Inspect partial files after failure or timeout; retain that attempt rather than relabeling it as a successful later run.
+1. **Automatic continuation.** After a clean timeout (the process tree exited and a saved session exists), the wrapper resumes the same session once and tells the worker to inspect current files, keep completed work, and stop on any operation whose outcome is uncertain. `TW-Risk: external` or `destructive` skips this step; `--no-retry-on-timeout` turns it off.
+2. **Resume command.** A run that still ends timed out returns `resume_command`. Run it as given to continue the same session; it sends `continue.md`, a continuation brief with the original header, written in the run folder. Repeat while the work progresses, checking partial files between runs. For `external` or `destructive` work, establish what already happened before resuming.
 
-```
-python <thinker-worker>/scripts/tw.py omp --role worker --brief-file <follow-up.md> --cd <checkout> --resume <returned-session-file>
-```
+Set `--timeout <s>` (seconds per attempt) or `--total-timeout <s>` (hard wall-clock budget across both attempts; the continuation receives what remains) only for a deliberately bounded run such as a smoke test. `TW_OMP_TIMEOUT` sets the per-attempt default for a shell. A timeout is not a model-quality verdict.
 
-`--resume` continues the saved conversation; the follow-up is another bounded brief. Preserve assignment and authorship: a resumed author does not become an independent reviewer of its own work. Each invocation has separate execution records while the worker session can continue. Keep independent writers in separate checkouts or disjoint scopes.
+## Results
 
-The normal command performs one automatic continuation after a timeout only when the first process tree verifiably exited, a saved session exists, and the validated `TW-Risk` header excludes `external` and `destructive`. The continuation reads the current artifacts and saved conversation. It is told to preserve completed work and stop on an operation whose outcome is uncertain. Both attempts keep separate event and error logs. Completion and the returned final answer come from the last attempt, so an earlier partial answer cannot make a failed continuation successful.
+The command prints one JSON line and saves the events, stderr, final assistant text and worker session under `~/.thinker-worker/omp/<run_id>/`.
 
-Optional `--timeout` sets seconds per attempt. Passing it, or setting `TW_OMP_TIMEOUT`, preserves the former single-attempt behavior unless `--retry-on-timeout` is also explicit. This prevents a historical short cap from silently becoming twice as long. `--no-retry-on-timeout` disables continuation. `--total-timeout` is a hard wall-clock budget across both attempts; a continuation receives only the time remaining. It does not discard a useful checkpoint when the budget ends. Choose these limits for the task. A short limit is not a model-quality verdict.
+- `session_id` and `tool_use_id` key this execution's receipt. `worker_session_id` and `session_file` identify the OMP conversation, which can span several executions.
+- `model_name` is the display name OMP shows for the model (the `name:` in OMP's `models.yml`, rewritten on each local model switch); read it to know which model ran. `provider` and `effective_model` come from OMP metadata and can stay fixed across model switches.
+- `completed` requires exit 0, no timeout, a terminal response and a non-empty final answer, all from the last attempt. A process exit, a terminal answer and an accepted artifact are separate facts. Each execution keeps its own record; label a later run on its own.
+- `usage` sums the main assistant's streamed messages only, not auxiliary services or nested agents.
 
-Timeout cleanup applies only to the launched process tree. Reconcile uncertain cleanup before assigning another writer to those files. This is a subprocess runner, not a background service or scheduler; callers use their existing foreground/background tools.
-
-Set the caller's own process timeout longer than this allowance plus cleanup time, or run it with the caller's background mechanism. Event/result files are finalized after OMP exits; forcibly killing the wrapper can lose those logs and leave the worker running. As with the existing backends, launch from a trusted directory with a trusted `PATH`; Windows executable lookup can prefer a program in the launch directory.
+To give the same worker follow-up work, write a new bounded brief and add `--resume <session_file>` to the canonical command. A resumed author stays the author: send its work to a different session for independent review. Keep independent writers in separate checkouts or disjoint scopes. Timeout cleanup covers only the launched process tree; when a result shows `kill_failed: true`, reconcile that tree before assigning another writer to those files.
 
 ## Verification
 
-Run a check that can fail on a materially wrong delivered artifact, with a known-positive control. Worker-written tests alone do not establish acceptance. Record acceptance through the existing outcome command with the returned receipt session/run identifiers and OMP namespace; an optional `TW-Check` runs in the recorded working directory. Outcome labels do not turn partial execution into completed work.
+Run a check that can fail on a materially wrong delivered artifact, with a known-positive control. Worker-written tests alone do not establish acceptance. Record acceptance with the returned receipt identifiers in the OMP namespace; an optional `TW-Check` runs in the recorded working directory. Outcome labels do not turn partial execution into completed work.
 
 ```
 python <thinker-worker>/scripts/tw.py outcome --harness omp --session <session_id> --tool-use-id <tool_use_id> --accepted yes
 python <thinker-worker>/scripts/tw.py tally --harness omp
 ```
 
-Use the OMP namespace with the existing tally command to inspect outcomes. Model evidence is per execution, so an OMP configuration change can produce a different model without rewriting native admissions or priors. Do not infer general model quality from one trial or token-cost figures from missing usage.
-
-The returned `usage` sums the main assistant's streamed messages, not a total bill for auxiliary services or nested agents.
+Model evidence is per execution, so an OMP configuration change can bring a different model without touching native admissions or priors. Judge model quality from many trials, and token cost only from recorded usage.
 
 ## Boundaries
 
-The native hook mechanism does not intercept this subprocess as a native child. Structural brief checks and execution records do not establish semantic authorization, hook interception, effective permissions or correctness. Use the route when authorized; respect an explicit denial rather than changing backends to evade it. No daemon, MCP server or live OMP restart is needed.
+The native hook does not intercept this subprocess as a native child. Structural brief checks and execution records do not establish semantic authorization, effective permissions or correctness. Use the route when authorized, and respect an explicit denial rather than switching backends around it. Launch from a trusted directory with a trusted `PATH`; Windows executable lookup can prefer a program in the launch directory. No daemon, MCP server or OMP restart is needed.

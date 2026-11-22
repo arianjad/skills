@@ -939,12 +939,15 @@ def omp_contract(fields: dict) -> str:
                       f"Stop: {stop}"))
 
 
+OMP_CONTINUE_TEXT = ("The previous attempt reached its time allowance and its process tree exited. Continue the same "
+                     "bounded assignment in this saved session. Inspect the current files and saved progress before "
+                     "acting. Do not repeat completed edits, checks, external effects, or any operation whose outcome "
+                     "is uncertain. If an uncertain effect prevents safe continuation, stop and report it with the "
+                     "useful work already present.")
+
+
 def omp_retry_prompt(role: str, fields: dict, cd: Path) -> str:
-    return (AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + omp_contract(fields)
-            + "\n\nThe previous attempt reached its time allowance and its process tree exited. Continue the same "
-              "bounded assignment in this saved session. Inspect the current files and saved progress before acting. "
-              "Do not repeat completed edits, checks, external effects, or any operation whose outcome is uncertain. "
-              "If an uncertain effect prevents safe continuation, stop and report it with the useful work already present.")
+    return AGENT_TEXT[role][1] + f"\n\nWorking directory: {cd}\n\n" + omp_contract(fields) + "\n\n" + OMP_CONTINUE_TEXT
 
 
 def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None = None,
@@ -965,7 +968,6 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     resume = resume.expanduser().resolve() if resume else None
     if resume and not resume.is_file():
         raise Conflict(f"OMP resume file does not exist: {resume}")
-    explicit_timeout = timeout is not None or "TW_OMP_TIMEOUT" in os.environ
     try:
         timeout = env_timeout("TW_OMP_TIMEOUT", OMP_DEFAULT_TIMEOUT) if timeout is None else timeout
     except ValueError as exc:
@@ -978,8 +980,7 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     unsafe_retry = risks & {"external", "destructive"}
     if retry_on_timeout is True and unsafe_retry:
         raise Conflict("OMP timeout retry is unavailable for destructive or external work")
-    retry_enabled = (retry_on_timeout if retry_on_timeout is not None
-                     else (not explicit_timeout or total_timeout is not None)) and not unsafe_retry
+    retry_enabled = retry_on_timeout is not False and not unsafe_retry
     exe = shutil.which("omp")
     if not exe:
         raise Conflict("OMP executable not found on PATH")
@@ -1018,8 +1019,7 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     if first["timed_out"]:
         if not retry_enabled:
             retry_skipped_reason = ("risk excludes automatic retry" if unsafe_retry else
-                                    "retry was explicitly disabled" if retry_on_timeout is False else
-                                    "explicit timeout keeps legacy single-attempt behavior")
+                                    "retry was explicitly disabled")
         elif first["kill_failed"] or not first["exited"]:
             retry_skipped_reason = "first process tree did not verifiably exit"
         elif not session_file:
@@ -1075,6 +1075,13 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
               "initial_timed_out": first["timed_out"], "retry_enabled": retry_enabled,
               "retry_used": retry_used, "retry_skipped_reason": retry_skipped_reason, "attempts": attempts,
               "events": str(events), "stderr": str(errors), "last_message": str(last_file)}
+    if ran["timed_out"] and session_file and ran["exited"] and not ran["kill_failed"]:
+        # A timeout keeps the worker's files and saved conversation; hand back the one command that continues them.
+        header = [line for i, line in enumerate(brief.split("\n")[:12]) if i == 0 or line.startswith("TW-")]
+        continuation = folder / "continue.md"
+        continuation.write_text("\n".join(header) + "\n\n" + OMP_CONTINUE_TEXT + "\n", encoding="utf-8")
+        result["resume_command"] = (f'python "{Path(__file__).resolve()}" omp --role {role} --brief-file '
+                                    f'"{continuation}" --cd "{cd}" --resume "{session_file}" --home "{home}"')
     (folder / "result.json").write_bytes(canonical_json(result))
     return (0 if complete else ran["code"] or 1), result
 
@@ -2017,13 +2024,13 @@ def main() -> int:
                            help="optional OMP thinking override; omitted inherits configuration/session")
             p.add_argument("--resume", type=Path, help="saved OMP worker session file")
             p.add_argument("--timeout", type=float,
-                           help="seconds per attempt; default TW_OMP_TIMEOUT, else 7200. An explicit value keeps "
-                                "legacy single-attempt behavior unless --retry-on-timeout is passed")
+                           help="seconds per attempt; default TW_OMP_TIMEOUT, else 7200 (2 h). Leave unset for "
+                                "normal work")
             p.add_argument("--total-timeout", type=float,
                            help="hard wall-clock seconds across both attempts; a retry receives only time remaining")
             retry = p.add_mutually_exclusive_group()
             retry.add_argument("--retry-on-timeout", dest="retry_on_timeout", action="store_true",
-                               help="resume the same saved session once after a clean timeout")
+                               help="resume the same saved session once after a clean timeout (the default)")
             retry.add_argument("--no-retry-on-timeout", dest="retry_on_timeout", action="store_false",
                                help="disable the normal one-shot continuation retry")
             p.set_defaults(retry_on_timeout=None)

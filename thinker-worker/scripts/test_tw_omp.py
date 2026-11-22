@@ -130,7 +130,7 @@ if __name__ == '__main__':
         assert changed['observed_thinking']=='off' and changed['requested_model'] is None,changed
         result, env_bounded = dispatch(variables={'TW_OMP_TIMEOUT':'12'})
         assert result.returncode==0 and env_bounded['timeout_seconds']==12,env_bounded
-        assert not env_bounded['retry_enabled'],'An existing environment cap must retain single-attempt behavior'
+        assert env_bounded['retry_enabled'],'A set time limit keeps the automatic continuation'
         result, override = dispatch('--model','third/gamma','--thinking','high','--approval-mode','write')
         assert result.returncode==0 and override['effective_model']=='gamma',override
         assert override['requested_model']=='third/gamma' and override['observed_thinking']=='high',override
@@ -174,8 +174,22 @@ if __name__ == '__main__':
 
         result, timeout = dispatch('--timeout','0.1',variables={'FAKE_SLEEP':'10'})
         assert result.returncode!=0 and timeout['timed_out'] and timeout['exited'] and not timeout['completed'],timeout
-        assert not timeout['retry_enabled'] and not timeout['retry_used'],timeout
-        assert timeout['retry_skipped_reason']=='explicit timeout keeps legacy single-attempt behavior',timeout
+        assert timeout['retry_enabled'],'An explicit time limit keeps the automatic continuation'
+        if timeout['kill_failed']:
+            assert 'resume_command' not in timeout,'A tree that may still run must not be handed to a second writer'
+        else:
+            # Still out of time after the continuation: the result hands back a command that resumes the saved session.
+            assert timeout['retry_used'] and len(timeout['attempts'])==2 and timeout['attempts'][1]['timed_out'],timeout
+            continuation = Path(timeout['resume_command'].split('--brief-file "')[1].split('"')[0])
+            text = continuation.read_text(encoding='utf-8')
+            assert text.startswith('TW-Role: worker\n') and 'TW-Accept:' in text,text
+            assert 'previous attempt reached its time allowance' in text,text
+            assert f'--resume "{timeout["session_file"]}"' in timeout['resume_command'],timeout
+            resumed = subprocess.run(timeout['resume_command'],shell=True,env=env,capture_output=True,text=True,
+                                     encoding='utf-8',timeout=120)
+            assert resumed.returncode==0 and json.loads(resumed.stdout)['completed'],resumed
+            call = json.loads((home/'call.json').read_text(encoding='utf-8'))
+            assert '--resume' in call['args'] and 'previous attempt reached its time allowance' in call['prompt'],call
 
         # Normal retry is the same saved OMP session, with explicit continuity constraints. It runs at most once.
         structured = BRIEF.replace('TW-Risk: none',
