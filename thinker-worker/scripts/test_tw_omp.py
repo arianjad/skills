@@ -194,27 +194,25 @@ if __name__ == '__main__':
         result, timeout = dispatch('--timeout','3','--approval-mode','write',variables={'FAKE_SLEEP':'10'})
         assert result.returncode!=0 and timeout['timed_out'] and timeout['exited'] and not timeout['completed'],timeout
         assert timeout['retry_enabled'],'An explicit time limit keeps the automatic continuation'
-        if timeout['kill_failed']:
-            assert 'resume_command' not in timeout,'A tree that may still run must not be handed to a second writer'
-            print('NOTE: process kill failed on this machine; the resume-command checks did not run',flush=True)
-        else:
-            # Still out of time after the continuation: the result hands back a command that resumes the saved session.
-            assert timeout['retry_used'] and len(timeout['attempts'])==2 and timeout['attempts'][1]['timed_out'],timeout
-            continuation = Path(timeout['resume_command'].split('--brief-file "')[1].split('"')[0])
-            text = continuation.read_text(encoding='utf-8')
-            assert text.startswith('TW-Role: worker\n') and 'TW-Accept:' in text,text
-            assert 'previous attempt reached its time allowance' in text,text
-            assert f'--resume "{Path(timeout["session_file"]).resolve().as_posix()}"' in timeout['resume_command'],timeout
-            assert '--approval-mode write' in timeout['resume_command'] and '--timeout 3.0' in timeout['resume_command'],timeout
-            # Run it the way the callers' shells do (PowerShell on Windows), with the run's settings carried over.
-            shell = (['powershell','-NoProfile','-Command'] if os.name=='nt' else ['sh','-c'])
-            resumed = subprocess.run(shell+[timeout['resume_command']],env=env,capture_output=True,text=True,
-                                     encoding='utf-8',timeout=120)
-            assert resumed.returncode==0 and json.loads(resumed.stdout)['completed'],resumed
-            assert json.loads(resumed.stdout)['timeout_seconds']==3,resumed.stdout
-            call = json.loads((home/'call.json').read_text(encoding='utf-8'))
-            assert '--resume' in call['args'] and 'previous attempt reached its time allowance' in call['prompt'],call
-            assert call['args'][call['args'].index('--approval-mode')+1]=='write',call
+        # A failed kill leaves no resume command; on such a machine resuming does not work, so the test fails.
+        assert not timeout['kill_failed'],'process kill failed on this machine; resume is unavailable here'
+        # Still out of time after the continuation: the result hands back a command that resumes the saved session.
+        assert timeout['retry_used'] and len(timeout['attempts'])==2 and timeout['attempts'][1]['timed_out'],timeout
+        continuation = Path(timeout['resume_command'].split('--brief-file "')[1].split('"')[0])
+        text = continuation.read_text(encoding='utf-8')
+        assert text.startswith('TW-Role: worker\n') and 'TW-Accept:' in text,text
+        assert 'previous attempt reached its time allowance' in text,text
+        assert f'--resume "{Path(timeout["session_file"]).resolve().as_posix()}"' in timeout['resume_command'],timeout
+        assert '--approval-mode write' in timeout['resume_command'] and '--timeout 3.0' in timeout['resume_command'],timeout
+        # Run it the way the callers' shells do (PowerShell on Windows), with the run's settings carried over.
+        shell = (['powershell','-NoProfile','-Command'] if os.name=='nt' else ['sh','-c'])
+        resumed = subprocess.run(shell+[timeout['resume_command']],env=env,capture_output=True,text=True,
+                                 encoding='utf-8',timeout=120)
+        assert resumed.returncode==0 and json.loads(resumed.stdout)['completed'],resumed
+        assert json.loads(resumed.stdout)['timeout_seconds']==3,resumed.stdout
+        call = json.loads((home/'call.json').read_text(encoding='utf-8'))
+        assert '--resume' in call['args'] and 'previous attempt reached its time allowance' in call['prompt'],call
+        assert call['args'][call['args'].index('--approval-mode')+1]=='write',call
 
         # Normal retry is the same saved OMP session, with explicit continuity constraints. It runs at most once.
         structured = BRIEF.replace('TW-Risk: none',
