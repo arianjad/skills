@@ -1,6 +1,6 @@
 # Antigravity (agy) execution from any caller
 
-`tw.py agy` delegates to the Antigravity CLI (`agy`) in headless stream-json mode. Like `tw.py omp` it is an execution backend for any caller: no native activation, no `routes.json` entry, no caller session ID. Read [OMP dispatch](omp.md) for the shared contract (brief validation, saved evidence, outcome, boundaries); this file lists only what differs.
+`tw.py agy` delegates to the Antigravity CLI (`agy`) in headless stream-json mode. Like `tw.py omp` it is an execution backend for any caller: no native activation, no `routes.json` entry, no caller session ID. Read [OMP dispatch](omp.md) for the shared contract (brief validation, saved evidence, outcome, boundaries); this file lists only what differs. The OMP time limits, automatic continuation, `resume_command` and `model_name` are OMP-only; agy runs one attempt (see below).
 
 ```
 python <thinker-worker>/scripts/tw.py agy --role worker --brief-file <brief.md> --cd <checkout> [--model <id>] [--effort low|medium|high|xhigh|max] [--mode accept-edits|auto|plan] [--resume <conversation_id>] [--timeout <s>]

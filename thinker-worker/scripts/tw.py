@@ -875,26 +875,63 @@ def env_timeout(name: str, default: float = 3600.0) -> float:
     return float(os.environ.get(name, str(default)))
 
 
-def omp_model_name(model: str | None, path: Path | None = None) -> str | None:
-    """The `name:` OMP shows for served id `model` in its models.yml. A local server keeps one served id and
-    provider key across model switches, so only this name (rewritten on each switch) says which model ran.
-    Read when the run ends; a switch during the run is not seen."""
-    if not model:
-        return None
+def omp_models_text() -> str | None:
+    """OMP's models.yml, from the agent directory OMP itself resolves (oh-my-pi packages/utils/src/dirs.ts)."""
+    # ponytail: Linux XDG redirection and variables set by OMP's own .env files are not followed
+    agent = os.environ.get("PI_CODING_AGENT_DIR")
+    if not agent:
+        root = Path.home() / (os.environ.get("PI_CONFIG_DIR") or ".omp")
+        profile = os.environ.get("OMP_PROFILE", os.environ.get("PI_PROFILE"))
+        agent = (root / "profiles" / profile if profile else root) / "agent"
     try:
-        lines = (path or Path.home() / ".omp" / "agent" / "models.yml").read_text(encoding="utf-8").splitlines()
+        return (Path(agent) / "models.yml").read_text(encoding="utf-8")
     except OSError:
         return None
-    # ponytail: first entry with this id wins; look up per provider if two providers serve one id under two names
-    for i, line in enumerate(lines):
-        if line.strip().removeprefix("- ").strip().replace('"', "").replace("'", "") == f"id: {model}":
-            for nxt in lines[i + 1:]:
-                s = nxt.strip()
-                if s.startswith("- ") or (s and not nxt.startswith(" ")):
-                    break
-                if s.startswith("name:"):
-                    return s[5:].strip().strip("'\"") or None
-    return None
+
+
+def yaml_scalar(text: str) -> str:
+    """One plain or quoted YAML scalar, trailing comment removed."""
+    text = text.strip()
+    if text[:1] == "'":
+        m = re.match(r"'((?:[^']|'')*)'", text)
+        return m.group(1).replace("''", "'") if m else text
+    if text[:1] == '"':
+        m = re.match(r'"((?:[^"\\]|\\.)*)"', text)
+        if not m:
+            return text
+        try:
+            return json.loads(f'"{m.group(1)}"')
+        except ValueError:
+            return m.group(1)
+    return re.split(r"\s#", text, maxsplit=1)[0].strip()
+
+
+def omp_model_name(model: str | None, text: str | None) -> str | None:
+    """The `name:` OMP shows for served id `model` in models.yml `text`. A local server keeps one served id and
+    provider key across model switches; Local-Agent's switch-model.sh rewrites this name on each switch."""
+    if not model or not text:
+        return None
+    # ponytail: first list entry with this id wins; look up per provider if two providers serve one id under two names
+    entries, entry, dash_col, key_col = [], None, -1, -1
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        col = len(line) - len(line.lstrip())
+        if s.startswith("- ") and (entry is None or col <= dash_col):  # a new list item, not a list nested in one
+            rest = line.lstrip()[1:]
+            entry, dash_col, key_col = {}, col, col + 1 + len(rest) - len(rest.lstrip())
+            entries.append(entry)
+            s = rest.strip()
+        elif entry is not None and col <= dash_col:
+            entry = None
+            continue
+        elif entry is None or col != key_col:
+            continue
+        key, sep, value = s.partition(":")
+        if sep and key.strip() in ("id", "name"):
+            entry.setdefault(key.strip(), yaml_scalar(value))
+    return next((e.get("name") or None for e in entries if e.get("id") == model), None)
 
 
 def omp_evidence(events: str, session_file: Path | None) -> dict:
@@ -919,8 +956,7 @@ def omp_evidence(events: str, session_file: Path | None) -> dict:
     thinking = [r.get("thinkingLevel") for r in saved if r.get("type") == "thinking_level_change"]
     usage = [m["usage"] for m in messages if isinstance(m.get("usage"), dict)]
     return {"worker_session_id": sessions[-1].get("id") if sessions else None,
-            "model": last.get("model"), "model_name": omp_model_name(last.get("model")),
-            "provider": last.get("provider"), "effort": thinking[-1] if thinking else None,
+            "model": last.get("model"), "provider": last.get("provider"), "effort": thinking[-1] if thinking else None,
             "usage": {k: sum(u.get(k, 0) or 0 for u in usage)
                       for k in ("input", "output", "cacheRead", "cacheWrite")} if usage else None,
             "terminal": terminal, "stop_reason": last.get("stopReason"), "text": text}
@@ -969,6 +1005,7 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     if resume and not resume.is_file():
         raise Conflict(f"OMP resume file does not exist: {resume}")
     try:
+        requested_timeout = timeout
         timeout = env_timeout("TW_OMP_TIMEOUT", OMP_DEFAULT_TIMEOUT) if timeout is None else timeout
     except ValueError as exc:
         raise Conflict("TW_OMP_TIMEOUT must be positive finite seconds") from exc
@@ -1002,6 +1039,7 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
         raise Conflict("OMP batch launcher cannot safely carry shell metacharacters; use the native OMP executable")
     envelope = {"tool_name": "omp", "tool_use_id": run_id, "cwd": str(cd), "tool_input": {}}
     receipt(home, "omp", run_id, envelope, Decision(True, "explicit-omp-subprocess", role, model, thinking, fields))
+    models_at_launch = omp_models_text()
     started = time.monotonic()
     first_timeout = min(timeout, total_timeout) if total_timeout is not None else timeout
     first = run_bounded(first_argv, cd, prompt_text.encode("utf-8"), first_timeout)
@@ -1054,6 +1092,12 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     ev = omp_evidence(ran["out"], session_file)
     if ev["worker_session_id"] is None:
         ev["worker_session_id"] = initial["worker_session_id"]
+    ev["usage"] = omp_evidence(combined_out, None)["usage"]  # every attempt's tokens, not only the last one's
+    # The label at launch names the model; a different label at the end means a model switch during the run.
+    ev["model_name"] = omp_model_name(ev["model"], models_at_launch)
+    name_at_end = omp_model_name(ev["model"], omp_models_text())
+    if name_at_end != ev["model_name"]:
+        ev["model_name_at_end"] = name_at_end
     last_file.write_text(ev.pop("text"), encoding="utf-8")
     complete = bool(ran["code"] == 0 and not ran["timed_out"] and ev["terminal"]
                     and ev["stop_reason"] == "stop" and last_file.read_text(encoding="utf-8").strip())
@@ -1067,7 +1111,9 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
     result = {"session_id": run_id, "tool_use_id": run_id, "worker_session_id": ev["worker_session_id"],
               "session_file": str(session_file) if session_file else None,
               "requested_model": model, "requested_thinking": thinking,
-              "effective_model": ev["model"], "model_name": ev["model_name"], "provider": ev["provider"],
+              "effective_model": ev["model"], "model_name": ev["model_name"],
+              **({"model_name_at_end": ev["model_name_at_end"]} if "model_name_at_end" in ev else {}),
+              "provider": ev["provider"],
               "observed_thinking": ev["effort"], "usage": ev["usage"],
               "exit_code": ran["code"], "completed": complete, "timed_out": ran["timed_out"],
               "kill_failed": ran["kill_failed"], "pid": ran["pid"], "exited": ran["exited"],
@@ -1080,8 +1126,21 @@ def omp_run(home: Path, role: str, brief_file: Path, cd: Path, model: str | None
         header = [line for i, line in enumerate(brief.split("\n")[:12]) if i == 0 or line.startswith("TW-")]
         continuation = folder / "continue.md"
         continuation.write_text("\n".join(header) + "\n\n" + OMP_CONTINUE_TEXT + "\n", encoding="utf-8")
-        result["resume_command"] = (f'python "{Path(__file__).resolve()}" omp --role {role} --brief-file '
-                                    f'"{continuation}" --cd "{cd}" --resume "{session_file}" --home "{home}"')
+        # Same interpreter and the run's own settings and limits (each limit counted afresh). Forward slashes keep a
+        # drive root such as C:\ from escaping its closing quote.
+        q = lambda p: f'"{Path(p).resolve().as_posix()}"'
+        python = Path(sys.executable).resolve().as_posix()
+        # ponytail: PowerShell reads a leading quoted path as a string, so the interpreter is quoted only when it
+        # has a space; such a path needs a leading `& ` in PowerShell
+        parts = [q(python) if " " in python else python, q(__file__), "omp", "--role", role, "--brief-file", q(continuation),
+                 "--cd", q(cd), "--resume", q(session_file), "--home", q(home)]
+        for flag, value in (("--model", model), ("--thinking", thinking), ("--approval-mode", approval_mode),
+                            ("--timeout", requested_timeout), ("--total-timeout", total_timeout)):
+            if value is not None:
+                parts += [flag, f'"{value}"' if flag == "--model" else str(value)]
+        if retry_on_timeout is not None:
+            parts.append("--retry-on-timeout" if retry_on_timeout else "--no-retry-on-timeout")
+        result["resume_command"] = " ".join(parts)
     (folder / "result.json").write_bytes(canonical_json(result))
     return (0 if complete else ran["code"] or 1), result
 

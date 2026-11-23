@@ -20,6 +20,9 @@ count_path = home/'call-count.txt'
 count = int(count_path.read_text() or '0') + 1 if count_path.exists() else 1
 count_path.write_text(str(count),encoding='utf-8')
 (home/'call.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd(),'count':count}),encoding='utf-8')
+if os.environ.get('FAKE_RELABEL'):  # a model switch while the worker runs rewrites the label
+    models = Path(os.environ['PI_CODING_AGENT_DIR'])/'models.yml'
+    models.write_text(models.read_text(encoding='utf-8').replace('Alpha Label',os.environ['FAKE_RELABEL']),encoding='utf-8')
 def value(flag, default=None):
     return args[args.index(flag)+1] if flag in args else default
 if '--resume' in args:
@@ -89,6 +92,17 @@ if __name__ == '__main__':
             launcher.chmod(0o755)
         env = {k:v for k,v in os.environ.items() if k not in ('CODEX_THREAD_ID','CLAUDE_SESSION_ID')}
         env.update(PATH=str(executable)+os.pathsep+env['PATH'],FAKE_OMP_HOME=str(home))
+        # model_name comes from the models.yml in OMP's own agent directory, never the real user's
+        agent_dir = home/'omp agent'
+        agent_dir.mkdir()
+        (agent_dir/'models.yml').write_text('providers:\n  configured-a:\n    models:\n      - id: alpha\n'
+                                            '        input:\n          - text\n        name: "Alpha Label" # by omp-label\n',
+                                            encoding='utf-8')
+        env.update(PI_CODING_AGENT_DIR=str(agent_dir))
+        for text, want in (('- id: m  # served id\n  name: A\n','A'), ('- name: B\n  id: m\n','B'),
+                           ("- id: m\n  name: 'Bob''s model'\n","Bob's model"), ('- id: m\r\n  name: C\r\n','C'),
+                           ('- id: m\n  compat:\n    name: nested\n','__none__'), ('- id: other\n  name: X\n','__none__')):
+            assert (tw.omp_model_name('m',text) or '__none__')==want,(text,tw.omp_model_name('m',text))
         brief = home/'assignment unicode-λ.md'
         brief.write_text(BRIEF,encoding='utf-8')
 
@@ -102,6 +116,11 @@ if __name__ == '__main__':
         assert result.returncode == 0, result.stderr
         assert first['completed'] and first['effective_model']=='alpha' and first['provider']=='configured-a',first
         assert first['timeout_seconds']==7200 and first['retry_enabled'] and not first['retry_used'],first
+        assert first['model_name']=='Alpha Label' and 'model_name_at_end' not in first,first
+        result, switched = dispatch(variables={'FAKE_RELABEL':'Beta Label'})
+        assert switched['model_name']=='Alpha Label' and switched['model_name_at_end']=='Beta Label',switched
+        models_yml = agent_dir/'models.yml'
+        models_yml.write_text(models_yml.read_text(encoding='utf-8').replace('Beta Label','Alpha Label'),encoding='utf-8')
         assert first['requested_model'] is None and first['requested_thinking'] is None,first
         assert first['observed_thinking']=='medium' and Path(first['session_file']).is_file(),first
         call = json.loads((home/'call.json').read_text(encoding='utf-8'))
@@ -172,11 +191,12 @@ if __name__ == '__main__':
             assert result.returncode!=0 and not failed['completed'],(variables,failed)
             assert Path(failed['events']).is_file() and Path(failed['stderr']).is_file(),failed
 
-        result, timeout = dispatch('--timeout','0.1',variables={'FAKE_SLEEP':'10'})
+        result, timeout = dispatch('--timeout','3','--approval-mode','write',variables={'FAKE_SLEEP':'10'})
         assert result.returncode!=0 and timeout['timed_out'] and timeout['exited'] and not timeout['completed'],timeout
         assert timeout['retry_enabled'],'An explicit time limit keeps the automatic continuation'
         if timeout['kill_failed']:
             assert 'resume_command' not in timeout,'A tree that may still run must not be handed to a second writer'
+            print('NOTE: process kill failed on this machine; the resume-command checks did not run',flush=True)
         else:
             # Still out of time after the continuation: the result hands back a command that resumes the saved session.
             assert timeout['retry_used'] and len(timeout['attempts'])==2 and timeout['attempts'][1]['timed_out'],timeout
@@ -184,12 +204,17 @@ if __name__ == '__main__':
             text = continuation.read_text(encoding='utf-8')
             assert text.startswith('TW-Role: worker\n') and 'TW-Accept:' in text,text
             assert 'previous attempt reached its time allowance' in text,text
-            assert f'--resume "{timeout["session_file"]}"' in timeout['resume_command'],timeout
-            resumed = subprocess.run(timeout['resume_command'],shell=True,env=env,capture_output=True,text=True,
+            assert f'--resume "{Path(timeout["session_file"]).resolve().as_posix()}"' in timeout['resume_command'],timeout
+            assert '--approval-mode write' in timeout['resume_command'] and '--timeout 3.0' in timeout['resume_command'],timeout
+            # Run it the way the callers' shells do (PowerShell on Windows), with the run's settings carried over.
+            shell = (['powershell','-NoProfile','-Command'] if os.name=='nt' else ['sh','-c'])
+            resumed = subprocess.run(shell+[timeout['resume_command']],env=env,capture_output=True,text=True,
                                      encoding='utf-8',timeout=120)
             assert resumed.returncode==0 and json.loads(resumed.stdout)['completed'],resumed
+            assert json.loads(resumed.stdout)['timeout_seconds']==3,resumed.stdout
             call = json.loads((home/'call.json').read_text(encoding='utf-8'))
             assert '--resume' in call['args'] and 'previous attempt reached its time allowance' in call['prompt'],call
+            assert call['args'][call['args'].index('--approval-mode')+1]=='write',call
 
         # Normal retry is the same saved OMP session, with explicit continuity constraints. It runs at most once.
         structured = BRIEF.replace('TW-Risk: none',
