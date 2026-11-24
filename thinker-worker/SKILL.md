@@ -46,7 +46,16 @@ Paste the paragraph for the brief's role at the end of the brief.
 
 ## Model and effort
 
-Pick per dispatch: Sonnet for mechanical work, Opus for delegated reasoning, Fable for thinking, Haiku only to watch or relay. Name the model on every dispatch. Effort: medium when the brief fixes what to do, high when choosing the next step is part of the job, xhigh for adversarial or the hardest reasoning; physics or convention judgment never below medium. Native calls take the alias (`sonnet`, `opus`, `fable`, `haiku`); the runners take the tool's own model id (`tw.py claude` the full Claude id; `tw.py codex`, `agy` and `omp` their own ids).
+A guideline, not a gate: pick per dispatch by what the job needs, quality first, and name the model on every dispatch. Pick by tier, not version:
+
+| Tier | Claude | Codex | Use for |
+|---|---|---|---|
+| Thinker | `fable` | Astra | ideas, reviews, a tough problem, the big picture |
+| Reasoning | `opus`, with a context file | Sol | delegated reasoning, implementation with judgment |
+| Mechanical | `sonnet` | | mechanical edits, extraction, search |
+| Watch | `haiku` | | watching or relaying only |
+
+Native Claude calls take the alias (`fable`, `opus`, `sonnet`, `haiku`), which moves to each new release on its own; `tw.py claude` takes the full id. Codex takes its own ids (2026-11-24: `gpt-6.2-astra`, `gpt-6.2-sol`); when a new one ships, update that parenthesis. Effort: medium when the brief fixes what to do, high when choosing the next step is part of the job, xhigh for adversarial or the hardest reasoning; physics or convention judgment never below medium.
 
 ## Native dispatch
 

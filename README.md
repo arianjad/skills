@@ -46,7 +46,7 @@ Delegation from Claude Code or Codex: four roles (`worker`, `leaf`, `independent
 
 **Files:** `SKILL.md` (the page); `references/omp.md`, `references/agy.md` (runner details); `scripts/tw.py`; `scripts/test_tw.py` (`python scripts/test_tw.py`, fake executables, no network).
 
-**Install:** link the folder into each harness like the other skills (Windows: `mklink /J %USERPROFILE%\.claude\skills	hinker-worker <repo>	hinker-worker`, same for `.codex\skills`). `tw.py hook` exits 0 and prints nothing, for settings that still carry an old thinker-worker hook entry; remove such an entry by hand.
+**Install:** link the folder into each harness like the other skills (Windows: `mklink /J %USERPROFILE%\.claude\skills\thinker-worker <repo>\thinker-worker`, same for `.codex\skills`). `tw.py hook` exits 0 and prints nothing, for settings that still carry an old thinker-worker hook entry; remove such an entry by hand.
 
 ## Debugging
 
