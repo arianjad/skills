@@ -14,9 +14,13 @@ from pathlib import Path
 tool, args = sys.argv[1], sys.argv[2:]
 home = Path(os.environ['FAKE_HOME'])
 stdin = sys.stdin.buffer.read().decode('utf-8')
-(home/f'{tool}-call.json').write_text(json.dumps({'args': args, 'stdin': stdin, 'cwd': os.getcwd()}), encoding='utf-8')
+(home/f'{tool}-call.json').write_text(json.dumps({'args': args, 'stdin': stdin, 'cwd': os.getcwd(),
+    'env': {k: os.environ.get(k) for k in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'HC_TERMINAL_ID')}}), encoding='utf-8')
 val = lambda flag: args[args.index(flag)+1] if flag in args else None
-if tool == 'codex':
+if tool == 'codex' and os.environ.get('FAKE_FAIL'):
+    print(json.dumps({'type':'error','message':"You've hit your usage limit. try again at 2:14 PM."}))
+    sys.exit(1)
+elif tool == 'codex':
     rollout = home/'.codex'/'sessions'/'2026'/'rollout-x-T1.jsonl'
     rollout.parent.mkdir(parents=True, exist_ok=True)
     rollout.write_text(json.dumps({'type':'turn_context','payload':{'model':val('-m'),'effort':'high'}})+'\n', encoding='utf-8')
@@ -67,6 +71,7 @@ def test_all():
                 launcher.chmod(0o755)
         env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"], "FAKE_HOME": str(home)}
         env.pop("CLAUDE_CONFIG_DIR", None)
+        env.pop("CODEX_HOME", None)
         brief = home / "brief.md"
         text = "TW-Role: worker\nDo the task. λ \" & | < > ^ % !\n"
         brief.write_text(text, encoding="utf-8")
@@ -98,6 +103,34 @@ def test_all():
         assert claude["model"] == "claude-opus-5-5" and claude["session_id"] == "S1", claude
         assert "--dangerously-skip-permissions" in json.loads((home / "agy-call.json").read_text(encoding="utf-8"))["args"]
         assert len((home / ".thinker-worker" / "log.jsonl").read_text(encoding="utf-8").splitlines()) == 4
+
+        # Herdr's account tool, when installed: the run goes to its pick, and a usage-limit failure is reported back
+        tool = home / ".local" / "bin" / "herdr_usage.py"
+        tool.parent.mkdir(parents=True)
+        tool.write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "a = sys.argv[1:]\n"
+            "Path(os.environ['FAKE_HOME'], 'usage-calls.jsonl').open('a').write(json.dumps(a) + '\\n')\n"
+            "if a[0] == 'pick':\n"
+            "    print(json.dumps({'id': a[a.index('--account') + 1] if '--account' in a else a[1] + '-b',\n"
+            "                      'env': {'CODEX_HOME' if a[1] == 'codex' else 'CLAUDE_CONFIG_DIR': os.environ['FAKE_HOME'] + '/acct'}}))\n"
+            "else:\n"
+            "    print(json.dumps({'marked': True, 'until': 123}))\n", encoding="utf-8")
+        p = tw({**env, "HC_TERMINAL_ID": "t1"}, "claude", *common, "--model", "claude-opus-5-5")
+        res = json.loads(p.stdout)
+        assert res["account"] == "claude-b" and res["completed"] and "account_out_until" not in res, res
+        p = tw({**env, "FAKE_FAIL": "1"}, "codex", *common, "--model", "gpt-x", "--account", "codex-c")
+        res = json.loads(p.stdout)
+        assert res["account"] == "codex-c" and not res["completed"] and res["account_out_until"] == 123, res
+        calls = [json.loads(x) for x in (home / "usage-calls.jsonl").read_text().splitlines()]
+        assert calls == [["pick", "claude"], ["pick", "codex", "--account", "codex-c"],
+                         ["limit", "codex-c", "--message", "You've hit your usage limit. try again at 2:14 PM."]], calls
+        seen = json.loads((home / "claude-call.json").read_text(encoding="utf-8"))["env"]
+        assert seen["CLAUDE_CONFIG_DIR"] == str(home) + "/acct" and seen["HC_TERMINAL_ID"] is None, seen
+        p = tw(env, "claude", *common, "--resume", "S1")  # resuming without --account keeps the caller's account
+        assert "account" not in json.loads(p.stdout)
+        tool.unlink()
 
         # OMP: a timed-out first attempt continues the saved session once
         p = tw({**env, "FAKE_SLEEP_ONCE": "1"}, "omp", *common, "--timeout", "3")

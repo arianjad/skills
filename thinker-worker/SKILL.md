@@ -85,6 +85,7 @@ The brief goes to the tool on stdin, verbatim. The command waits and prints one 
 - `--model` and `--effort` are optional; omitted, the tool's own default runs.
 - `tw.py claude` runs `claude -p --model <id> --effort <effort> --output-format json`; `model` comes from the result's `modelUsage`.
 - `tw.py codex`: `model` and `effort` come from the Codex rollout's `turn_context`.
+- Accounts (codex, claude): when Herdr's account tool is installed (`~/.local/bin/herdr_usage.py`, from Herdr-Custom), the run goes to the available account with the most room, or to `--account <id>`; a `--resume` without `--account` stays on the caller's account. The account's config folder (`CODEX_HOME` or `CLAUDE_CONFIG_DIR`) is set for the child only, and the result names it in `account`. A run that fails on a usage limit flags that account out until the reset time the tool printed (`account_out_until`). The model is never changed. Without the tool, runs use the caller's account.
 - [OMP](references/omp.md): continues a timed-out run once and returns a `resume_command`. [agy](references/agy.md).
 
 ## What each native child ran

@@ -78,7 +78,7 @@ def kill_tree(proc: subprocess.Popen, wait: float = 10) -> bool:
     return ok
 
 
-def run_bounded(argv: list[str], cwd: object, stdin_bytes: bytes, timeout: float) -> dict:
+def run_bounded(argv: list[str], cwd: object, stdin_bytes: bytes, timeout: float, env: dict | None = None) -> dict:
     """Run argv once for at most `timeout` s. stdout/stderr are temp files, not pipes (a surviving grandchild cannot
     hang the read); stdin is a pipe fed by a writer thread (Windows lost a temp-file stdin handle through npm's
     codex.CMD -> node shim, "No prompt provided via stdin", 2026-09-28; a pipe survived; the thread keeps a prompt
@@ -86,7 +86,7 @@ def run_bounded(argv: list[str], cwd: object, stdin_bytes: bytes, timeout: float
     kill_tree kills the group. On timeout the tree is killed. Returns code (None on timeout), out, err, timed_out,
     kill_failed, pid, exited (the process was gone at return)."""
     with tempfile.TemporaryFile() as fout, tempfile.TemporaryFile() as ferr:
-        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=fout, stderr=ferr,
+        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=fout, stderr=ferr, env=env,
                                 start_new_session=os.name != "nt")
 
         def feed() -> None:
@@ -107,9 +107,9 @@ def run_bounded(argv: list[str], cwd: object, stdin_bytes: bytes, timeout: float
             "pid": proc.pid, "exited": proc.poll() is not None}
 
 
-def codex_evidence(home: Path, events: str) -> dict:
+def codex_evidence(codex_home: Path, events: str) -> dict:
     """Thread id and summed usage from `codex exec --json`; the model and effort that ran from the rollout's
-    turn_context."""
+    turn_context (under the CODEX_HOME the run used)."""
     ev: dict = {"thread_id": None, "model": None, "effort": None, "usage": {k: 0 for k in CODEX_USAGE}}
     for row in rows(events):
         if row.get("type") == "thread.started":
@@ -120,7 +120,7 @@ def codex_evidence(home: Path, events: str) -> dict:
         elif row.get("type") == "error":  # e.g. a usage limit; Codex prints it to the event stream, not stderr
             ev["error"] = row.get("message")
     if ev["thread_id"]:
-        rollout = next((home / ".codex" / "sessions").rglob(f"rollout-*{ev['thread_id']}.jsonl"), None)
+        rollout = next((codex_home / "sessions").rglob(f"rollout-*{ev['thread_id']}.jsonl"), None)
         for row in file_rows(rollout):
             if row.get("type") == "turn_context":  # last one wins
                 ev["model"], ev["effort"] = row["payload"].get("model"), row["payload"].get("effort")
@@ -235,14 +235,29 @@ def omp_evidence(events: str, session_file: Path | None) -> dict:
             "ok": terminal and last.get("stopReason") == "stop", "text": text}
 
 
+def herdr_usage(home: Path, *args: str) -> dict | None:
+    """Herdr's account rotation (Herdr-Custom bin/herdr_usage.py), when installed: its JSON answer, else None."""
+    tool = home / ".local" / "bin" / "herdr_usage.py"
+    if not tool.is_file():
+        return None
+    try:
+        p = subprocess.run([sys.executable, str(tool), *args], capture_output=True, text=True, encoding="utf-8",
+                           timeout=120)
+        return json.loads(p.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
 def opt(flag: str, value: str | None) -> list[str]:
     return [flag, value] if value is not None else []
 
 
 def run(tool: str, brief_file: Path, cd: Path, model: str | None = None, effort: str | None = None,
         timeout: float = TIMEOUT, mode: str | None = None, resume: str | None = None,
-        home: Path | None = None) -> tuple[int, dict]:
-    """Start `tool` on the brief, wait, and return (exit code, result). The brief goes on stdin, verbatim."""
+        home: Path | None = None, account: str | None = None) -> tuple[int, dict]:
+    """Start `tool` on the brief, wait, and return (exit code, result). The brief goes on stdin, verbatim.
+    Codex and Claude: with Herdr's account tool installed, the run goes to `account`, else (unless resuming) to the
+    available account with the most room; a run that fails on a usage limit flags that account out."""
     home = (home or Path.home()).expanduser().resolve()
     cd = Path(cd).expanduser().resolve()
     brief = Path(brief_file).expanduser().read_text(encoding="utf-8-sig")
@@ -254,14 +269,22 @@ def run(tool: str, brief_file: Path, cd: Path, model: str | None = None, effort:
     result: dict = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "run_id": run_id, "tool": tool,
                     "cd": str(cd), "brief": str(Path(brief_file).expanduser().resolve()),
                     "requested_model": model, "requested_effort": effort}
+    env = None
+    picked = herdr_usage(home, "pick", tool, *opt("--account", account))         if tool in ("codex", "claude") and (account or not resume) else None
+    if picked and picked.get("id"):
+        # The account's config folder for this child only (a main account's variable is removed). No HC_TERMINAL_ID:
+        # an account profile's status hooks would report the child's turns into the caller's Herdr tab.
+        env = {k: v for k, v in os.environ.items() if k not in picked["env"] and k != "HC_TERMINAL_ID"}
+        env.update({k: v for k, v in picked["env"].items() if v})
+        result["account"] = picked["id"]
 
     if tool == "codex":  # full access by default (Arian 2026-10-25); --mode passes another --sandbox value
         argv = [exe, "--search", "--ask-for-approval", "never", "exec", *opt("-m", model),
                 *opt("-c", effort and f"model_reasoning_effort={effort}"), "-s", mode or "danger-full-access",
                 "--json", "--skip-git-repo-check", "-C", str(cd), "-o", str(last), "-"]
-        ran = run_bounded(argv, cd, brief.encode("utf-8"), timeout)
+        ran = run_bounded(argv, cd, brief.encode("utf-8"), timeout, env)
         out, err = ran["out"], ran["err"]
-        ev = codex_evidence(home, out)
+        ev = codex_evidence(Path((env or os.environ).get("CODEX_HOME") or home / ".codex"), out)
         result.update(model=ev["model"], effort=ev["effort"], session_id=ev["thread_id"], usage=ev["usage"],
                       **({"error": ev["error"]} if "error" in ev else {}))
         ok = last.is_file() and last.read_text(encoding="utf-8").strip() != ""
@@ -269,7 +292,7 @@ def run(tool: str, brief_file: Path, cd: Path, model: str | None = None, effort:
     elif tool == "claude":  # bypassPermissions by default: `claude -p` cannot answer a permission prompt
         argv = [exe, "-p", "--output-format", "json", "--permission-mode", mode or "bypassPermissions",
                 *opt("--model", model), *opt("--effort", effort), *opt("--resume", resume)]
-        ran = run_bounded(argv, cd, brief.encode("utf-8"), timeout)
+        ran = run_bounded(argv, cd, brief.encode("utf-8"), timeout, env)
         out, err = ran["out"], ran["err"]
         ev = claude_evidence(out)
         last.write_text(ev["text"], encoding="utf-8")
@@ -332,6 +355,11 @@ def run(tool: str, brief_file: Path, cd: Path, model: str | None = None, effort:
     (folder / "events.jsonl").write_text(out, encoding="utf-8")
     (folder / "stderr.log").write_text(err, encoding="utf-8")
     completed = bool(ok and ran["code"] == 0 and not ran["timed_out"])
+    if not completed and result.get("account"):
+        said = result.get("error") or (ev.get("text") if tool == "claude" else "") or err[-2000:]
+        marked = herdr_usage(home, "limit", result["account"], "--message", said or "")
+        if marked and marked.get("marked"):
+            result["account_out_until"] = marked.get("until")
     result.update(exit_code=ran["code"], completed=completed, timed_out=ran["timed_out"], kill_failed=ran["kill_failed"],
                   last_message=str(last), events=str(folder / "events.jsonl"), stderr=str(folder / "stderr.log"))
     with open(home / ".thinker-worker" / "log.jsonl", "a", encoding="utf-8") as log:
@@ -406,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--mode", help="codex --sandbox / claude --permission-mode / agy --mode / omp --approval-mode")
         if tool != "codex":
             s.add_argument("--resume", help="session id to continue (agy: conversation id; omp: session file)")
+        if tool in ("codex", "claude"):
+            s.add_argument("--account", help="Herdr account id to run on (default: the one with the most room)")
         s.add_argument("--home", type=Path, help=argparse.SUPPRESS)
     r = sub.add_parser("ran", help="model and effort each native Claude child of a session ran")
     r.add_argument("session", nargs="?", help="session id (default: the session whose children changed last)")
@@ -417,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(child, ensure_ascii=False))
         return 0
     code, result = run(args.cmd, args.brief_file, args.cd, args.model, args.effort, args.timeout, args.mode,
-                       getattr(args, "resume", None), home)
+                       getattr(args, "resume", None), home, getattr(args, "account", None))
     print(json.dumps(result, ensure_ascii=False))
     return code
 
