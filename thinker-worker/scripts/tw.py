@@ -117,6 +117,8 @@ def codex_evidence(home: Path, events: str) -> dict:
         elif row.get("type") == "turn.completed":
             for k in CODEX_USAGE:
                 ev["usage"][k] += (row.get("usage") or {}).get(k) or 0
+        elif row.get("type") == "error":  # e.g. a usage limit; Codex prints it to the event stream, not stderr
+            ev["error"] = row.get("message")
     if ev["thread_id"]:
         rollout = next((home / ".codex" / "sessions").rglob(f"rollout-*{ev['thread_id']}.jsonl"), None)
         for row in file_rows(rollout):
@@ -260,7 +262,8 @@ def run(tool: str, brief_file: Path, cd: Path, model: str | None = None, effort:
         ran = run_bounded(argv, cd, brief.encode("utf-8"), timeout)
         out, err = ran["out"], ran["err"]
         ev = codex_evidence(home, out)
-        result.update(model=ev["model"], effort=ev["effort"], session_id=ev["thread_id"], usage=ev["usage"])
+        result.update(model=ev["model"], effort=ev["effort"], session_id=ev["thread_id"], usage=ev["usage"],
+                      **({"error": ev["error"]} if "error" in ev else {}))
         ok = last.is_file() and last.read_text(encoding="utf-8").strip() != ""
 
     elif tool == "claude":  # bypassPermissions by default: `claude -p` cannot answer a permission prompt
