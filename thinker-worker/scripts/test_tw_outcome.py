@@ -19,7 +19,7 @@ if __name__ == "__main__":
     pin.__enter__()
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",
+        hook(home, "claude", "Agent", {"subagent_type": "general-purpose", "model": "opus", "effort": "high",
                                        "prompt": "TW-Role: worker\n" + HDR + "x"})
         assert outcome(home, "toolu_x", "no") == 0
         last = receipts(home, "claude")[-1]
@@ -34,7 +34,7 @@ if __name__ == "__main__":
         assert not list(Path(home).rglob("*.jsonl"))
     with tempfile.TemporaryDirectory() as home:          # cause: why a rejection happened (design §5 censoring)
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",
+        hook(home, "claude", "Agent", {"subagent_type": "general-purpose", "model": "opus", "effort": "high",
                                        "prompt": "TW-Role: worker\n" + HDR + "x"})
         assert outcome(home, "toolu_x", "no", "tier") == 0
         assert receipts(home, "claude")[-1]["cause"] == "tier"
@@ -50,7 +50,7 @@ if __name__ == "__main__":
     import tw as _tw
     with tempfile.TemporaryDirectory() as home:
         run_main(["activate", "--home", home, "--harness", "claude", "--session", SESSION])
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high",
+        hook(home, "claude", "Agent", {"subagent_type": "general-purpose", "model": "opus", "effort": "high",
                                        "prompt": "TW-Role: worker\n" + HDR + "x"})
 
         def refusal():
@@ -59,7 +59,7 @@ if __name__ == "__main__":
             except _tw.Conflict as exc:
                 return str(exc)
             raise AssertionError("an id without a dispatch receipt must be refused")
-        assert "toolu_x (tw-worker-high" in refusal(), refusal()
+        assert "toolu_x (worker opus high, Agent" in refusal(), refusal()
         assert outcome(home, "toolu_x", "yes") == 0
         assert "toolu_x" not in refusal(), refusal()
     print("PASS a refused id names the admitted dispatches still unlabeled")
@@ -74,7 +74,7 @@ if __name__ == "__main__":
         work = Path(home) / "work"
         work.mkdir()
         marker = work / "marker.txt"
-        hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "model": "not-a-model",
+        hook(home, "claude", "Agent", {"subagent_type": "general-purpose", "model": "not-a-model", "effort": "high",
                                        "prompt": brief("echo review-marker > marker.txt")}, "t_deny", cwd=str(work))
         assert [r["decision"] for r in receipts(home, "claude") if r["kind"] == "dispatch"] == ["deny"]
         # codex-exec dispatch row, admitted, but no cost row: codex never ran

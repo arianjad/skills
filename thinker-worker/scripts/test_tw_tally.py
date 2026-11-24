@@ -25,12 +25,23 @@ with tempfile.TemporaryDirectory() as home:
         {"kind": "dispatch", "tool_use_id": "e", "decision": "admit", "header": None, "tier": "high"},
         {"kind": "outcome", "tool_use_id": "e", "accepted": True},                                       # no header
         {"kind": "route", "tool_use_id": "a", "action": "rewrite"},                                      # old rows parse
+        # the general-purpose form (2026-11-24): no tier in the agent type; the transcript effort, else the dispatch's
+        {"kind": "dispatch", "tool_use_id": "f", "decision": "admit", "header": H, "tier": "xhigh",
+         "subagent_type": "general-purpose", "requested_effort": "xhigh"},
+        {"kind": "cost", "tool_use_id": "f", "model": "claude-opus-5-5", "agent_type": "general-purpose"},
+        {"kind": "outcome", "tool_use_id": "f", "accepted": True},
+        {"kind": "dispatch", "tool_use_id": "g", "decision": "admit", "header": H, "tier": "low"},
+        {"kind": "cost", "tool_use_id": "g", "model": "claude-sonnet-5-5", "agent_type": "general-purpose",
+         "effort": "medium"},
+        {"kind": "outcome", "tool_use_id": "g", "accepted": False},
     ]
     p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     got = tw.tally(home, "claude")
     assert got == [
         {"class": "C-coding", "model": "claude-opus-5-5", "tier": "high", "n": 1, "accepted": 0, "rate": 0.0},
         {"class": "C-coding", "model": "claude-opus-5-5", "tier": "medium", "n": 1, "accepted": 1, "rate": 1.0},
+        {"class": "C-coding", "model": "claude-opus-5-5", "tier": "xhigh", "n": 1, "accepted": 1, "rate": 1.0},
+        {"class": "C-coding", "model": "claude-sonnet-5-5", "tier": "medium", "n": 1, "accepted": 0, "rate": 0.0},
     ], got
 
 # Antigravity (agy) model-effort tally: real agy model IDs parse base model + effort suffix or explicit requested_effort

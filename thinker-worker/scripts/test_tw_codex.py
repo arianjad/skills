@@ -144,7 +144,7 @@ if __name__ == "__main__":
         env["TW_ROUTES"] = str(home / "routes.json")
         assert r.returncode == 2 and "outside" in r.stderr, r.stderr
         for text, tier, model, role, why in (
-                (WORK, "high", "gpt-6-astra", "independent-review", "subagent_type must be tw-worker"),
+                (WORK, "high", "gpt-6.2-astra", "independent-review", "does not match the brief's TW-Role: worker"),
                 (REV.replace("TW-Scope: t\n", ""), "high", "gpt-6-astra", "independent-review",
                  "TW-Authorization and TW-Scope"),
                 (WORK, "high", "gpt-6-luna", "worker", "model gpt-6-luna is not allowed for worker"),

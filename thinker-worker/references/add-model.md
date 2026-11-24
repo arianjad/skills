@@ -15,7 +15,7 @@ Run from the source repo root: `python thinker-worker/scripts/tw.py <command>`.
    - Decide the roles (worker, leaf, independent-review, ideation) and, per role, the tiers if narrower than the
      role's (e.g. a cheaper model admitted as worker only at `high,xhigh`).
 2. **Priors.** Per model, a `*` tier and any per-class tiers (`router.priors` classes). Either the user states them,
-   or, on request, dispatch a Sonnet leaf (`tw-leaf-medium`, `TW-Class: R-research`) to collect cited facts only
+   or, on request, dispatch a Sonnet leaf (`subagent_type: "general-purpose"`, `model: "sonnet"`, `effort: "medium"`, `TW-Class: R-research`) to collect cited facts only
    (ids, effort levels, independent and vendor benchmarks against the models it may replace, price, regressions; no
    recommendations). The coordinator turns the facts into a proposed prior table, cites the facts in one line each,
    and gets a yes before writing. Priors are a starting point; step 6 is how the model is actually compared.
@@ -30,7 +30,7 @@ Run from the source repo root: `python thinker-worker/scripts/tw.py <command>`.
    restrictions remain in force; use `--tiers` to change a selected model's narrower list. Invalid role
    tiers or incompatible model restrictions are refused before writing.
    Inherit class priors unless evidence or the user changes them. Use `--default` only for an explicitly requested fixed preference; it sets `router.defaults[role]`. Repeated commands are idempotent. A new model
-   is appended; a role's first model (the Claude agent file's pin) is never changed here. A superseded model stays
+   is appended; a role's first model (its fallback default, and `tw.py claude`'s default) is never changed here. Native Claude dispatch passes `model` as an alias (`sonnet`, `opus`, `haiku`, `fable`), so a new Claude model is reachable natively through its alias; its full ID serves the `tw.py claude` identity check. A superseded model stays
    admitted (drop its default with `--default` on the successor). A model no longer offered:
    `tw.py model archive --model <id>` (removes it everywhere, keeps a dated record under `archived`; `model set`
    re-admits it for the given role and drops the record). Machine-local priors go in the override file named by `routes.json` `$override`, not here.

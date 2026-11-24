@@ -156,7 +156,8 @@ with tempfile.TemporaryDirectory() as tmp:
         base["harnesses"][h]["roles"]["leaf"]["tiers"] = ["low", "medium"]
     p.write_text(tw.dump_routes(base), encoding="utf-8")
     brief = "TW-Role: leaf\nTW-Class: T1-mechanical\nTW-Deliverable: d\nTW-Accept: a\nTW-Risk: none\nx"
-    claude = {"tool_name": "Agent", "tool_input": {"subagent_type": "tw-leaf-high", "prompt": brief}}
+    claude = {"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "model": "sonnet",
+                                                   "effort": "high", "prompt": brief}}
     codex = {"tool_name": "spawn_agent", "tool_input": {"model": "gpt-6-luna", "reasoning_effort": "high",
                                                         "fork_turns": "none", "message": brief}}
     assert not tw.decide("claude", claude, base).admitted

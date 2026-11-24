@@ -22,7 +22,7 @@ def round_trip(prior_settings, *extra):
         (home / ".claude").mkdir()
         (home / ".codex").mkdir()
         settings = home / ".claude" / "settings.json"
-        agent = home / ".claude" / "agents" / "tw-worker-high.md"
+        agents = home / ".claude" / "agents"
         if prior_settings is not None:
             settings.write_text(json.dumps(prior_settings), encoding="utf-8")
 
@@ -31,14 +31,13 @@ def round_trip(prior_settings, *extra):
         assert run_tw("check", "--home", str(home)).returncode == 0, "check after install"
         hooks = tw.read_json(settings, {})["hooks"]["PreToolUse"]
         assert any("thinker-worker" in json.dumps(h) for h in hooks), "guard hook installed"
-        assert agent.exists()
+        assert not agents.exists(), "no generated agent files (retired 2026-11-24)"
         installed = home / ".claude" / "skills" / "thinker-worker" / "references"
         for ref in (Path(__file__).parent.parent / "references").glob("*.md"):  # every reference SKILL.md can link
             assert (installed / ref.name).is_file(), f"{ref.name} not installed"
 
         r = run_tw("uninstall", "--home", str(home))
         assert r.returncode == 0, r.stderr
-        assert not agent.exists()
         assert not (home / ".claude" / "skills" / "thinker-worker").exists()
         assert tw.read_json(settings, {}) == (prior_settings or {})
 
@@ -60,7 +59,7 @@ def upgrade_in_place():
         (home / ".codex").mkdir()
         assert run_tw("install", "--home", str(home), "--python", sys.executable).returncode == 0
         assert run_tw("activate", "--home", str(home), "--harness", "claude", "--session", "s-1").returncode == 0
-        tw_rel, agent_rel = ".claude/skills/thinker-worker/scripts/tw.py", ".claude/agents/tw-worker-high.md"
+        tw_rel, agent_rel = ".claude/skills/thinker-worker/scripts/tw.py", ".claude/skills/thinker-worker/SKILL.md"
         current = {rel: (home / rel).read_bytes() for rel in (tw_rel, agent_rel)}
         settings = (home / ".claude" / "settings.json").read_bytes()
         behind(home, tw_rel)
@@ -80,8 +79,9 @@ def upgrade_in_place():
         st = run_tw("status", "--home", str(home), "--harness", "claude", "--session", "s-1")
         assert st.returncode == 0 and "inactive" not in st.stdout.lower(), st.stdout      # activation kept
 
-        # a file the source no longer produces (e.g. a dropped agent tier) is removed if unchanged since install
+        # a file the source no longer produces (e.g. a retired tw-*.md agent) is removed if unchanged since install
         gone = ".claude/agents/tw-worker-retired.md"
+        (home / gone).parent.mkdir(parents=True, exist_ok=True)
         (home / gone).write_bytes(b"old agent\n")
         m = tw.load_manifest(home)
         m["files"][gone] = m["source"][gone] = tw.sha(b"old agent\n")

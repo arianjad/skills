@@ -8,8 +8,8 @@ HDR = ("TW-Class: T3-moderate-reasoning\nTW-Deliverable: patch to f.py\n"
        "TW-Accept: python test_f.py passes\nTW-Risk: none\n")
 
 
-def verdict(brief, st="tw-worker-high"):
-    env = {"tool_input": {"subagent_type": st, "prompt": brief}}
+def verdict(brief, model="opus"):
+    env = {"tool_input": {"subagent_type": "general-purpose", "model": model, "effort": "high", "prompt": brief}}
     return tw.decide("claude", env, R)[:2]
 
 
@@ -49,13 +49,12 @@ CASES += [("TW-Output backslash path", out("x").replace("C:/t/x", "C:\\t\\findin
 if __name__ == "__main__":
     ok, reason = verdict(out("REPORT.md"))
     assert not ok and "worker-notes.md" in reason and "TW-Output" in reason, reason     # the denial says how to fix it
-    pipeline = {"tool_name": "codex", "tool_input": {"subagent_type": "tw-worker-high", "prompt": out("REPORT.md"),
-                                                     "model": "gpt-6-sol"}}
+    pipeline = {"tool_name": "codex", "tool_input": {"subagent_type": "general-purpose", "prompt": out("REPORT.md"),
+                                                     "model": "gpt-6-sol", "effort": "high"}}
     assert tw.decide("claude", pipeline, R)[0], "a tw.py codex child can write REPORT.md: stays admitted"
     bad = []
     for name, brief, want in CASES:
-        st = "tw-independent-review-high" if "independent-review" in brief else "tw-worker-high"
-        ok, reason = verdict(brief, st)
+        ok, reason = verdict(brief, "fable" if "independent-review" in brief else "opus")
         if ok != want:
             bad.append((name, want, reason))
     for b in bad:

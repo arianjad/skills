@@ -15,7 +15,8 @@ PY = '"' + Path(sys.executable).as_posix() + '"'
 
 
 def dispatch(home, brief, cwd, tid="toolu_x"):
-    return hook(home, "claude", "Agent", {"subagent_type": "tw-worker-high", "prompt": brief}, tid, cwd=cwd)
+    return hook(home, "claude", "Agent", {"subagent_type": "general-purpose", "model": "opus", "effort": "high", "prompt": brief},
+                tid, cwd=cwd)
 
 
 def brief(check=None, extra=""):
@@ -23,7 +24,7 @@ def brief(check=None, extra=""):
 
 
 def denied(out):
-    return bool(out) and json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    return bool(out) and json.loads(out)["hookSpecificOutput"].get("permissionDecision") == "deny"
 
 
 if __name__ == "__main__":

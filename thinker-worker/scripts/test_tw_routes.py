@@ -1,4 +1,4 @@
-"""Role policy comes from routes.json: Claude tier agents tw-<role>-<tier>, Codex model + effort tiers.
+"""Role policy comes from routes.json: Claude general-purpose + model + effort, Codex model + effort tiers.
 Run: python test_tw_routes.py"""
 import json
 
@@ -26,10 +26,12 @@ LEAF = "TW-Role: leaf\n" + HDR + "x"
 IDEA = "TW-Role: ideation\n" + AUTH + HDR + "x"
 
 
-def claude(brief, st, model=None, routes=None, **extra):
-    inp = {"subagent_type": st, "prompt": brief, **extra}
-    if model:
-        inp["model"] = model
+def claude(brief, effort, model, routes=None, st="general-purpose", **extra):
+    """A native Agent call: subagent_type (omitted when st is None), model and effort (each omitted when None)."""
+    inp = {"prompt": brief, **extra}
+    for k, v in (("subagent_type", st), ("model", model), ("effort", effort)):
+        if v is not None:
+            inp[k] = v
     return tw.decide("claude", {"tool_input": inp}, routes or R)
 
 
@@ -41,63 +43,95 @@ def codex(brief, model, effort=None, v2=False, routes=None):
                                "tool_input": inp}, routes or R)
 
 
+def pipeline(brief, model, effort="high"):
+    """The synthetic call `tw.py codex` passes to decide()."""
+    return tw.decide("claude", {"tool_name": "codex", "tool_input": {
+        "subagent_type": "general-purpose", "prompt": brief, "model": model, "effort": effort}}, R)
+
+
+RETIRED = ('subagent_type tw-worker-high is a retired thinker-worker agent (agent files removed 2026-11-24); retry '
+           'with subagent_type: "general-purpose", model: "opus", effort: "high" and the same prompt')
+
 CASES = [
-    ("claude worker tier agent, no model", claude(W, "tw-worker-low").admitted, True),
-    ("claude tier recorded", claude(W, "tw-worker-xhigh").tier, "xhigh"),
-    ("claude matching per-call model", claude(W, "tw-worker-high", "opus").admitted, True),
-    ("claude per-call model mismatch", claude(W, "tw-worker-high", "not-a-model").admitted, False),
-    ("sonnet worker high", claude(W, "tw-worker-high", "sonnet").admitted, True),
-    ("sonnet worker xhigh", claude(W, "tw-worker-xhigh", "sonnet").admitted, True),
-    ("sonnet worker medium (every model, every tier)", claude(W, "tw-worker-medium", "sonnet").admitted, True),
-    ("sonnet worker low", claude(W, "tw-worker-low", "sonnet").admitted, True),
-    ("sonnet worker max", claude(W, "tw-worker-max", "sonnet").admitted, True),
-    ("narrowed: sonnet worker medium refused", claude(W, "tw-worker-medium", "sonnet", N).admitted, False),
-    ("narrowed: sonnet worker low refused", claude(W, "tw-worker-low", "sonnet", N).reason,
-     "tier low is outside worker's tiers ['high', 'xhigh'] on sonnet"),
-    ("narrowed: opus keeps the role ladder", claude(W, "tw-worker-low", "opus", N).admitted, True),
-    ("haiku worker", claude(W, "tw-worker-high", "haiku").admitted, True),
-    ("haiku 5.5 review", claude(REV, "tw-independent-review-max", "claude-haiku-5-5").admitted, True),
-    ("worker agent file stays opus", R["harnesses"]["claude"]["roles"]["worker"]["models"][0], "opus"),
-    ("leaf sonnet 5.5 id", claude(LEAF, "tw-leaf-medium", "claude-sonnet-5-5").admitted, True),
-    ("worker max", claude(W, "tw-worker-max").admitted, True),
-    ("worker max tier recorded", claude(W, "tw-worker-max").tier, "max"),
-    ("no tier beyond max", claude(W, "tw-worker-ultra").admitted, False),
-    ("narrowed: worker max outside role", claude(W, "tw-worker-max", routes=N).admitted, False),
-    ("role/agent mismatch", claude(W, "tw-leaf-low").admitted, False),
-    ("leaf xhigh", claude(LEAF, "tw-leaf-xhigh").admitted, True),
-    ("leaf max", claude(LEAF, "tw-leaf-max", "haiku").admitted, True),
-    ("narrowed: leaf tier outside role", claude(LEAF, "tw-leaf-xhigh", routes=N).admitted, False),
-    ("leaf high", claude(LEAF, "tw-leaf-high").admitted, True),
-    ("leaf medium", claude(LEAF, "tw-leaf-medium").admitted, True),
-    ("old hand-written agent refused", claude(W, "thinker-worker-opus", "opus").admitted, False),
-    ("miners are not a route", claude(W, "effortmining:miner-high", "opus").admitted, False),
-    ("review tier agent", claude(REV, "tw-independent-review-high").admitted, True),
-    ("review medium allowed", claude(REV, "tw-independent-review-medium").admitted, True),
-    ("review low", claude(REV, "tw-independent-review-low").admitted, True),
-    ("review max", claude(REV, "tw-independent-review-max").admitted, True),
-    ("narrowed: review low below floor", claude(REV, "tw-independent-review-low", routes=N).admitted, False),
-    ("native review on astra refused (tw.py codex)", claude(REV, "tw-independent-review-high", "gpt-6-astra").admitted, False),
-    ("native review on sol 6.1 refused (tw.py codex)", claude(REV, "tw-independent-review-high", "gpt-6.1-sol").admitted, False),
-    ("sol 6.1 review pipeline", tw.decide("claude", {"tool_name": "codex", "tool_input": {
-        "subagent_type": "tw-independent-review-high", "prompt": REV, "model": "gpt-6.1-sol"}}, R).admitted, True),
-    ("native ideation on astra refused", claude(IDEA, "tw-ideation-medium", "gpt-6-astra").admitted, False),
-    ("worker on legacy astra refused", claude(W, "tw-worker-high", "gpt-6-astra").admitted, False),
-    ("native Claude worker on astra 6.2 refused", claude(W, "tw-worker-high", "gpt-6.2-astra").admitted, False),
-    ("Claude to Codex astra 6.2 worker", tw.decide("claude", {"tool_name": "codex", "tool_input": {
-        "subagent_type": "tw-worker-high", "prompt": W, "model": "gpt-6.2-astra"}}, R).admitted, True),
+    ("claude worker opus", claude(W, "low", "opus").admitted, True),
+    ("claude tier is the effort", claude(W, "xhigh", "opus").tier, "xhigh"),
+    ("claude model not admitted", claude(W, "high", "not-a-model").admitted, False),
+    ("model required", claude(W, "high", None).reason,
+     'explicit model is required; inherited/omitted model is disallowed: add model: "opus" or another native alias '
+     'worker admits'),
+    ("effort required", claude(W, None, "opus").reason,
+     "explicit effort is required: one of worker's tiers ['low', 'medium', 'high', 'xhigh', 'max'] on opus"),
+    ("sonnet worker high", claude(W, "high", "sonnet").admitted, True),
+    ("sonnet worker xhigh", claude(W, "xhigh", "sonnet").admitted, True),
+    ("sonnet worker medium (every model, every tier)", claude(W, "medium", "sonnet").admitted, True),
+    ("sonnet worker low", claude(W, "low", "sonnet").admitted, True),
+    ("sonnet worker max", claude(W, "max", "sonnet").admitted, True),
+    ("narrowed: sonnet worker medium refused", claude(W, "medium", "sonnet", N).admitted, False),
+    ("narrowed: sonnet worker low refused", claude(W, "low", "sonnet", N).reason,
+     "effort low is outside worker's tiers ['high', 'xhigh'] on sonnet"),
+    ("narrowed: opus keeps the role ladder", claude(W, "low", "opus", N).admitted, True),
+    ("haiku worker", claude(W, "high", "haiku").admitted, True),
+    ("haiku 5.5 review", claude(REV, "max", "claude-haiku-5-5").admitted, True),
+    ("worker first model stays opus", R["harnesses"]["claude"]["roles"]["worker"]["models"][0], "opus"),
+    ("leaf sonnet 5.5 id", claude(LEAF, "medium", "claude-sonnet-5-5").admitted, True),
+    ("worker max", claude(W, "max", "opus").admitted, True),
+    ("worker max tier recorded", claude(W, "max", "opus").tier, "max"),
+    ("no tier beyond max", claude(W, "ultra", "opus").admitted, False),
+    ("narrowed: worker max outside role", claude(W, "max", "opus", N).admitted, False),
+    ("leaf on opus refused (not a leaf model)", claude(LEAF, "low", "opus").admitted, False),
+    ("leaf xhigh", claude(LEAF, "xhigh", "sonnet").admitted, True),
+    ("leaf max", claude(LEAF, "max", "haiku").admitted, True),
+    ("narrowed: leaf tier outside role", claude(LEAF, "xhigh", "sonnet", N).admitted, False),
+    ("leaf high", claude(LEAF, "high", "sonnet").admitted, True),
+    ("leaf medium", claude(LEAF, "medium", "sonnet").admitted, True),
+    ("retired tier agent: denial gives the exact new form", claude(W, None, None, st="tw-worker-high").reason, RETIRED),
+    ("retired agent with a per-call model keeps it", 'model: "sonnet", effort: "low"' in
+     claude(LEAF, None, "sonnet", st="tw-leaf-low").reason, True),
+    ("retired agent, explicit effort wins over the name", 'effort: "max"' in
+     claude(W, "max", "opus", st="tw-worker-high").reason, True),
+    ("retired Opus 5.5 pin -> model opus", 'model: "opus", effort: "max"' in
+     claude(REV, None, None, st="tw-independent-review-max-opus55").reason, True),
+    ("retired agent on a Codex model -> tw.py codex",
+     "run `tw.py codex --role worker --tier high --model gpt-6.2-sol` instead" in
+     claude(W, None, "gpt-6.2-sol", st="tw-worker-high").reason, True),
+    ("omitted subagent_type refused with the form", claude(W, "high", "opus", st=None).reason,
+     'subagent_type is required; retry with subagent_type: "general-purpose", model: "opus", effort: "high" and the '
+     'same prompt'),
+    ("omitted type and effort: the form suggests the class prior", 'effort: "high"' in
+     claude(W, None, "opus", st=None).reason, True),
+    ("other built-in type refused", claude(W, "high", "opus", st="Explore").admitted, False),
+    ("old hand-written agent refused", claude(W, "high", "opus", st="thinker-worker-opus").admitted, False),
+    ("miners are not a route", claude(W, "high", "opus", st="effortmining:miner-high").admitted, False),
+    ("review on fable", claude(REV, "high", "fable").admitted, True),
+    ("review medium allowed", claude(REV, "medium", "fable").admitted, True),
+    ("review low", claude(REV, "low", "fable").admitted, True),
+    ("review max", claude(REV, "max", "fable").admitted, True),
+    ("narrowed: review low below floor", claude(REV, "low", "fable", N).admitted, False),
+    ("native review on astra refused (tw.py codex)", claude(REV, "high", "gpt-6-astra").admitted, False),
+    ("native review on sol 6.1 refused (tw.py codex)", claude(REV, "high", "gpt-6.1-sol").admitted, False),
+    ("sol 6.1 review pipeline", pipeline(REV, "gpt-6.1-sol").admitted, True),
+    ("native ideation on astra refused", claude(IDEA, "medium", "gpt-6-astra").admitted, False),
+    ("worker on legacy astra refused", claude(W, "high", "gpt-6-astra").admitted, False),
+    ("native Claude worker on astra 6.2 refused", claude(W, "high", "gpt-6.2-astra").admitted, False),
+    ("Codex redirect comes before the effort check", claude(W, None, "gpt-6.2-astra").reason,
+     "model gpt-6.2-astra is a Codex model; dispatch it with `tw.py codex --model gpt-6.2-astra`"),
+    ("Claude to Codex astra 6.2 worker", pipeline(W, "gpt-6.2-astra").admitted, True),
     ("codex astra 6.2 worker", codex(W, "gpt-6.2-astra", "high").admitted, True),
     ("codex sol 6.2 worker", codex(W, "gpt-6.2-sol", "high").admitted, True),
     ("codex astra 6.2 reviewer", codex(REV, "gpt-6.2-astra", "high").admitted, True),
     ("codex astra 6.2 ideation", codex(IDEA, "gpt-6.2-astra", "medium").admitted, True),
     ("codex astra 6.2 ideation below floor", codex(IDEA, "gpt-6.2-astra", "low").admitted, False),
-    ("ideation needs auth/scope", claude(IDEA.replace(AUTH, ""), "tw-ideation-high").admitted, False),
-    ("ideation on opus per call", claude(IDEA, "tw-ideation-high", "opus").admitted, True),
-    ("ideation on sonnet refused", claude(IDEA, "tw-ideation-xhigh", "sonnet").admitted, False),
-    ("review refuses opus", claude(REV, "tw-independent-review-high", "opus").admitted, False),
-    ("ideation agent file stays fable", R["harnesses"]["claude"]["roles"]["ideation"]["models"][0], "fable"),
-    ("denial names model and role", claude(W, "tw-worker-high", "not-a-model").reason, "model not-a-model is not allowed for worker"),
-    ("fork refused", claude(W, "tw-worker-high", fork=True).admitted, False),
-    ("role line split on \\n only", claude("TW-Role: worker " + HDR + "x", "tw-worker-high").admitted, False),
+    ("ideation needs auth/scope", claude(IDEA.replace(AUTH, ""), "high", "fable").admitted, False),
+    ("ideation on opus per call", claude(IDEA, "high", "opus").admitted, True),
+    ("ideation on sonnet refused", claude(IDEA, "xhigh", "sonnet").admitted, False),
+    ("ideation max outside its tiers", claude(IDEA, "max", "fable").admitted, False),
+    ("review on alias opus requests Opus 5.5", claude(REV, "high", "opus")[:5],
+     (True, "admitted-request-only", "independent-review", "claude-opus-5-5", "high")),
+    ("ideation first model stays fable", R["harnesses"]["claude"]["roles"]["ideation"]["models"][0], "fable"),
+    ("denial names model and role", claude(W, "high", "not-a-model").reason, "model not-a-model is not allowed for worker"),
+    ("fork refused", claude(W, "high", "opus", fork=True).admitted, False),
+    ("fork type refused", claude(W, "high", "opus", st="fork").admitted, False),
+    ("role line split on \\n only", claude("TW-Role: worker " + HDR + "x", "high", "opus").admitted, False),
     ("codex worker sol high", codex(W, "gpt-6-sol", "high").admitted, True),
     ("codex worker terra", codex(W, "gpt-5.6-terra", "medium").admitted, True),
     ("codex worker max", codex(W, "gpt-6-sol", "max").admitted, True),
@@ -256,7 +290,8 @@ if __name__ == "__main__":
             code, out = run_main(["status", "--home", tmp, "--harness", "claude", "--session", session])
             assert code == 0 and "override ignored" in out, out
             brief = "TW-Role: worker\n" + hdr.format("C-coding")
-            env = envelope(session, {"subagent_type": "tw-worker-high", "prompt": brief}, tool_use_id="t1")
+            env = envelope(session, {"subagent_type": "general-purpose", "model": "opus", "effort": "high",
+                                     "prompt": brief + "\n\n" + tw.role_text("worker")}, tool_use_id="t1")
             code, out = run_main(["hook", "--home", tmp, "--harness", "claude", "--owner", tw.OWNER], json.dumps(env))
             assert code == 0 and out == "", out
             rows = tw.read_rows(tw.receipts_path(Path(tmp), "claude", session))

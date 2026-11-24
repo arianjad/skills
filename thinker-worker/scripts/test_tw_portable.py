@@ -6,6 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import tw
 from test_tw_hook import W_MIN, hook_env, pinned_routes
 
 TW = str(Path(__file__).with_name("tw.py"))
@@ -53,7 +54,8 @@ def seam2_command_runs_guard():
     session = "22222222-3333-4444-5555-666666666666"
     def envelope(subagent_type):
         return {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
-                "tool_input": {"subagent_type": subagent_type, "model": "opus", "prompt": W_MIN}}
+                "tool_input": {"subagent_type": subagent_type, "model": "opus", "effort": "high",
+                               "prompt": W_MIN + "\n\n" + tw.role_text("worker")}}
     # A bogus first-choice interpreter must fall back to the PATH search.
     for extra in ([], ["--python-cmd", '"$USERPROFILE/no-such/python.exe"']):
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,10 +64,10 @@ def seam2_command_runs_guard():
             assert run_tw("activate", "--home", str(home), "--harness", "claude", "--session", session).returncode == 0
             cmd = claude_command(home)["command"]
             for windows_branch in (True, False):
-                out = run_hook_command(cmd, home, envelope("general-purpose"), windows_branch)
+                out = run_hook_command(cmd, home, envelope("tw-worker-high"), windows_branch)   # retired name
                 assert out, "no output: the guard did not run"
                 assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny", out
-                assert run_hook_command(cmd, home, envelope("tw-worker-high"), windows_branch) == ""
+                assert run_hook_command(cmd, home, envelope("general-purpose"), windows_branch) == ""
             receipts = list((home / ".thinker-worker" / "receipts" / "claude").glob("*.jsonl"))
             assert len(receipts) == 1 and len(receipts[0].read_text().splitlines()) == 4, receipts
     print("PASS seam2 portable command runs the guard (deny bad, admit good; both OS branches; fallback)")
@@ -119,7 +121,7 @@ def seam6_no_interpreter_blocks_only_when_activated():
     bash = shutil.which("bash")
     session = "33333333-4444-5555-6666-777777777777"
     envelope = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": session,
-                           "tool_input": {"subagent_type": "tw-worker-high", "model": "opus",
+                           "tool_input": {"subagent_type": "general-purpose", "model": "opus", "effort": "high",
                                           "prompt": W_MIN}})
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as empty_bin:
         home = Path(tmp)

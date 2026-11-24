@@ -1,6 +1,6 @@
-"""install generates one Claude agent per (role, tier) in routes.json, with matching effort and model.
+"""No generated Claude agent files (retired 2026-11-24): install writes none, upgrade removes the ones an older install
+wrote and leaves every other agent file alone; the role paragraphs that were their bodies live in tw.role_text.
 Run: python test_tw_agents.py"""
-import re
 import subprocess
 import sys
 import tempfile
@@ -11,32 +11,35 @@ import tw
 TW = str(Path(__file__).with_name("tw.py"))
 
 if __name__ == "__main__":
-    routes = tw.load_routes(tw.source_root() / "routes.json")  # explicit path: never a user override file
-    want = {tw.agent_name(r, t) for r, p in routes["harnesses"]["claude"]["roles"].items() for t in p["tiers"]}
-    assert len(want) == 18 and {"tw-leaf-high", "tw-worker-max", "tw-leaf-max", "tw-independent-review-max"} <= want, want
-    assert "tw-ideation-max" not in want                # ideation stays medium..xhigh
-    pinned = {f'tw-independent-review-{t}-opus55' for t in tw.TIERS}
+    rev = tw.role_text("independent-review")
+    assert ("Do your own pass against the acceptance criteria before reading any coordinator hypotheses; if the "
+            "brief lists claims to test, answer them after your findings, in their own section.") in rev, rev
+    assert all(tw.role_text(r).endswith(tw.NATIVE_WRITE_FALLBACK) for r in tw.ROLE_TEXT)
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
         r = subprocess.run([sys.executable, TW, "install", "--home", tmp, "--python", sys.executable,
                             "--harness", "claude"], capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
-        files = {p.stem for p in (home / ".claude" / "agents").glob("*.md")}
-        assert files == want | pinned, files ^ (want | pinned)
-        for name in pinned:
-            text = (home / '.claude' / 'agents' / f'{name}.md').read_text()
-            assert '\nmodel: claude-opus-5-5\n' in text
-            assert f'\neffort: {tw.AGENT_NAME.fullmatch(name).group(2)}\n' in text
-        for name in want:
-            text = (home / ".claude" / "agents" / f"{name}.md").read_text(encoding="utf-8")
-            role, tier = tw.AGENT_NAME.fullmatch(name).groups()
-            assert f"\neffort: {tier}\n" in text and f"\nname: {name}\n" in text, name
-            assert f"\nmodel: {routes['harnesses']['claude']['roles'][role]['models'][0]}\n" in text, name
-            assert "tools:" not in text, name               # tools: null = full access (Arian 2026-09-26)
-            assert not re.search(r"effort: ultra", text), name   # only TIERS names reach the frontmatter
-        rev = (home / ".claude" / "agents" / "tw-independent-review-high.md").read_text(encoding="utf-8")
-        assert ("Do your own pass against the acceptance criteria before reading any coordinator hypotheses; if the "
-                "brief lists claims to test, answer them after your findings, in their own section.") in rev, rev
+        assert not (home / ".claude" / "agents").exists(), list((home / ".claude" / "agents").iterdir())
+        assert not [rel for rel in tw.load_manifest(home)["files"] if "/agents/" in rel]
+
+        # an older install: owned tw-*.md files in the manifest, next to an agent file the installer never wrote
+        agents = home / ".claude" / "agents"
+        agents.mkdir(parents=True)
+        mine = b"---\nname: spectroscopy-reviewer\n---\nnot thinker-worker's\n"
+        (agents / "spectroscopy-reviewer.md").write_bytes(mine)
+        m = tw.load_manifest(home)
+        for name in ("tw-worker-high.md", "tw-independent-review-high-opus55.md"):
+            data = f"---\nname: {name[:-3]}\n---\nold body\n".encode()
+            (agents / name).write_bytes(data)
+            m["files"][f".claude/agents/{name}"] = m["source"][f".claude/agents/{name}"] = tw.sha(data)
+        tw.manifest_path(home).write_bytes(tw.canonical_json(m))
+        r = subprocess.run([sys.executable, TW, "upgrade", "--home", tmp], capture_output=True, text=True)
+        assert r.returncode == 0 and "Upgraded 2 owned file(s)" in r.stdout, (r.stdout, r.stderr)
+        assert sorted(p.name for p in agents.iterdir()) == ["spectroscopy-reviewer.md"]
+        assert (agents / "spectroscopy-reviewer.md").read_bytes() == mine
+        assert not [rel for rel in tw.load_manifest(home)["files"] if "/agents/" in rel]
+        assert subprocess.run([sys.executable, TW, "check", "--home", tmp], capture_output=True).returncode == 0
         assert subprocess.run([sys.executable, TW, "uninstall", "--home", tmp], capture_output=True).returncode == 0
-        assert not list((home / ".claude" / "agents").glob("tw-*.md"))
-    print("PASS 18 tier agents (max included) plus 5 exact Opus 5.5 review pins; uninstall removes them")
+        assert (agents / "spectroscopy-reviewer.md").read_bytes() == mine
+    print("PASS no agent files installed; upgrade removes owned tw-*.md, keeps other agent files; role paragraphs intact")

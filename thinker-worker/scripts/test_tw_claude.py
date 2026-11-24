@@ -23,10 +23,13 @@ relay = sys.stdin.read()
 session = args[args.index("--session-id") + 1]
 agent = re.search(r"^subagent_type: (\S+)$", relay, re.M).group(1)
 model = re.search(r"^model: (\S+)$", relay, re.M)
+effort = re.search(r"^effort: (\S+)$", relay, re.M)
 brief = re.search(r"^BRIEF-BEGIN\n(.*)\nBRIEF-END$", relay, re.M | re.S).group(1)
 inp = {"subagent_type": agent, "prompt": brief, "description": "d"}
 if model:
     inp["model"] = model.group(1)
+if effort:
+    inp["effort"] = effort.group(1)
 env = {"session_id": session, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "toolu_fake1",
        "cwd": os.getcwd(), "tool_input": inp}
 hook = subprocess.run([sys.executable, os.environ["TW"], "hook", "--home", str(home), "--harness", "claude",
@@ -38,8 +41,8 @@ if spec.get("permissionDecision") == "deny":
     sys.exit(0)
 d = home / ".claude" / "projects" / "C--fake" / session / "subagents"
 d.mkdir(parents=True, exist_ok=True)
-(d / "agent-a1.meta.json").write_text(json.dumps({"agentType": agent, "toolUseId": "toolu_fake1"}), encoding="utf-8")
-row = {"type": "assistant", "effort": agent.rsplit("-", 1)[1],
+(d / "agent-a1.meta.json").write_text(json.dumps({"agentType": agent, "isBuiltIn": True, "toolUseId": "toolu_fake1"}), encoding="utf-8")
+row = {"type": "assistant", "effort": inp.get("effort"),
        "message": {"id": "m1", "model": os.environ.get("FAKE_MODEL", "claude-opus-5-5"),
                    "usage": {"input_tokens": 5, "output_tokens": 2}, "content": [{"type": "text", "text": "42"}]}}
 (d / "agent-a1.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -83,10 +86,12 @@ if __name__ == "__main__":
         assert a[0] == "-p" and a[a.index("--session-id") + 1] == out["session_id"], a
         assert a[a.index("--model") + 1] == "sonnet" and a[a.index("--effort") + 1] == "low", a
         assert a[a.index("--permission-mode") + 1] == "bypassPermissions", a  # -p cannot answer a prompt
-        assert "subagent_type: tw-worker-low" in call["stdin"] and "\nmodel:" not in call["stdin"], call["stdin"]
+        assert "subagent_type: general-purpose\nmodel: opus\neffort: low\n" in call["stdin"], call["stdin"]  # role's first
+        assert call["stdin"].count(__import__("tw").role_text("worker")) == 1, call["stdin"]  # the relay carries it
         assert out["tool_use_id"] == "toolu_fake1" and out["decision"] == "admit", out
         assert (out["agent_type"], out["effective_model"], out["effective_effort"]) == \
-            ("tw-worker-low", "claude-opus-5-5", "low"), out
+            ("general-purpose", "claude-opus-5-5", "low"), out
+        assert out["built_in"] is True, out
         assert Path(out["last_message"]).read_text(encoding="utf-8").strip() == "42", out
         rows = [x for x in receipts(home) if x.get("session_id") == out["session_id"]]
         assert [x["kind"] for x in rows if x["kind"] in ("dispatch", "cost")] == ["dispatch", "cost"], rows
@@ -97,12 +102,15 @@ if __name__ == "__main__":
         for text, tier, extra, why, routes in (
                 (HDR + "no role line", "low", (), "first brief line", "routes.json"),
                 (WORK, "low", ("--model", "gpt-6.1-sol"), "Codex model", "routes.json"),
-                (WORK, "low", ("--model", "sonnet"), "tier low is outside", "narrowed.json")):
+                (WORK, "low", ("--model", "sonnet"), "effort low is outside", "narrowed.json")):
             (home / "call.json").unlink(missing_ok=True)
             env["TW_ROUTES"] = str(home / routes)
             r = claude(text, tier, "worker", *extra)
             env["TW_ROUTES"] = str(home / "routes.json")
             assert r.returncode == 2 and why in r.stderr and not (home / "call.json").exists(), (why, r)
+        r = claude(WORK, "low", "independent-review")             # --role must match the brief's TW-Role line
+        assert r.returncode == 2 and "does not match the brief's TW-Role: worker" in r.stderr, r
+        assert not (home / "call.json").exists(), r
         print("PASS claude: pre-gate denials exit 2 without launching claude")
 
         # per-call model reaches the relay as its own line; the child's executed model is reported, not the alias
@@ -125,7 +133,7 @@ if __name__ == "__main__":
         assert r.returncode == 0, r
         res = json.loads((done / "job1.result.json").read_text(encoding="utf-8"))
         assert res["exit_code"] == 0 and res["result"]["effective_model"] == "claude-sonnet-5-5", res
-        assert res["result"]["agent_type"] == "tw-worker-low", res
+        assert res["result"]["agent_type"] == "general-purpose", res
         bad = json.loads((done / "bad.result.json").read_text(encoding="utf-8"))
         assert bad["exit_code"] == 2 and bad["result"] is None and bad["error"], bad
         assert sorted(p.name for p in inbox.iterdir()) == ["job2.json.tmp"], list(inbox.iterdir())

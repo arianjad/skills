@@ -9,23 +9,19 @@
       "roles": {
         "worker": {
           "models": ["opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-sol", "sonnet", "claude-sonnet-5-5", "gpt-6.1-sol", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "fable", "claude-fable-5-2", "gpt-6.2-sol", "gpt-6.2-astra"],
-          "tiers": ["low", "medium", "high", "xhigh", "max"],
-          "tools": null
+          "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "leaf": {
           "models": ["sonnet", "claude-sonnet-5", "claude-sonnet-5-5", "gpt-6-luna", "haiku", "claude-haiku-5-5", "gpt-6.1-terra"],
-          "tiers": ["low", "medium", "high", "xhigh", "max"],
-          "tools": null
+          "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "independent-review": {
           "models": ["fable", "claude-fable-5", "claude-fable-5-1", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "claude-opus-5-5", "gpt-6.1-terra", "haiku", "claude-haiku-5-5", "claude-fable-5-2", "gpt-6.2-sol", "gpt-6.2-astra"],
-          "tiers": ["low", "medium", "high", "xhigh", "max"],
-          "tools": null
+          "tiers": ["low", "medium", "high", "xhigh", "max"]
         },
         "ideation": {
           "models": ["fable", "claude-fable-5", "claude-fable-5-1", "opus", "claude-opus-5", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-2", "gpt-6.2-astra"],
-          "tiers": ["medium", "high", "xhigh"],
-          "tools": null
+          "tiers": ["medium", "high", "xhigh"]
         }
       }
     },
