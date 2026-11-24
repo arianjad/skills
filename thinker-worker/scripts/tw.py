@@ -34,6 +34,7 @@ SKILL_FILES = ("SKILL.md", "routes.json", "references/codex.md", "references/cla
                "references/omp.md", "references/agy.md", "scripts/tw.py")
 TIERS = ("low", "medium", "high", "xhigh", "max")
 AGENT_NAME = re.compile(r"tw-(worker|leaf|independent-review|ideation)-(low|medium|high|xhigh|max)(?:-opus55)?")
+AGY_EFFORT_SUFFIX = re.compile(r"^(.+)-(low|medium|high|xhigh|max)$")
 OPUS_REVIEW_MODEL = "claude-opus-5-5"
 VALUE_MAX = 1000  # per header value at the gate; receipts truncate at 256
 ROLE_LINE = re.compile(r"^TW-Role: (worker|leaf|independent-review|ideation)$")
@@ -1417,11 +1418,29 @@ def dispatch_key(r: dict) -> tuple[str, str | None]:
     return r["_session_file"], r.get("tool_use_id")
 
 
+def parse_agy_model(model_id: object, requested_effort: object = None) -> tuple[str | None, str | None]:
+    """Split an Antigravity model id into `(base_model, effort)` for tally grouping.
+
+    Antigravity encodes effort in the model id suffix for Gemini 4, Flash, Claude, and GPT-OSS entries
+    (e.g. `gemini-4-carbon-high`, `gemini-4-neon-xhigh`, `claude-opus-5-5-high`, `gemini-3.8-flash-medium`),
+    while orchestrator ids (`gemini-pro-orchestrator`, `gemini-pro-orchestrator-neon`) carry no effort suffix.
+    An explicit `requested_effort` takes precedence over the model-id suffix.
+    """
+    effort = requested_effort if isinstance(requested_effort, str) and requested_effort else None
+    if not isinstance(model_id, str) or not model_id:
+        return None, effort
+    m = AGY_EFFORT_SUFFIX.fullmatch(model_id)
+    if m:
+        return m.group(1), effort or m.group(2)
+    return model_id, effort
+
+
 def tally(home: Path, harness: str) -> list[dict]:
-    """Accept counts per (class, executed model, executed tier) over labeled, admitted dispatches. Label: the latest
-    check row (pass/fail; unknown ignored), else the coordinator's latest outcome. Executed model/tier: the cost row's
-    model and effort, else the tier of its tw-* agent_type; a dispatch with neither is counted at its requested tier
-    with model None. Historical exploration rewrites therefore count at the tier that actually ran."""
+    """Accept counts per (class, model, tier) over labeled, admitted dispatches. Label: the latest check row
+    (pass/fail; unknown ignored), else the coordinator's latest outcome. For claude/codex/omp, model and tier come
+    from the cost row's executed model and effort (else the tw-* agent_type tier or requested tier). For agy, which
+    emits `reported_model` and `requested_effort` rather than executed-model metadata, runs group by parsed
+    `(base_model, effort)` from `reported_model` (falling back to `requested_model`) and `requested_effort`."""
     rows = harness_rows(home, harness)
 
     def latest(kind: str) -> dict:  # the last row of a kind per dispatch
@@ -1437,9 +1456,13 @@ def tally(home: Path, harness: str) -> list[dict]:
         if d.get("decision") != "admit" or not m or label is None:
             continue
         c = cost.get(k) or {}
-        agent = AGENT_NAME.fullmatch(c.get("agent_type") or "")
-        tier = c.get("effort") or (agent.group(2) if agent else d.get("tier"))
-        g = groups.setdefault((m.group(1), c.get("model"), tier), [0, 0])
+        if harness == "agy":
+            mod, tier = parse_agy_model(c.get("reported_model") or d.get("requested_model"), c.get("requested_effort"))
+        else:
+            agent = AGENT_NAME.fullmatch(c.get("agent_type") or "")
+            mod = c.get("model")
+            tier = c.get("effort") or (agent.group(2) if agent else d.get("tier"))
+        g = groups.setdefault((m.group(1), mod, tier), [0, 0])
         g[0] += 1
         g[1] += bool(label)
     return [{"class": cls, "model": mod, "tier": t, "n": n, "accepted": a, "rate": round(a / n, 3)}

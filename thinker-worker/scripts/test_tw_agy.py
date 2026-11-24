@@ -139,17 +139,22 @@ if __name__ == '__main__':
         result, ok = dispatch(variables={'TW_AGY_TIMEOUT':'0.1','FAKE_SLEEP':'10'})
         assert ok['timed_out'],ok
 
-        # Outcome runs TW-Check in --cd; tally claims no executed model or tier.
+        # Outcome runs TW-Check in --cd; tally groups agy runs by parsed (reported_model base, requested/suffix effort).
         text = BRIEF.replace('TW-Risk: none','TW-Risk: none\nTW-Check: test -f call.json')
         result, checked = dispatch('--model','tally-model-low','--effort','high',text=text)
         assert result.returncode==0,result.stderr
         result = run(home,env,'outcome','--harness','agy','--session',checked['session_id'],
                      '--tool-use-id',checked['tool_use_id'])
         assert result.returncode==0 and 'pass' in result.stdout,result
+        result, suffixed = dispatch('--model','gemini-4-carbon-high',text=text)
+        assert result.returncode==0,result.stderr
+        result = run(home,env,'outcome','--harness','agy','--session',suffixed['session_id'],
+                     '--tool-use-id',suffixed['tool_use_id'])
+        assert result.returncode==0 and 'pass' in result.stdout,result
         result = run(home,env,'tally','--harness','agy')
         counts=[json.loads(s) for s in result.stdout.splitlines()]
-        # agy's init echo and the requested effort are not execution evidence: tally counts the run at no model/tier.
-        assert [(r['model'],r['tier'],r['accepted'],r['n']) for r in counts]==[(None,None,1,1)],counts
+        assert [(r['model'],r['tier'],r['accepted'],r['n']) for r in counts]==[
+            ('gemini-4-carbon','high',1,1),('tally-model','high',1,1)],counts
         (home/'call.json').unlink()
         result = run(home,env,'outcome','--harness','agy','--session',checked['session_id'],
                      '--tool-use-id',checked['tool_use_id'])
