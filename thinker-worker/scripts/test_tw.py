@@ -116,7 +116,7 @@ def test_all():
                                                             "model": "opus", "effort": "high"}), encoding="utf-8")
         turn = lambda mid, model, effort, out: {"type": "assistant", "effort": effort, "message": {
             "id": mid, "model": model, "usage": {"input_tokens": 1, "output_tokens": out}}}
-        lines = [{"type": "user", "message": {"role": "user", "content": "TW-Role: independent-review\nReview X."}},
+        lines = [{"type": "user", "message": {"role": "user", "content": "<teammate-message teammate_id=\"lead\">\nTW-Role: independent-review\nReview X."}},
                  turn("m1", "claude-opus-5-5", "high", 5), turn("m1", "claude-opus-5-5", "high", 6),
                  turn("m2", "claude-opus-5-5", "high", 1), turn("m3", "claude-sonnet-x", "medium", 2),
                  {"type": "assistant", "message": {"model": "<synthetic>"}}]

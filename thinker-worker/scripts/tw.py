@@ -363,7 +363,7 @@ def ran_children(home: Path, session: str | None = None) -> list[dict]:
                 meta = {}
             rs = file_rows(meta_path.with_name(meta_path.name[: -len(".meta.json")] + ".jsonl"))
             first = next((message_text(r) for r in rs if r.get("type") == "user"), "")
-            role = re.match(r"\s*TW-Role:\s*(\S+)", first)
+            role = re.search(r"^TW-Role:\s*(\S+)", first, re.M)  # a named teammate's brief follows a wrapper tag
             turns, usage = [], {}
             for r in rs:
                 msg = r.get("message") or {}
